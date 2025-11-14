@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/../ApiProject/.idea/ApiProject.iml" filepath="$PROJECT_DIR$/../ApiProject/.idea/ApiProject.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/Equipicker.iml" filepath="$PROJECT_DIR$/.idea/Equipicker.iml" />
+    </modules>
+  </component>
+</project>
