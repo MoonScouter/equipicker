@@ -1,0 +1,12 @@
+fastapi
+langchain
+numpy
+openpyxl
+pandas
+requests
+scikit-learn
+streamlit
+sqlalchemy
+torch
+transformers
+uvicorn
