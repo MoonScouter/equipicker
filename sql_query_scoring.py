@@ -2,7 +2,7 @@
 
 SQL_QUERY_SCORING = """
 SELECT
-    fs.ticker, t.exchange, t.sector, t.industry, t.market_cap, t.market_cap_category, eodhd.beta,
+    fs.ticker, t.name, t.exchange, t.sector, t.industry, t.market_cap, t.market_cap_category, eodhd.beta,
     fs.total_score AS fundamental_total_score, fs.style AS style,fs.most_recent_quarter AS most_recent_quarter,
     MAX(CASE WHEN fsp.code = 'VALUE'    THEN fsp.score END) AS fundamental_value,
     MAX(CASE WHEN fsp.code = 'GROWTH'   THEN fsp.score END) AS fundamental_growth,
