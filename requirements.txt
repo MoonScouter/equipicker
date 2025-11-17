@@ -4,9 +4,12 @@ numpy
 openpyxl
 pandas
 requests
+reportlab
 scikit-learn
 streamlit
 sqlalchemy
 torch
 transformers
 uvicorn
+mysql-connector-python
+
