@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import (
@@ -463,7 +464,7 @@ def _build_page_header(
         [[Paragraph(label_text, styles["scope"]), arrow]],
         colWidths=[CONTENT_WIDTH - 50, 50],
     )
-    header_table.setStyle(
+    band.setStyle(
         TableStyle(
             [
                 ("ALIGN", (1, 0), (1, 0), "CENTER"),
@@ -598,9 +599,8 @@ def generate_weekly_scoring_board_pdf(
             logger.info("Rendering page %s: %s", idx + 1, page["scope"])
             scope_label = page["scope"] if not is_cont else f"{page['scope']} (cont.)"
             story.extend(
-                _build_page_header(
+                _build_scope_title(
                     styles,
-                    report_date,
                     scope_label,
                     anchor=anchor if chunk_idx == 0 else None,
                 )
