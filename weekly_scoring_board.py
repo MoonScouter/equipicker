@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import (
@@ -30,6 +30,7 @@ PAGE_SIZE = letter
 LEFT_MARGIN = RIGHT_MARGIN = 36
 TOP_MARGIN = 34
 BOTTOM_MARGIN = 34
+CONTENT_WIDTH = PAGE_SIZE[0] - LEFT_MARGIN - RIGHT_MARGIN
 
 BRAND_COLORS: Dict[str, colors.Color] = {
     "primary": colors.HexColor("#0B2D5C"),
@@ -40,12 +41,16 @@ BRAND_COLORS: Dict[str, colors.Color] = {
     "score_bg": colors.HexColor("#F0F7FB"),
 }
 HIGHLIGHT_COLOR = colors.HexColor("#0C97FF")
+SECTION_BAND_COLOR = colors.HexColor("#1F4A82")
+TABLE_BAND_COLOR = colors.HexColor("#E3EFFB")
+SCORE_ARROW_COLOR = colors.HexColor("#22B573")
+LOGO_PATH = Path(__file__).resolve().parent / "logo.png"
 
 TABLE_BODY_STYLE = ParagraphStyle(
     "table_body",
     fontName="Helvetica",
-    fontSize=6.5,
-    leading=7.8,
+    fontSize=6.2,
+    leading=7.2,
     textColor=BRAND_COLORS["muted_text"],
 )
 
@@ -160,7 +165,7 @@ def format_score_value(value) -> str:
         return "n/a"
 
 
-def _score_border_color(value):
+def _score_fill_color(value):
     if pd.isna(value):
         return colors.HexColor("#B0BEC5")
     try:
@@ -177,24 +182,24 @@ class ScoreBadge(Flowable):
     def __init__(self, value, diameter: int = 22):
         super().__init__()
         self.value = value
-        self.diameter = max(diameter, 18)
+        self.diameter = diameter
 
     def wrap(self, availWidth, availHeight):
         return self.diameter, self.diameter
 
     def draw(self):
-        radius = (self.diameter / 2) - 1
+        padding = 1
+        radius = (self.diameter / 2) - padding
+        fill_color = _score_fill_color(self.value)
+        self.canv.setFillColor(fill_color)
+        self.canv.setStrokeColor(fill_color)
         cx = cy = self.diameter / 2
-        border_color = _score_border_color(self.value)
-        self.canv.setStrokeColor(border_color)
-        self.canv.setFillColor(colors.white)
-        self.canv.setLineWidth(1.2)
-        self.canv.circle(cx, cy, radius, stroke=1, fill=1)
-        self.canv.setFillColor(colors.HexColor("#1B2540"))
-        self.canv.setFont("Helvetica-Bold", 7.5)
+        self.canv.circle(cx, cy, radius, stroke=0, fill=1)
+        self.canv.setFillColor(colors.black)
+        self.canv.setFont("Helvetica-Bold", 7.2)
         text = format_score_value(self.value)
-        text_width = self.canv.stringWidth(text, "Helvetica-Bold", 7.5)
-        self.canv.drawString(cx - (text_width / 2), cy - 3.5, text)
+        text_width = self.canv.stringWidth(text, "Helvetica-Bold", 7.2)
+        self.canv.drawString(cx - (text_width / 2), cy - 3, text)
 
 
 def _format_score_badge(value):
@@ -303,30 +308,30 @@ def _build_styles():
             "button",
             parent=sample["Heading4"],
             fontName="Helvetica-Bold",
-            fontSize=7,
-            textColor=BRAND_COLORS["primary"],
+            fontSize=9,
+            textColor=SCORE_ARROW_COLOR,
             alignment=TA_CENTER,
-            backColor=colors.HexColor("#EDF3FA"),
-            borderColor=BRAND_COLORS["accent"],
-            borderWidth=0.8,
-            borderPadding=(3, 4, 3, 4),
+            backColor=None,
+            borderColor=None,
+            borderWidth=0,
+            borderPadding=(0, 0, 0, 0),
             spaceAfter=0,
         ),
         "scope": ParagraphStyle(
             "scope",
             parent=sample["Heading3"],
-            fontSize=14,
+            fontSize=13,
             fontName="Helvetica-Bold",
-            textColor=BRAND_COLORS["secondary"],
-            spaceAfter=10,
+            textColor=colors.white,
+            spaceAfter=6,
         ),
         "table_title": ParagraphStyle(
             "table_title",
             parent=sample["Heading4"],
-            fontSize=11,
+            fontSize=10.5,
             fontName="Helvetica-Bold",
             textColor=BRAND_COLORS["primary"],
-            spaceAfter=2,
+            spaceAfter=0,
         ),
         "disclaimer_body": ParagraphStyle(
             "disclaimer_body",
@@ -354,10 +359,26 @@ def _build_toc(styles: Dict[str, ParagraphStyle], pages: List[Dict]) -> List:
 
 def _build_table_block(table_info: Dict, styles: Dict[str, ParagraphStyle]) -> KeepTogether:
     table = _create_data_table(table_info["data"], table_info["metric"])
+    title_band = Table(
+        [[Paragraph(table_info["title"], styles["table_title"])]],
+        colWidths=[CONTENT_WIDTH],
+    )
+    title_band.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), TABLE_BAND_COLOR),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
     return KeepTogether([
-        Paragraph(table_info["title"], styles["table_title"]),
+        title_band,
         Spacer(1, 4),
         table,
+        Spacer(1, 18),
     ])
 
 
@@ -394,6 +415,10 @@ def _table_style_commands(row_count: int, metric: str) -> List:
         ("TEXTCOLOR", (0, 1), (-1, -1), BRAND_COLORS["muted_text"]),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D3E1EA")),
+        ("TOPPADDING", (0, 0), (-1, 0), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 1), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
     ]
 
     for row in range(1, row_count):
@@ -421,7 +446,6 @@ def _table_style_commands(row_count: int, metric: str) -> List:
     for key in SCORE_COLUMNS:
         idx = COLUMN_INDEX.get(key)
         if idx is not None:
-            commands.append(("BACKGROUND", (idx, 1), (idx, -1), BRAND_COLORS["score_bg"]))
             commands.append(("ALIGN", (idx, 1), (idx, -1), "CENTER"))
     return commands
 
@@ -430,39 +454,31 @@ def _build_page_header(
     styles: Dict[str, ParagraphStyle],
     report_date: date,
     scope_label: str,
-    include_metadata: bool = True,
     anchor: Optional[str] = None,
 ) -> List:
-    formatted_date = report_date.strftime("%B %d, %Y")
     header: List = []
-    if include_metadata:
-        header.extend(
-            [
-                Paragraph("Weekly Scoring Board", styles["title"]),
-                Paragraph("Equipicker", styles["subtitle"]),
-                Paragraph(f"Report date: {formatted_date}", styles["meta"]),
-            ]
-        )
     label_text = f'<a name="{anchor}"/>{scope_label}' if anchor else scope_label
-    content_width = PAGE_SIZE[0] - LEFT_MARGIN - RIGHT_MARGIN
-    button = Paragraph('<link href="#toc">Table of Contents</link>', styles["button"])
+    arrow = Paragraph('<link href="#toc">&#9650;</link>', styles["button"])
     header_table = Table(
-        [[Paragraph(label_text, styles["scope"]), button]],
-        colWidths=[content_width - 130, 120],
+        [[Paragraph(label_text, styles["scope"]), arrow]],
+        colWidths=[CONTENT_WIDTH - 50, 50],
     )
     header_table.setStyle(
         TableStyle(
             [
-                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("ALIGN", (1, 0), (1, 0), "CENTER"),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("BACKGROUND", (0, 0), (0, 0), SECTION_BAND_COLOR),
+                ("BACKGROUND", (1, 0), (1, 0), SECTION_BAND_COLOR),
             ]
         )
     )
     header.append(header_table)
-    header.append(Spacer(1, 4))
+    header.append(Spacer(1, 18))
     return header
 
 
@@ -470,7 +486,7 @@ def _build_tables_flowables(tables: List[Dict], styles: Dict[str, ParagraphStyle
     flowables: List = []
     for table_info in tables:
         flowables.append(_build_table_block(table_info, styles))
-        flowables.append(Spacer(1, 4))
+        flowables.append(Spacer(1, 6))
     return flowables
 
 
@@ -497,13 +513,47 @@ def _build_disclaimer(styles: Dict[str, ParagraphStyle], report_date: date) -> L
     return paragraphs
 
 
-def _draw_footer(canvas, doc):
-    canvas.saveState()
-    footer_text = f"Equipicker - Weekly Scoring Board   |   Page {doc.page}"
-    canvas.setFillColor(BRAND_COLORS["muted_text"])
-    canvas.setFont("Helvetica", 8)
-    canvas.drawString(LEFT_MARGIN, BOTTOM_MARGIN - 20, footer_text)
-    canvas.restoreState()
+def make_header_footer(report_date: date):
+    def _draw(canvas, doc):
+        canvas.saveState()
+        if doc.page > 1:
+            header_y = PAGE_SIZE[1] - TOP_MARGIN + 20
+            if LOGO_PATH.exists():
+                logo_width = 60
+                logo_height = 20
+                logo_x = PAGE_SIZE[0] - RIGHT_MARGIN - logo_width
+                logo_y = header_y - logo_height
+                canvas.drawImage(
+                    str(LOGO_PATH),
+                    logo_x,
+                    logo_y,
+                    width=logo_width,
+                    height=logo_height,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+                canvas.setFont("Helvetica", 6)
+                canvas.setFillColor(BRAND_COLORS["muted_text"])
+                canvas.drawRightString(
+                    PAGE_SIZE[0] - RIGHT_MARGIN,
+                    logo_y - 6,
+                    report_date.strftime("%b %d, %Y"),
+                )
+            canvas.setFont("Times-BoldItalic", 12)
+            canvas.setFillColor(BRAND_COLORS["primary"])
+            canvas.drawString(LEFT_MARGIN, header_y - 6, "Weekly Scoring Board")
+            canvas.setStrokeColor(colors.HexColor("#D6DFEB"))
+            canvas.setLineWidth(0.5)
+            line_y = logo_y - 28
+            canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
+
+        footer_text = f"Equipicker - Weekly Scoring Board   |   Page {doc.page}"
+        canvas.setFillColor(BRAND_COLORS["muted_text"])
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(LEFT_MARGIN, BOTTOM_MARGIN - 20, footer_text)
+        canvas.restoreState()
+
+    return _draw
 
 
 def generate_weekly_scoring_board_pdf(
@@ -552,7 +602,6 @@ def generate_weekly_scoring_board_pdf(
                     styles,
                     report_date,
                     scope_label,
-                    include_metadata=(idx == 0 and chunk_idx == 0),
                     anchor=anchor if chunk_idx == 0 else None,
                 )
             )
@@ -562,7 +611,8 @@ def generate_weekly_scoring_board_pdf(
     story.extend(_build_disclaimer(styles, report_date))
 
     logger.info("Generating PDF report with %s pages", len(pages) + 1)
-    doc.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    header_footer = make_header_footer(report_date)
+    doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
     logger.info("Weekly Scoring Board saved to %s", output_path)
     return output_path
 
