@@ -8,9 +8,12 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, landscape
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import (
+    Flowable,
     KeepTogether,
     PageBreak,
     Paragraph,
@@ -24,10 +27,11 @@ from equipicker_connect import get_scoring_dataframe
 
 logger = logging.getLogger(__name__)
 
-PAGE_SIZE = landscape(letter)
-LEFT_MARGIN = RIGHT_MARGIN = 30
-TOP_MARGIN = 36
-BOTTOM_MARGIN = 42
+PAGE_SIZE = letter
+LEFT_MARGIN = RIGHT_MARGIN = 36
+TOP_MARGIN = 34
+BOTTOM_MARGIN = 34
+CONTENT_WIDTH = PAGE_SIZE[0] - LEFT_MARGIN - RIGHT_MARGIN
 
 BRAND_COLORS: Dict[str, colors.Color] = {
     "primary": colors.HexColor("#0B2D5C"),
@@ -37,6 +41,19 @@ BRAND_COLORS: Dict[str, colors.Color] = {
     "row_alt": colors.HexColor("#F6FBFF"),
     "score_bg": colors.HexColor("#F0F7FB"),
 }
+HIGHLIGHT_COLOR = colors.HexColor("#0C97FF")
+SECTION_BAND_COLOR = colors.HexColor("#1F4A82")
+TABLE_BAND_COLOR = colors.HexColor("#E3EFFB")
+SCORE_ARROW_COLOR = colors.HexColor("#22B573")
+LOGO_PATH = Path(__file__).resolve().parent / "logo.png"
+
+TABLE_BODY_STYLE = ParagraphStyle(
+    "table_body",
+    fontName="Helvetica",
+    fontSize=6.2,
+    leading=7.2,
+    textColor=BRAND_COLORS["muted_text"],
+)
 
 SCORE_COLOR_BANDS: List = [
     (80, colors.HexColor("#0BA360")),
@@ -44,6 +61,21 @@ SCORE_COLOR_BANDS: List = [
     (40, colors.HexColor("#F2994A")),
     (0, colors.HexColor("#EB5757")),
 ]
+
+def wrap_table_text(value) -> Paragraph:
+    if pd.isna(value):
+        return Paragraph("", TABLE_BODY_STYLE)
+    return Paragraph(str(value), TABLE_BODY_STYLE)
+
+
+def slugify(text: str) -> str:
+    return "-".join(filter(None, "".join(ch.lower() if ch.isalnum() else "-" for ch in text).split("-")))
+
+
+def chunk_table_groups(tables: List[Dict], chunk_size: int = 3):
+    for offset in range(0, len(tables), chunk_size):
+        chunk = tables[offset : offset + chunk_size]
+        yield chunk, offset > 0
 
 COLUMN_RENAMES = {
     "name": "company_name",
@@ -60,11 +92,11 @@ REQUIRED_COLUMNS = [
     "company_name",
     "exchange",
     "sector",
-    "industry",
+    # "industry",
     "market_cap",
-    "market_cap_category",
-    "beta",
-    "style",
+    # "market_cap_category",
+    # "beta",
+    # "style",
     "total_score",
     "pillar_value",
     "pillar_growth",
@@ -77,32 +109,32 @@ SCORE_COLUMNS = {"total_score", "pillar_value", "pillar_growth", "pillar_quality
 MOMENTUM_COLUMN = "pillar_momentum"
 
 TABLE_COLUMN_DEFS = [
-    {"key": "ticker", "label": "Ticker", "formatter": lambda v: v or "-"},
-    {"key": "company_name", "label": "Company name", "formatter": lambda v: v or "-"},
-    {"key": "sector", "label": "Sector", "formatter": lambda v: v or "-"},
-    {"key": "industry", "label": "Industry", "formatter": lambda v: v or "-"},
-    {"key": "market_cap", "label": "Market cap", "formatter": lambda v: format_market_cap(v)},
-    {"key": "market_cap_category", "label": "Market cap category", "formatter": lambda v: v or "-"},
-    {"key": "beta", "label": "Beta", "formatter": lambda v: format_beta(v)},
-    {"key": "style", "label": "Style", "formatter": lambda v: v or "-"},
-    {"key": "total_score", "label": "Total score", "formatter": lambda v: format_score_value(v)},
-    {"key": "pillar_value", "label": "Pillar 1", "formatter": lambda v: format_score_value(v)},
-    {"key": "pillar_growth", "label": "Pillar 2", "formatter": lambda v: format_score_value(v)},
-    {"key": "pillar_quality", "label": "Pillar 3", "formatter": lambda v: format_score_value(v)},
-    {"key": "pillar_risk", "label": "Pillar 4", "formatter": lambda v: format_score_value(v)},
-    {"key": "pillar_momentum", "label": "Pillar 5", "formatter": lambda v: format_score_value(v)},
+    {"key": "ticker", "label": "Ticker", "formatter": lambda v: wrap_table_text(v)},
+    {"key": "company_name", "label": "Company name", "formatter": lambda v: wrap_table_text(v)},
+    {"key": "sector", "label": "Sector", "formatter": lambda v: wrap_table_text(v)},
+    # {"key": "industry", "label": "Industry", "formatter": lambda v: wrap_table_text(v)},
+    {"key": "market_cap", "label": "Market cap", "formatter": lambda v: wrap_table_text(format_market_cap(v))},
+    # {"key": "market_cap_category", "label": "Market cap category", "formatter": lambda v: wrap_table_text(v)},
+    # {"key": "beta", "label": "Beta", "formatter": lambda v: wrap_table_text(format_beta(v))},
+    # {"key": "style", "label": "Style", "formatter": lambda v: wrap_table_text(v)},
+    {"key": "total_score", "label": "Total", "formatter": lambda v: _format_score_badge(v)},
+    {"key": "pillar_value", "label": "P1", "formatter": lambda v: _format_score_badge(v)},
+    {"key": "pillar_growth", "label": "P2", "formatter": lambda v: _format_score_badge(v)},
+    {"key": "pillar_quality", "label": "P3", "formatter": lambda v: _format_score_badge(v)},
+    {"key": "pillar_risk", "label": "P4", "formatter": lambda v: _format_score_badge(v)},
+    {"key": "pillar_momentum", "label": "P5", "formatter": lambda v: _format_score_badge(v)},
 ]
 
-TABLE_COLUMN_WIDTHS = [40, 75, 55, 75, 55, 55, 35, 40, 50, 43, 43, 43, 43, 43]
+TABLE_COLUMN_WIDTHS = [60, 100, 70, 50, 30, 30, 28, 28, 28, 28, 28]
 COLUMN_INDEX = {col["key"]: idx for idx, col in enumerate(TABLE_COLUMN_DEFS)}
 
 METRIC_TABLES = [
     {"metric": "total_score", "title": "Top 5 - Total Fundamental Score"},
-    {"metric": "pillar_value", "title": "Top 5 - Pillar 1 (Value)"},
-    {"metric": "pillar_growth", "title": "Top 5 - Pillar 2 (Growth)"},
-    {"metric": "pillar_quality", "title": "Top 5 - Pillar 3 (Quality)"},
-    {"metric": "pillar_risk", "title": "Top 5 - Pillar 4 (Risk)"},
-    {"metric": "pillar_momentum", "title": "Top 5 - Pillar 5 (Momentum)"},
+    {"metric": "pillar_value", "title": "Top 5 - Value (P1)"},
+    {"metric": "pillar_growth", "title": "Top 5 - Growth (P2)"},
+    {"metric": "pillar_quality", "title": "Top 5 - Quality (P3)"},
+    {"metric": "pillar_risk", "title": "Top 5 - Risk (P4)"},
+    {"metric": "pillar_momentum", "title": "Top 5 - Momentum (P5)"},
 ]
 
 
@@ -134,7 +166,7 @@ def format_score_value(value) -> str:
         return "n/a"
 
 
-def _score_border_color(value):
+def _score_fill_color(value):
     if pd.isna(value):
         return colors.HexColor("#B0BEC5")
     try:
@@ -145,6 +177,34 @@ def _score_border_color(value):
         if numeric_value >= threshold:
             return band_color
     return SCORE_COLOR_BANDS[-1][1]
+
+
+class ScoreBadge(Flowable):
+    def __init__(self, value, diameter: int = 22):
+        super().__init__()
+        self.value = value
+        self.diameter = diameter
+
+    def wrap(self, availWidth, availHeight):
+        return self.diameter, self.diameter
+
+    def draw(self):
+        padding = 1
+        radius = (self.diameter / 2) - padding
+        fill_color = _score_fill_color(self.value)
+        self.canv.setFillColor(fill_color)
+        self.canv.setStrokeColor(fill_color)
+        cx = cy = self.diameter / 2
+        self.canv.circle(cx, cy, radius, stroke=0, fill=1)
+        self.canv.setFillColor(colors.black)
+        self.canv.setFont("Helvetica-Bold", 7.2)
+        text = format_score_value(self.value)
+        text_width = self.canv.stringWidth(text, "Helvetica-Bold", 7.2)
+        self.canv.drawString(cx - (text_width / 2), cy - 3, text)
+
+
+def _format_score_badge(value):
+    return ScoreBadge(value)
 
 
 def prepare_scoring_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -236,21 +296,43 @@ def _build_styles():
             textColor=BRAND_COLORS["muted_text"],
             spaceAfter=4,
         ),
+        "toc_entry": ParagraphStyle(
+            "toc_entry",
+            parent=sample["Normal"],
+            fontName="Helvetica",
+            fontSize=10,
+            leading=12,
+            textColor=BRAND_COLORS["primary"],
+            spaceAfter=4,
+        ),
+        "button": ParagraphStyle(
+            "button",
+            parent=sample["Heading4"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            textColor=SCORE_ARROW_COLOR,
+            alignment=TA_CENTER,
+            backColor=None,
+            borderColor=None,
+            borderWidth=0,
+            borderPadding=(0, 0, 0, 0),
+            spaceAfter=0,
+        ),
         "scope": ParagraphStyle(
             "scope",
             parent=sample["Heading3"],
-            fontSize=14,
+            fontSize=13,
             fontName="Helvetica-Bold",
-            textColor=BRAND_COLORS["secondary"],
-            spaceAfter=10,
+            textColor=colors.white,
+            spaceAfter=6,
         ),
         "table_title": ParagraphStyle(
             "table_title",
             parent=sample["Heading4"],
-            fontSize=12,
+            fontSize=10.5,
             fontName="Helvetica-Bold",
             textColor=BRAND_COLORS["primary"],
-            spaceAfter=4,
+            spaceAfter=0,
         ),
         "disclaimer_body": ParagraphStyle(
             "disclaimer_body",
@@ -263,58 +345,81 @@ def _build_styles():
     return styles
 
 
+def _build_toc(styles: Dict[str, ParagraphStyle], pages: List[Dict]) -> List:
+    flowables: List = [
+        Paragraph('<a name="toc"/>Table of Contents', styles["title"]),
+        Spacer(1, 12),
+    ]
+    for page in pages:
+        anchor = slugify(page["title"])
+        flowables.append(
+            Paragraph(f'<link href="#{anchor}">{page["scope"]}</link>', styles["toc_entry"])
+        )
+    return flowables
+
+
 def _build_table_block(table_info: Dict, styles: Dict[str, ParagraphStyle]) -> KeepTogether:
     table = _create_data_table(table_info["data"], table_info["metric"])
+    title_band = Table(
+        [[Paragraph(table_info["title"], styles["table_title"])]],
+        colWidths=[CONTENT_WIDTH],
+    )
+    title_band.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), TABLE_BAND_COLOR),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
     return KeepTogether([
-        Paragraph(table_info["title"], styles["table_title"]),
+        title_band,
         Spacer(1, 4),
         table,
+        Spacer(1, 18),
     ])
 
 
 def _create_data_table(df: pd.DataFrame, metric: str) -> Table:
     table_data = [[col["label"] for col in TABLE_COLUMN_DEFS]]
-    extra_styles: List = []
 
     if df.empty:
-        table_data.append(["n/a"] * len(TABLE_COLUMN_DEFS))
+        table_data.append([column["formatter"](pd.NA) for column in TABLE_COLUMN_DEFS])
     else:
         for _, row in df.iterrows():
             row_values = []
-            for col_idx, column in enumerate(TABLE_COLUMN_DEFS):
+            for column in TABLE_COLUMN_DEFS:
                 raw_value = row.get(column["key"])
                 formatted = column["formatter"](raw_value)
                 row_values.append(formatted)
-                if column["key"] in SCORE_COLUMNS:
-                    extra_styles.extend(_score_cell_styles(len(table_data), col_idx, raw_value))
             table_data.append(row_values)
 
     table = Table(table_data, colWidths=TABLE_COLUMN_WIDTHS, repeatRows=1)
     style_cmds = _table_style_commands(len(table_data), metric)
-    table.setStyle(TableStyle(style_cmds + extra_styles))
+    table.setStyle(TableStyle(style_cmds))
     return table
 
-
-def _score_cell_styles(row_idx: int, col_idx: int, value) -> List:
-    border_color = _score_border_color(value)
-    return [
-        ("BOX", (col_idx, row_idx), (col_idx, row_idx), 1, border_color),
-        ("BACKGROUND", (col_idx, row_idx), (col_idx, row_idx), BRAND_COLORS["score_bg"]),
-    ]
 
 
 def _table_style_commands(row_count: int, metric: str) -> List:
     commands = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_COLORS["primary"]),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 1), (-1, -1), 8),
+        ("FONTSIZE", (0, 1), (-1, -1), 6),
         ("TEXTCOLOR", (0, 1), (-1, -1), BRAND_COLORS["muted_text"]),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D3E1EA")),
+        ("TOPPADDING", (0, 0), (-1, 0), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 1), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
     ]
 
     for row in range(1, row_count):
@@ -323,14 +428,18 @@ def _table_style_commands(row_count: int, metric: str) -> List:
 
     highlight_idx = COLUMN_INDEX.get(metric)
     if highlight_idx is not None:
-        commands.extend([
-            ("BACKGROUND", (highlight_idx, 0), (highlight_idx, 0), BRAND_COLORS["secondary"]),
-            ("LINEBEFORE", (highlight_idx, 1), (highlight_idx, -1), 1, BRAND_COLORS["secondary"]),
-            ("LINEAFTER", (highlight_idx, 1), (highlight_idx, -1), 1, BRAND_COLORS["secondary"]),
-        ])
+        commands.extend(
+            [
+                ("BACKGROUND", (highlight_idx, 0), (highlight_idx, 0), HIGHLIGHT_COLOR),
+                ("TEXTCOLOR", (highlight_idx, 0), (highlight_idx, 0), colors.white),
+                ("BOX", (highlight_idx, 0), (highlight_idx, -1), 1.5, HIGHLIGHT_COLOR),
+                ("LINEBEFORE", (highlight_idx, 0), (highlight_idx, -1), 1.5, HIGHLIGHT_COLOR),
+                ("LINEAFTER", (highlight_idx, 0), (highlight_idx, -1), 1.5, HIGHLIGHT_COLOR),
+            ]
+        )
 
     # Alignment tweaks
-    for key in ["market_cap", "market_cap_category", "beta", "style"]:
+    for key in ["market_cap", "style"]:
         idx = COLUMN_INDEX.get(key)
         if idx is not None:
             align = "CENTER" if key != "market_cap" else "RIGHT"
@@ -342,22 +451,72 @@ def _table_style_commands(row_count: int, metric: str) -> List:
     return commands
 
 
-def _build_page_header(styles: Dict[str, ParagraphStyle], report_date: date, scope_label: str) -> List:
-    formatted_date = report_date.strftime("%B %d, %Y")
-    return [
-        Paragraph("Weekly Scoring Board", styles["title"]),
-        Paragraph("Equipicker", styles["subtitle"]),
-        Paragraph(f"Report date: {formatted_date}", styles["meta"]),
-        Paragraph(scope_label, styles["scope"]),
-    ]
+def _build_page_header(
+    styles: Dict[str, ParagraphStyle],
+    report_date: date,
+    scope_label: str,
+    anchor: Optional[str] = None,
+) -> List:
+    header: List = []
+    label_text = f'<a name="{anchor}"/>{scope_label}' if anchor else scope_label
+    arrow = Paragraph('<link href="#toc">&#9650;</link>', styles["button"])
+    header_table = Table(
+        [[Paragraph(label_text, styles["scope"]), arrow]],
+        colWidths=[CONTENT_WIDTH - 50, 50],
+    )
+    band.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (1, 0), (1, 0), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("BACKGROUND", (0, 0), (0, 0), SECTION_BAND_COLOR),
+                ("BACKGROUND", (1, 0), (1, 0), SECTION_BAND_COLOR),
+            ]
+        )
+    )
+    header.append(header_table)
+    header.append(Spacer(1, 18))
+    return header
 
 
 def _build_tables_flowables(tables: List[Dict], styles: Dict[str, ParagraphStyle]) -> List:
     flowables: List = []
     for table_info in tables:
         flowables.append(_build_table_block(table_info, styles))
-        flowables.append(Spacer(1, 10))
+        flowables.append(Spacer(1, 6))
     return flowables
+
+
+def _build_scope_title(
+    styles: Dict[str, ParagraphStyle],
+    scope_label: str,
+    anchor: Optional[str] = None,
+) -> List:
+    label_text = f'<a name="{anchor}"/>{scope_label}' if anchor else scope_label
+    arrow = Paragraph('<link href="#toc">&#9650;</link>', styles["button"])
+    band = Table(
+        [[Paragraph(label_text, styles["scope"]), arrow]],
+        colWidths=[CONTENT_WIDTH - 50, 50],
+    )
+    band.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (1, 0), SECTION_BAND_COLOR),
+                ("ALIGN", (1, 0), (1, 0), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    # 10pt spacer above band, 6pt below – tweak if needed
+    return [Spacer(1, 20), band, Spacer(1, 20)]
 
 
 def _build_disclaimer(styles: Dict[str, ParagraphStyle], report_date: date) -> List:
@@ -383,13 +542,60 @@ def _build_disclaimer(styles: Dict[str, ParagraphStyle], report_date: date) -> L
     return paragraphs
 
 
-def _draw_footer(canvas, doc):
-    canvas.saveState()
-    footer_text = f"Equipicker - Weekly Scoring Board   |   Page {doc.page}"
-    canvas.setFillColor(BRAND_COLORS["muted_text"])
-    canvas.setFont("Helvetica", 8)
-    canvas.drawString(LEFT_MARGIN, BOTTOM_MARGIN - 20, footer_text)
-    canvas.restoreState()
+def make_header_footer(report_date: date):
+    def _draw(canvas, doc):
+        canvas.saveState()
+        if doc.page > 1:
+            header_y = PAGE_SIZE[1] - TOP_MARGIN + 20
+
+            # Title on the left
+            title_y = header_y - 8
+            canvas.setFont("Times-BoldItalic", 12)
+            canvas.setFillColor(BRAND_COLORS["primary"])
+            canvas.drawString(LEFT_MARGIN, title_y, "Weekly Scoring Board")
+
+            # Date just under the title
+            date_y = title_y - 10
+            canvas.setFont("Helvetica", 7)
+            canvas.setFillColor(BRAND_COLORS["muted_text"])
+            canvas.drawString(LEFT_MARGIN, date_y, report_date.strftime("%b %d, %Y"))
+
+            # Right-hand element: logo or EQUIPICKER text
+            if LOGO_PATH.exists():
+                logo_width = 60
+                logo_height = 20
+                canvas.drawImage(
+                    str(LOGO_PATH),
+                    PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
+                    title_y - (logo_height - 6),  # roughly aligned with title
+                    width=logo_width,
+                    height=logo_height,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            else:
+                canvas.setFont("Helvetica-Bold", 9)
+                canvas.setFillColor(BRAND_COLORS["secondary"])
+                canvas.drawRightString(
+                    PAGE_SIZE[0] - RIGHT_MARGIN,
+                    title_y,
+                    "EQUIPICKER",
+                )
+
+            # Separator line just under the date
+            line_y = date_y - 6
+            canvas.setStrokeColor(colors.HexColor("#D6DFEB"))
+            canvas.setLineWidth(0.5)
+            canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
+
+        # Footer
+        footer_text = f"Equipicker - Weekly Scoring Board   |   Page {doc.page}"
+        canvas.setFillColor(BRAND_COLORS["muted_text"])
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(LEFT_MARGIN, BOTTOM_MARGIN - 20, footer_text)
+        canvas.restoreState()
+
+    return _draw
 
 
 def generate_weekly_scoring_board_pdf(
@@ -424,18 +630,30 @@ def generate_weekly_scoring_board_pdf(
 
     styles = _build_styles()
     story: List = []
+    story.extend(_build_toc(styles, pages))
+    story.append(PageBreak())
     for idx, page in enumerate(pages):
-        if idx:
-            story.append(PageBreak())
-        logger.info("Rendering page %s: %s", idx + 1, page["scope"])
-        story.extend(_build_page_header(styles, report_date, page["scope"]))
-        story.extend(_build_tables_flowables(page["tables"], styles))
+        anchor = slugify(page["title"])
+        for chunk_idx, (chunk_tables, is_cont) in enumerate(chunk_table_groups(page["tables"], chunk_size=3)):
+            if idx or chunk_idx:
+                story.append(PageBreak())
+            logger.info("Rendering page %s: %s", idx + 1, page["scope"])
+            scope_label = page["scope"] if not is_cont else f"{page['scope']} (cont.)"
+            story.extend(
+                _build_scope_title(
+                    styles,
+                    scope_label,
+                    anchor=anchor if chunk_idx == 0 else None,
+                )
+            )
+            story.extend(_build_tables_flowables(chunk_tables, styles))
 
     story.append(PageBreak())
     story.extend(_build_disclaimer(styles, report_date))
 
     logger.info("Generating PDF report with %s pages", len(pages) + 1)
-    doc.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+    header_footer = make_header_footer(report_date)
+    doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
     logger.info("Weekly Scoring Board saved to %s", output_path)
     return output_path
 
