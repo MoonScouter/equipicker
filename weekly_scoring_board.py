@@ -563,11 +563,11 @@ def make_header_footer(report_date: date):
             # Right-hand element: logo or EQUIPICKER text
             if LOGO_PATH.exists():
                 logo_width = 100
-                logo_height = 50
+                logo_height = 60
                 canvas.drawImage(
                     str(LOGO_PATH),
                     PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
-                    title_y - (logo_height - 6),  # roughly aligned with title
+                    title_y - (logo_height - 30),  # roughly aligned with title
                     width=logo_width,
                     height=logo_height,
                     preserveAspectRatio=True,
