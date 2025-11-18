@@ -522,12 +522,10 @@ def make_header_footer(report_date: date):
             if LOGO_PATH.exists():
                 logo_width = 60
                 logo_height = 20
-                logo_x = PAGE_SIZE[0] - RIGHT_MARGIN - logo_width
-                logo_y = header_y - logo_height
                 canvas.drawImage(
                     str(LOGO_PATH),
-                    logo_x,
-                    logo_y,
+                    PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
+                    right_y - logo_height,
                     width=logo_width,
                     height=logo_height,
                     preserveAspectRatio=True,
