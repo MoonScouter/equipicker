@@ -491,6 +491,34 @@ def _build_tables_flowables(tables: List[Dict], styles: Dict[str, ParagraphStyle
     return flowables
 
 
+def _build_scope_title(
+    styles: Dict[str, ParagraphStyle],
+    scope_label: str,
+    anchor: Optional[str] = None,
+) -> List:
+    label_text = f'<a name="{anchor}"/>{scope_label}' if anchor else scope_label
+    arrow = Paragraph('<link href="#toc">&#9650;</link>', styles["button"])
+    band = Table(
+        [[Paragraph(label_text, styles["scope"]), arrow]],
+        colWidths=[CONTENT_WIDTH - 50, 50],
+    )
+    band.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (1, 0), SECTION_BAND_COLOR),
+                ("ALIGN", (1, 0), (1, 0), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    # 10pt spacer above band, 6pt below – tweak if needed
+    return [Spacer(1, 20), band, Spacer(1, 20)]
+
+
 def _build_disclaimer(styles: Dict[str, ParagraphStyle], report_date: date) -> List:
     paragraphs = [
         Paragraph("Disclaimer", styles["title"]),
@@ -519,33 +547,48 @@ def make_header_footer(report_date: date):
         canvas.saveState()
         if doc.page > 1:
             header_y = PAGE_SIZE[1] - TOP_MARGIN + 20
+
+            # Title on the left
+            title_y = header_y - 8
+            canvas.setFont("Times-BoldItalic", 12)
+            canvas.setFillColor(BRAND_COLORS["primary"])
+            canvas.drawString(LEFT_MARGIN, title_y, "Weekly Scoring Board")
+
+            # Date just under the title
+            date_y = title_y - 10
+            canvas.setFont("Helvetica", 7)
+            canvas.setFillColor(BRAND_COLORS["muted_text"])
+            canvas.drawString(LEFT_MARGIN, date_y, report_date.strftime("%b %d, %Y"))
+
+            # Right-hand element: logo or EQUIPICKER text
             if LOGO_PATH.exists():
                 logo_width = 60
                 logo_height = 20
                 canvas.drawImage(
                     str(LOGO_PATH),
                     PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
-                    right_y - logo_height,
+                    title_y - (logo_height - 6),  # roughly aligned with title
                     width=logo_width,
                     height=logo_height,
                     preserveAspectRatio=True,
                     mask="auto",
                 )
-                canvas.setFont("Helvetica", 6)
-                canvas.setFillColor(BRAND_COLORS["muted_text"])
+            else:
+                canvas.setFont("Helvetica-Bold", 9)
+                canvas.setFillColor(BRAND_COLORS["secondary"])
                 canvas.drawRightString(
                     PAGE_SIZE[0] - RIGHT_MARGIN,
-                    logo_y - 6,
-                    report_date.strftime("%b %d, %Y"),
+                    title_y,
+                    "EQUIPICKER",
                 )
-            canvas.setFont("Times-BoldItalic", 12)
-            canvas.setFillColor(BRAND_COLORS["primary"])
-            canvas.drawString(LEFT_MARGIN, header_y - 6, "Weekly Scoring Board")
+
+            # Separator line just under the date
+            line_y = date_y - 6
             canvas.setStrokeColor(colors.HexColor("#D6DFEB"))
             canvas.setLineWidth(0.5)
-            line_y = logo_y - 28
             canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
 
+        # Footer
         footer_text = f"Equipicker - Weekly Scoring Board   |   Page {doc.page}"
         canvas.setFillColor(BRAND_COLORS["muted_text"])
         canvas.setFont("Helvetica", 8)
