@@ -45,7 +45,7 @@ HIGHLIGHT_COLOR = colors.HexColor("#0C97FF")
 SECTION_BAND_COLOR = colors.HexColor("#1F4A82")
 TABLE_BAND_COLOR = colors.HexColor("#E3EFFB")
 SCORE_ARROW_COLOR = colors.HexColor("#22B573")
-LOGO_PATH = Path(__file__).resolve().parent / "logo.png"
+LOGO_PATH = Path(__file__).resolve().parent / "logo.jpg"
 
 TABLE_BODY_STYLE = ParagraphStyle(
     "table_body",
@@ -562,8 +562,8 @@ def make_header_footer(report_date: date):
 
             # Right-hand element: logo or EQUIPICKER text
             if LOGO_PATH.exists():
-                logo_width = 60
-                logo_height = 20
+                logo_width = 100
+                logo_height = 50
                 canvas.drawImage(
                     str(LOGO_PATH),
                     PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
