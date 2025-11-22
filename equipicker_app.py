@@ -50,7 +50,7 @@ if st.button("Run all filters"):
         if sector_only_df.empty:
             st.info("No sector column present.")
         else:
-            st.dataframe(sector_only_df.sort_values(["gic_sector"]), width='stretch', hide_index=True)
+            st.dataframe(sector_only_df.sort_values(["sector"]), width='stretch', hide_index=True)
             # Download button for SECTOR-ONLY stats (your request)
             buf = io.BytesIO();
             sector_only_df.to_excel(buf, index=False)
@@ -65,7 +65,7 @@ if st.button("Run all filters"):
         if sector_ind_df.empty:
             st.info("No sector/industry columns present.")
         else:
-            st.dataframe(sector_ind_df.sort_values(["gic_sector", "gic_industry"]),
+            st.dataframe(sector_ind_df.sort_values(["sector", "industry"]),
                          width='stretch', hide_index=True)
             # no download button here (sector/industry is already auto-saved daily)
             if saved_path:
@@ -116,13 +116,13 @@ if st.button("Run all filters"):
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     with tabs[5]:
-        res = peg_value(df, CACHE_DIR)  # uses: peg_ratio, peg_ratio_score, fundamental_total_score, gic_sector, market_cap
+        res = peg_value(df, CACHE_DIR)  # uses: peg_ratio, peg_ratio_score, fundamental_total_score, sector, market_cap
         st.caption("Result set based on PEG ratio: absolute (<1), and total fundamental scoring ≥ 60.")
 
         # display per market-cap bucket
         order = ["Mega","Large","Mid","Small","Micro","Nano","Unknown"]
         cols = [c for c in [
-            "ticker", "gic_sector", "gic_industry", "market_cap",
+            "ticker", "sector", "industry", "market_cap",
             "fundamental_total_score", "fundamental_momentum",
             "peg_ratio", "peg_ratio_score"
         ] if c in res.columns]
