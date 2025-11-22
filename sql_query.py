@@ -48,6 +48,24 @@ fiveago AS (
   FROM ranked
   WHERE rn = 6
 ),
+
+-- NEW: pick date and close ~30 days before latest eod date, from the 50-day hist window
+monthago AS (
+  SELECT
+    h1.ticker,
+    h1.date       AS date_30d_ago,
+    h1.adjusted_close AS adj_close_30d_ago
+  FROM hist h1
+  JOIN latest l
+    ON l.ticker = h1.ticker
+  WHERE h1.date = (
+    SELECT MAX(h2.date)
+    FROM hist h2
+    WHERE h2.ticker = h1.ticker
+      AND h2.date <= DATE_SUB(l.eod_price_date, INTERVAL 30 DAY)
+  )
+),
+
 monthly_hist AS (
   SELECT em.ticker, em.date, em.high, em.low,
          ROW_NUMBER() OVER (PARTITION BY em.ticker ORDER BY em.date DESC) AS rn
@@ -94,8 +112,8 @@ pegdata AS (
 SELECT
   s.ticker,
   tk.market_cap,
-  tk.gic_sector,
-  tk.gic_industry,
+  tk.sector,
+  tk.industry,
   ic.trend,
   s.relative_performance,
   s.relative_volume,
@@ -117,6 +135,11 @@ SELECT
   CASE WHEN ABS(ic.eod_price_used - ic.sma_daily_50) / NULLIF(ic.sma_daily_50,0) <= 0.05 THEN 'yes' ELSE 'no' END AS near_ma50_5pct,
   CASE WHEN ABS(ic.eod_price_used - ic.sma_daily_200)/ NULLIF(ic.sma_daily_200,0) <= 0.05 THEN 'yes' ELSE 'no' END AS near_ma200_5pct,
   100.0 * (lr.last_adj_close / NULLIF(f5.adj_close_5ago, 0) - 1.0) AS `1w_variation`,
+
+  -- NEW: 30-days-ago date and close (from hist)
+  mo.date_30d_ago     AS `1m_date`,
+  mo.adj_close_30d_ago AS `1m_close`,
+
   ic.rsi_daily, ic.rsi_weekly,
   ps.fundamental_total_score,
   ps.fundamental_value,
@@ -139,6 +162,8 @@ LEFT JOIN pillar_scores AS ps
   ON ps.ticker = s.ticker 
 LEFT JOIN fiveago f5
   ON f5.ticker = s.ticker
+LEFT JOIN monthago mo
+  ON mo.ticker = s.ticker
 LEFT JOIN pegdata pd
   ON pd.ticker = s.ticker
 WHERE tk.exclude_from_screener = 0
