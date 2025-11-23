@@ -61,12 +61,12 @@ def _get_dataframe_with_cache(sql: str, cache_file: Path, run_sql: bool, use_cac
         logger.info("Saved query results to %s", cache_file)
     return df
 
-def get_dataframe(run_sql: bool = False) -> pd.DataFrame:
+def get_dataframe(run_sql: bool = False, use_cache: bool = True) -> pd.DataFrame:
     """
     Returns the main screener dataframe (existing behavior). Set run_sql=True to bypass cache.
     """
     cp = cache_path("xlsx")
-    return _get_dataframe_with_cache(SQL_QUERY, cp, run_sql, use_cache=True)
+    return _get_dataframe_with_cache(SQL_QUERY, cp, run_sql, use_cache=use_cache)
 
 def get_scoring_dataframe(run_sql: bool = False, use_cache: bool = True) -> pd.DataFrame:
     """

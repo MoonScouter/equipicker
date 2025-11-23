@@ -4,9 +4,10 @@ from __future__ import annotations
 import logging
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
@@ -23,7 +24,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from equipicker_connect import get_scoring_dataframe
+from xml.sax.saxutils import escape
+
+from equipicker_connect import get_dataframe, get_scoring_dataframe
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +138,23 @@ METRIC_TABLES = [
     {"metric": "pillar_quality", "title": "Top 5 - Quality (P3)"},
     {"metric": "pillar_risk", "title": "Top 5 - Risk (P4)"},
     {"metric": "pillar_momentum", "title": "Top 5 - Momentum (P5)"},
+]
+
+SECTOR_OVERVIEW_ANCHOR = "sector-overview-board"
+POSITIVE_TEXT_HEX = "#0BA360"
+NEGATIVE_TEXT_HEX = "#EB5757"
+NEUTRAL_TEXT_HEX = "#425466"
+BREADTH_THRESHOLD = 50.0
+SECTOR_PULSE_COLUMN_WIDTHS = [150, 115, 90, 90, 70, 25]
+CROSS_SECTOR_COLUMN_WIDTHS = [170, 70, 60, 60, 60, 60, 60]
+ROCKET_ICON = "&#128640;"
+SECTOR_SCORE_COLUMNS = [
+    ("avg_total_score", "fundamental_total_score", "Total Fundamental Score"),
+    ("avg_value", "fundamental_value", "P1"),
+    ("avg_growth", "fundamental_growth", "P2"),
+    ("avg_risk", "fundamental_risk", "P3"),
+    ("avg_quality", "fundamental_quality", "P4"),
+    ("avg_momentum", "fundamental_momentum", "P5"),
 ]
 
 
@@ -270,6 +290,299 @@ def build_tables_for_slice(df: pd.DataFrame) -> List[Dict]:
     return tables
 
 
+def _format_percentage_value(value) -> str:
+    if pd.isna(value):
+        return "N/A"
+    try:
+        return f"{float(value):.2f}%"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _format_ratio(success_count: int, total_count: int) -> Tuple[str, Optional[float]]:
+    if not total_count:
+        return "N/A", np.nan
+    pct_value = round((success_count / total_count) * 100, 2)
+    return f"{pct_value:.2f}%", pct_value
+
+
+def _prepare_sector_overview_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    working = df.copy()
+    working["sector"] = working.get("sector", pd.Series(dtype=str)).fillna("Unspecified")
+    one_m_close = pd.to_numeric(working.get("1m_close"), errors="coerce")
+    eod_price = pd.to_numeric(working.get("eod_price_used"), errors="coerce")
+    market_cap = pd.to_numeric(working.get("market_cap"), errors="coerce")
+
+    valid_prices = (
+        one_m_close.notna()
+        & eod_price.notna()
+        & (one_m_close != 0)
+        & (eod_price != 0)
+    )
+
+    working["market_cap_numeric"] = market_cap
+    working["1m_market_cap"] = np.where(
+        valid_prices,
+        (one_m_close / eod_price) * market_cap,
+        np.nan,
+    )
+    working["1m_price_var_pct_num"] = np.where(
+        valid_prices,
+        (eod_price / one_m_close - 1.0) * 100.0,
+        np.nan,
+    )
+    working["1m_price_var_pct"] = working["1m_price_var_pct_num"].apply(_format_percentage_value)
+    return working
+
+
+def compute_sector_overview_stats(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    processed = _prepare_sector_overview_dataframe(df)
+    results: List[Dict] = []
+    for sector, group in processed.groupby("sector", dropna=False):
+        overlap_mask = group["market_cap_numeric"].notna() & group["1m_market_cap"].notna()
+        sum_current_cap = group.loc[overlap_mask, "market_cap_numeric"].sum()
+        sum_prior_cap = group.loc[overlap_mask, "1m_market_cap"].sum()
+        if sum_prior_cap and not pd.isna(sum_prior_cap):
+            sector_var_num = round((sum_current_cap / sum_prior_cap - 1.0) * 100.0, 2)
+            sector_var = f"{sector_var_num:.2f}%"
+        else:
+            sector_var_num = np.nan
+            sector_var = "N/A"
+
+        valid_var_mask = group["1m_price_var_pct_num"].notna()
+        total_var_count = int(valid_var_mask.sum())
+        positive_var = int((group.loc[valid_var_mask, "1m_price_var_pct_num"] > 0).sum())
+        market_breadth, market_breadth_num = _format_ratio(positive_var, total_var_count)
+
+        rs_daily = pd.to_numeric(group.get("rs_daily"), errors="coerce")
+        rs_sma20 = pd.to_numeric(group.get("rs_sma20"), errors="coerce")
+        valid_rs_mask = rs_daily.notna() & rs_sma20.notna()
+        rs_success = int(((rs_daily > 0) & (rs_daily > rs_sma20) & valid_rs_mask).sum())
+        total_rs = int(valid_rs_mask.sum())
+        rs_breadth, rs_breadth_num = _format_ratio(rs_success, total_rs)
+
+        obvm_daily = pd.to_numeric(group.get("obvm_daily"), errors="coerce")
+        obvm_sma20 = pd.to_numeric(group.get("obvm_sma20"), errors="coerce")
+        valid_obvm_mask = obvm_daily.notna() & obvm_sma20.notna()
+        obvm_success = int(((obvm_daily > 0) & (obvm_daily > obvm_sma20) & valid_obvm_mask).sum())
+        total_obvm = int(valid_obvm_mask.sum())
+        obvm_breadth, obvm_breadth_num = _format_ratio(obvm_success, total_obvm)
+
+        score_avgs = {}
+        for target_col, source_col, _ in SECTOR_SCORE_COLUMNS:
+            score_avgs[target_col] = pd.to_numeric(group.get(source_col), errors="coerce").mean()
+
+        signal_flag = (
+            _breadth_exceeds_threshold(market_breadth_num)
+            and _breadth_exceeds_threshold(rs_breadth_num)
+            and _breadth_exceeds_threshold(obvm_breadth_num)
+        )
+
+        results.append({
+            "sector": sector,
+            "sector_1m_var_pct": sector_var,
+            "sector_1m_var_pct_num": sector_var_num,
+            "market_breadth": market_breadth,
+            "market_breadth_num": market_breadth_num,
+            "rs_breadth": rs_breadth,
+            "rs_breadth_num": rs_breadth_num,
+            "obvm_breadth": obvm_breadth,
+            "obvm_breadth_num": obvm_breadth_num,
+            "signal": signal_flag,
+            **score_avgs,
+        })
+
+    sector_df = pd.DataFrame(results)
+    if not sector_df.empty:
+        sector_df = sector_df.sort_values(
+            by="sector_1m_var_pct_num",
+            ascending=False,
+            na_position="last",
+        ).reset_index(drop=True)
+    return sector_df
+
+
+def _build_sector_anchor_map(pages: List[Dict]) -> Dict[str, str]:
+    anchors: Dict[str, str] = {}
+    for page in pages:
+        if page["title"] == "Entire Universe":
+            continue
+        anchors[page["title"]] = slugify(page["title"])
+    return anchors
+
+
+def _sector_label_cell(sector: str, anchor: Optional[str]) -> Paragraph:
+    label = escape(str(sector or "Unspecified"))
+    if anchor:
+        return Paragraph(f'<link href="#{anchor}">{label}</link>', TABLE_BODY_STYLE)
+    return Paragraph(label, TABLE_BODY_STYLE)
+
+
+def _colored_value_cell(text: str, color_hex: Optional[str]) -> Paragraph:
+    safe_text = escape(text or "N/A")
+    if color_hex:
+        safe_text = f'<font color="{color_hex}">{safe_text}</font>'
+    return Paragraph(safe_text, TABLE_BODY_STYLE)
+
+
+def _variation_color(value: Optional[float]) -> Optional[str]:
+    if value is None or pd.isna(value):
+        return None
+    if value > 0:
+        return POSITIVE_TEXT_HEX
+    if value < 0:
+        return NEGATIVE_TEXT_HEX
+    return None
+
+
+def _breadth_color(value: Optional[float]) -> Optional[str]:
+    if value is None or pd.isna(value):
+        return None
+    return POSITIVE_TEXT_HEX if value > BREADTH_THRESHOLD else NEGATIVE_TEXT_HEX
+
+
+def _breadth_exceeds_threshold(value: Optional[float]) -> bool:
+    return value is not None and not pd.isna(value) and value > BREADTH_THRESHOLD
+
+
+def _build_signal_cell(has_signal: bool) -> Paragraph:
+    if has_signal:
+        return Paragraph(f'<font color="{POSITIVE_TEXT_HEX}">{ROCKET_ICON}</font>', TABLE_BODY_STYLE)
+    return Paragraph("", TABLE_BODY_STYLE)
+
+
+def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str]) -> Table:
+    headers = [
+        "Sector",
+        "1M Market Cap Variation",
+        "Market Breadth",
+        "RS Breadth",
+        "OBVM Breadth",
+        "Signal",
+    ]
+    table_data: List[List] = [headers]
+    span_empty = False
+
+    if sector_stats.empty:
+        table_data.append(
+            [Paragraph("No sector data available.", TABLE_BODY_STYLE)]
+            + [Paragraph("", TABLE_BODY_STYLE) for _ in range(5)]
+        )
+        span_empty = True
+    else:
+        for _, row in sector_stats.iterrows():
+            anchor = anchors.get(row["sector"])
+            table_data.append([
+                _sector_label_cell(row["sector"], anchor),
+                _colored_value_cell(row["sector_1m_var_pct"], _variation_color(row["sector_1m_var_pct_num"])),
+                _colored_value_cell(row["market_breadth"], _breadth_color(row["market_breadth_num"])),
+                _colored_value_cell(row["rs_breadth"], _breadth_color(row["rs_breadth_num"])),
+                _colored_value_cell(row["obvm_breadth"], _breadth_color(row["obvm_breadth_num"])),
+                _build_signal_cell(bool(row.get("signal"))),
+            ])
+
+    table = Table(table_data, colWidths=SECTOR_PULSE_COLUMN_WIDTHS, repeatRows=1)
+    style_cmds = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 0), (-1, 0), BRAND_COLORS["primary"]),
+        ("ALIGN", (1, 0), (-2, 0), "CENTER"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 1), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (1, 1), (4, -1), "CENTER"),
+        ("ALIGN", (5, 1), (5, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("BOX", (0, 0), (4, -1), 0.25, colors.HexColor("#D3E1EA")),
+        ("INNERGRID", (0, 0), (4, -1), 0.25, colors.HexColor("#D3E1EA")),
+        ("ALIGN", (0, 1), (0, -1), "LEFT"),
+        ("BACKGROUND", (5, 1), (5, -1), colors.white),
+    ]
+    for row_idx in range(1, len(table_data)):
+        bg = BRAND_COLORS["row_alt"] if row_idx % 2 else colors.white
+        style_cmds.append(("BACKGROUND", (0, row_idx), (4, row_idx), bg))
+    if span_empty:
+        style_cmds.append(("SPAN", (0, 1), (5, 1)))
+    table.setStyle(TableStyle(style_cmds))
+    return table
+
+
+def _build_cross_sector_table(sector_stats: pd.DataFrame, anchors: Dict[str, str]) -> Table:
+    headers = ["Sector"] + [col[2] for col in SECTOR_SCORE_COLUMNS]
+    table_data: List[List] = [headers]
+    span_empty = False
+    if sector_stats.empty:
+        table_data.append(
+            [Paragraph("No sector scoring data available.", TABLE_BODY_STYLE)]
+            + [Paragraph("", TABLE_BODY_STYLE) for _ in range(len(headers) - 1)]
+        )
+        span_empty = True
+    else:
+        for _, row in sector_stats.iterrows():
+            anchor = anchors.get(row["sector"])
+            row_values: List = [_sector_label_cell(row["sector"], anchor)]
+            for target_col, _, _ in SECTOR_SCORE_COLUMNS:
+                row_values.append(_format_score_badge(row.get(target_col)))
+            table_data.append(row_values)
+
+    table = Table(table_data, colWidths=CROSS_SECTOR_COLUMN_WIDTHS, repeatRows=1)
+    style_cmds = [
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("BACKGROUND", (0, 0), (-1, 0), BRAND_COLORS["primary"]),
+        ("ALIGN", (1, 0), (-1, 0), "CENTER"),
+        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 1), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D3E1EA")),
+        ("ALIGN", (0, 1), (0, -1), "LEFT"),
+    ]
+    for row_idx in range(1, len(table_data)):
+        bg = BRAND_COLORS["row_alt"] if row_idx % 2 else colors.white
+        style_cmds.append(("BACKGROUND", (0, row_idx), (-1, row_idx), bg))
+    if span_empty:
+        style_cmds.append(("SPAN", (0, 1), (-1, 1)))
+    table.setStyle(TableStyle(style_cmds))
+    return table
+
+
+def build_sector_overview_page(
+    styles: Dict[str, ParagraphStyle],
+    sector_stats: pd.DataFrame,
+    anchors: Dict[str, str],
+) -> List:
+    flowables: List = []
+    flowables.extend(
+        _build_scope_title(
+            styles,
+            "Sector Overview Board",
+            anchor=SECTOR_OVERVIEW_ANCHOR,
+        )
+    )
+    flowables.append(Paragraph("Sector Pulse", styles["table_title"]))
+    flowables.append(Spacer(1, 6))
+    flowables.append(_build_sector_pulse_table(sector_stats, anchors))
+    flowables.append(Spacer(1, 18))
+    flowables.append(Paragraph("Cross-Sector Fundamental Scoring", styles["table_title"]))
+    flowables.append(Spacer(1, 6))
+    flowables.append(_build_cross_sector_table(sector_stats, anchors))
+    return flowables
+
+
 def _build_styles():
     sample = getSampleStyleSheet()
     styles = {
@@ -345,11 +658,19 @@ def _build_styles():
     return styles
 
 
-def _build_toc(styles: Dict[str, ParagraphStyle], pages: List[Dict]) -> List:
+def _build_toc(
+    styles: Dict[str, ParagraphStyle],
+    pages: List[Dict],
+    include_sector_overview: bool = False,
+) -> List:
     flowables: List = [
         Paragraph('<a name="toc"/>Table of Contents', styles["title"]),
         Spacer(1, 12),
     ]
+    if include_sector_overview:
+        flowables.append(
+            Paragraph(f'<link href="#{SECTOR_OVERVIEW_ANCHOR}">Sector Overview Board</link>', styles["toc_entry"])
+        )
     for page in pages:
         anchor = slugify(page["title"])
         flowables.append(
@@ -611,10 +932,14 @@ def generate_weekly_scoring_board_pdf(
     if df.empty:
         raise ValueError("Scoring query returned no data.")
 
+    logger.info("Fetching sector overview dataframe (run_sql=%s, use_cache=%s)", run_sql, use_cache)
+    sector_overview_df = get_dataframe(run_sql=run_sql, use_cache=use_cache)
     df = prepare_scoring_dataframe(df)
     pages = build_report_pages(df)
     if not pages:
         raise ValueError("No report pages could be built from scoring data.")
+    sector_stats = compute_sector_overview_stats(sector_overview_df)
+    sector_anchor_map = _build_sector_anchor_map(pages)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -630,7 +955,9 @@ def generate_weekly_scoring_board_pdf(
 
     styles = _build_styles()
     story: List = []
-    story.extend(_build_toc(styles, pages))
+    story.extend(_build_toc(styles, pages, include_sector_overview=True))
+    story.append(PageBreak())
+    story.extend(build_sector_overview_page(styles, sector_stats, sector_anchor_map))
     story.append(PageBreak())
     for idx, page in enumerate(pages):
         anchor = slugify(page["title"])
