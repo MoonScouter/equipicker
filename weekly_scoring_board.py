@@ -161,7 +161,10 @@ NEUTRAL_TEXT_HEX = "#425466"
 BREADTH_THRESHOLD = 50.0
 SECTOR_PULSE_COLUMN_WIDTHS = [170, 80, 80, 80, 80, 50]
 CROSS_SECTOR_COLUMN_WIDTHS = [170, 70, 60, 60, 60, 60, 60]
-ROCKET_ICON = "&#128640;"
+ROCKET_ICON = "&#128640;"  # legacy icon (no longer used but kept for potential reuse)
+POSITIVE_BULLET_COLOR = colors.HexColor("#0BA360")
+NEGATIVE_BULLET_COLOR = colors.HexColor("#EB5757")
+NEUTRAL_BULLET_COLOR = colors.HexColor("#C4CBD6")
 SECTOR_SCORE_COLUMNS = [
     ("avg_total_score", "fundamental_total_score", "Total"),
     ("avg_value", "fundamental_value", "P1"),
@@ -239,6 +242,22 @@ class ScoreBadge(Flowable):
 
 def _format_score_badge(value):
     return ScoreBadge(value)
+
+
+class SectorPulseBullet(Flowable):
+    def __init__(self, fill_color: colors.Color, diameter: int = 14):
+        super().__init__()
+        self.fill_color = fill_color
+        self.diameter = diameter
+
+    def wrap(self, availWidth, availHeight):
+        return self.diameter, self.diameter
+
+    def draw(self):
+        radius = self.diameter / 2
+        self.canv.setFillColor(self.fill_color)
+        self.canv.setStrokeColor(self.fill_color)
+        self.canv.circle(radius, radius, radius - 1, stroke=0, fill=1)
 
 
 def prepare_scoring_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -464,10 +483,20 @@ def _breadth_exceeds_threshold(value: Optional[float]) -> bool:
     return value is not None and not pd.isna(value) and value > BREADTH_THRESHOLD
 
 
-def _build_signal_cell(has_signal: bool) -> Paragraph:
-    if has_signal:
-        return Paragraph(f'<font color="{POSITIVE_TEXT_HEX}">{ROCKET_ICON}</font>', SECTOR_OVERVIEW_BODY_STYLE)
-    return Paragraph("", SECTOR_OVERVIEW_BODY_STYLE)
+def _build_signal_cell(color_codes: List[Optional[str]]) -> Flowable:
+    cleaned = [code for code in color_codes if code]
+    if len(cleaned) != len(color_codes):
+        fill = NEUTRAL_BULLET_COLOR
+    else:
+        all_positive = all(code == POSITIVE_TEXT_HEX for code in cleaned)
+        all_negative = all(code == NEGATIVE_TEXT_HEX for code in cleaned)
+        if all_positive:
+            fill = POSITIVE_BULLET_COLOR
+        elif all_negative:
+            fill = NEGATIVE_BULLET_COLOR
+        else:
+            fill = NEUTRAL_BULLET_COLOR
+    return SectorPulseBullet(fill)
 
 
 def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str]) -> Table:
@@ -491,13 +520,17 @@ def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
     else:
         for _, row in sector_stats.iterrows():
             anchor = anchors.get(row["sector"])
+            variation_color = _variation_color(row["sector_1m_var_pct_num"])
+            market_color = _breadth_color(row["market_breadth_num"])
+            rs_color = _breadth_color(row["rs_breadth_num"])
+            obvm_color = _breadth_color(row["obvm_breadth_num"])
             table_data.append([
                 _sector_label_cell(row["sector"], anchor),
-                _colored_value_cell(row["sector_1m_var_pct"], _variation_color(row["sector_1m_var_pct_num"]), centered=True),
-                _colored_value_cell(row["market_breadth"], _breadth_color(row["market_breadth_num"]), centered=True),
-                _colored_value_cell(row["rs_breadth"], _breadth_color(row["rs_breadth_num"]), centered=True),
-                _colored_value_cell(row["obvm_breadth"], _breadth_color(row["obvm_breadth_num"]), centered=True),
-                _build_signal_cell(bool(row.get("signal"))),
+                _colored_value_cell(row["sector_1m_var_pct"], variation_color, centered=True),
+                _colored_value_cell(row["market_breadth"], market_color, centered=True),
+                _colored_value_cell(row["rs_breadth"], rs_color, centered=True),
+                _colored_value_cell(row["obvm_breadth"], obvm_color, centered=True),
+                _build_signal_cell([variation_color, market_color, rs_color, obvm_color]),
             ])
 
     table = Table(
