@@ -165,6 +165,7 @@ ROCKET_ICON = "&#128640;"  # legacy icon (no longer used but kept for potential 
 POSITIVE_BULLET_COLOR = colors.HexColor("#0BA360")
 NEGATIVE_BULLET_COLOR = colors.HexColor("#EB5757")
 NEUTRAL_BULLET_COLOR = colors.HexColor("#C4CBD6")
+SECTOR_SCORE_BADGE_DIAMETER = 18
 SECTOR_SCORE_COLUMNS = [
     ("avg_total_score", "fundamental_total_score", "Total"),
     ("avg_value", "fundamental_value", "P1"),
@@ -240,8 +241,8 @@ class ScoreBadge(Flowable):
         self.canv.drawString(cx - (text_width / 2), cy - 3, text)
 
 
-def _format_score_badge(value):
-    return ScoreBadge(value)
+def _format_score_badge(value, diameter: int = 22):
+    return ScoreBadge(value, diameter=diameter)
 
 
 class SectorPulseBullet(Flowable):
@@ -552,8 +553,8 @@ def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
         ("ALIGN", (5, 1), (5, -1), "CENTER"),
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ("BOX", (0, 0), (4, -1), 0.25, colors.HexColor("#D3E1EA")),
         ("INNERGRID", (0, 0), (4, -1), 0.25, colors.HexColor("#D3E1EA")),
         ("ALIGN", (0, 1), (0, -1), "LEFT"),
@@ -585,7 +586,7 @@ def _build_cross_sector_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
             anchor = anchors.get(row["sector"])
             row_values: List = [_sector_label_cell(row["sector"], anchor)]
             for target_col, _, _ in SECTOR_SCORE_COLUMNS:
-                row_values.append(_format_score_badge(row.get(target_col)))
+                row_values.append(_format_score_badge(row.get(target_col), diameter=SECTOR_SCORE_BADGE_DIAMETER))
             table_data.append(row_values)
 
     table = Table(
