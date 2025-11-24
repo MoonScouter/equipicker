@@ -66,6 +66,12 @@ SECTOR_OVERVIEW_BODY_STYLE = ParagraphStyle(
     leading=9.2,
 )
 
+SECTOR_OVERVIEW_CENTER_STYLE = ParagraphStyle(
+    "sector_overview_center",
+    parent=SECTOR_OVERVIEW_BODY_STYLE,
+    alignment=TA_CENTER,
+)
+
 SCORE_COLOR_BANDS: List = [
     (80, colors.HexColor("#0BA360")),
     (60, colors.HexColor("#6FCF97")),
@@ -153,7 +159,7 @@ POSITIVE_TEXT_HEX = "#0BA360"
 NEGATIVE_TEXT_HEX = "#EB5757"
 NEUTRAL_TEXT_HEX = "#425466"
 BREADTH_THRESHOLD = 50.0
-SECTOR_PULSE_COLUMN_WIDTHS = [170, 95, 95, 90, 90, 30]
+SECTOR_PULSE_COLUMN_WIDTHS = [170, 80, 80, 80, 80, 50]
 CROSS_SECTOR_COLUMN_WIDTHS = [170, 70, 60, 60, 60, 60, 60]
 ROCKET_ICON = "&#128640;"
 SECTOR_SCORE_COLUMNS = [
@@ -430,11 +436,12 @@ def _sector_label_cell(sector: str, anchor: Optional[str]) -> Paragraph:
     return Paragraph(label, SECTOR_OVERVIEW_BODY_STYLE)
 
 
-def _colored_value_cell(text: str, color_hex: Optional[str]) -> Paragraph:
+def _colored_value_cell(text: str, color_hex: Optional[str], centered: bool = False) -> Paragraph:
     safe_text = escape(text or "N/A")
     if color_hex:
         safe_text = f'<font color="{color_hex}">{safe_text}</font>'
-    return Paragraph(safe_text, SECTOR_OVERVIEW_BODY_STYLE)
+    style = SECTOR_OVERVIEW_CENTER_STYLE if centered else SECTOR_OVERVIEW_BODY_STYLE
+    return Paragraph(safe_text, style)
 
 
 def _variation_color(value: Optional[float]) -> Optional[str]:
@@ -486,14 +493,19 @@ def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
             anchor = anchors.get(row["sector"])
             table_data.append([
                 _sector_label_cell(row["sector"], anchor),
-                _colored_value_cell(row["sector_1m_var_pct"], _variation_color(row["sector_1m_var_pct_num"])),
-                _colored_value_cell(row["market_breadth"], _breadth_color(row["market_breadth_num"])),
-                _colored_value_cell(row["rs_breadth"], _breadth_color(row["rs_breadth_num"])),
-                _colored_value_cell(row["obvm_breadth"], _breadth_color(row["obvm_breadth_num"])),
+                _colored_value_cell(row["sector_1m_var_pct"], _variation_color(row["sector_1m_var_pct_num"]), centered=True),
+                _colored_value_cell(row["market_breadth"], _breadth_color(row["market_breadth_num"]), centered=True),
+                _colored_value_cell(row["rs_breadth"], _breadth_color(row["rs_breadth_num"]), centered=True),
+                _colored_value_cell(row["obvm_breadth"], _breadth_color(row["obvm_breadth_num"]), centered=True),
                 _build_signal_cell(bool(row.get("signal"))),
             ])
 
-    table = Table(table_data, colWidths=SECTOR_PULSE_COLUMN_WIDTHS, repeatRows=1)
+    table = Table(
+        table_data,
+        colWidths=SECTOR_PULSE_COLUMN_WIDTHS,
+        repeatRows=1,
+        hAlign="LEFT",
+    )
     style_cmds = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, 0), 9),
@@ -543,7 +555,12 @@ def _build_cross_sector_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
                 row_values.append(_format_score_badge(row.get(target_col)))
             table_data.append(row_values)
 
-    table = Table(table_data, colWidths=CROSS_SECTOR_COLUMN_WIDTHS, repeatRows=1)
+    table = Table(
+        table_data,
+        colWidths=CROSS_SECTOR_COLUMN_WIDTHS,
+        repeatRows=1,
+        hAlign="LEFT",
+    )
     style_cmds = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, 0), 9),
@@ -883,48 +900,47 @@ def _build_disclaimer(styles: Dict[str, ParagraphStyle], report_date: date) -> L
 def make_header_footer(report_date: date):
     def _draw(canvas, doc):
         canvas.saveState()
-        if doc.page > 1:
-            header_y = PAGE_SIZE[1] - TOP_MARGIN + 20
+        header_y = PAGE_SIZE[1] - TOP_MARGIN + 20
 
-            # Title on the left
-            title_y = header_y - 8
-            canvas.setFont("Times-BoldItalic", 12)
-            canvas.setFillColor(BRAND_COLORS["primary"])
-            canvas.drawString(LEFT_MARGIN, title_y, REPORT_NAME)
+        # Title on the left
+        title_y = header_y - 8
+        canvas.setFont("Times-BoldItalic", 12)
+        canvas.setFillColor(BRAND_COLORS["primary"])
+        canvas.drawString(LEFT_MARGIN, title_y, REPORT_NAME)
 
-            # Date just under the title
-            date_y = title_y - 10
-            canvas.setFont("Helvetica", 7)
-            canvas.setFillColor(BRAND_COLORS["muted_text"])
-            canvas.drawString(LEFT_MARGIN, date_y, report_date.strftime("%b %d, %Y"))
+        # Date just under the title
+        date_y = title_y - 10
+        canvas.setFont("Helvetica", 7)
+        canvas.setFillColor(BRAND_COLORS["muted_text"])
+        canvas.drawString(LEFT_MARGIN, date_y, report_date.strftime("%b %d, %Y"))
 
-            # Right-hand element: logo or EQUIPICKER text
-            if LOGO_PATH.exists():
-                logo_width = 100
-                logo_height = 60
-                canvas.drawImage(
-                    str(LOGO_PATH),
-                    PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
-                    title_y - (logo_height - 30),  # roughly aligned with title
-                    width=logo_width,
-                    height=logo_height,
-                    preserveAspectRatio=True,
-                    mask="auto",
-                )
-            else:
-                canvas.setFont("Helvetica-Bold", 9)
-                canvas.setFillColor(BRAND_COLORS["secondary"])
-                canvas.drawRightString(
-                    PAGE_SIZE[0] - RIGHT_MARGIN,
-                    title_y,
-                    "EQUIPICKER",
-                )
+        # Right-hand element: logo or EQUIPICKER text
+        if LOGO_PATH.exists():
+            logo_width = 100
+            logo_height = 60
+            canvas.drawImage(
+                str(LOGO_PATH),
+                PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
+                title_y - (logo_height - 30),  # roughly aligned with title
+                width=logo_width,
+                height=logo_height,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
+        else:
+            canvas.setFont("Helvetica-Bold", 9)
+            canvas.setFillColor(BRAND_COLORS["secondary"])
+            canvas.drawRightString(
+                PAGE_SIZE[0] - RIGHT_MARGIN,
+                title_y,
+                "EQUIPICKER",
+            )
 
-            # Separator line just under the date
-            line_y = date_y - 6
-            canvas.setStrokeColor(colors.HexColor("#D6DFEB"))
-            canvas.setLineWidth(0.5)
-            canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
+        # Separator line just under the date
+        line_y = date_y - 6
+        canvas.setStrokeColor(colors.HexColor("#D6DFEB"))
+        canvas.setLineWidth(0.5)
+        canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
 
         # Footer
         footer_text = f"Equipicker - {REPORT_NAME}   |   Page {doc.page}"
@@ -1004,7 +1020,7 @@ def main():
     today = date.today()
     reports_dir = Path("reports")
     filename = reports_dir / f"Weekly_Scoring_Board_{today.isoformat()}.pdf"
-    generated = generate_weekly_scoring_board_pdf(filename, report_date=today, run_sql=True, use_cache=False)
+    generated = generate_weekly_scoring_board_pdf(filename, report_date=today, run_sql=False, use_cache=True)
     print(f"Weekly scoring board written to: {generated.resolve()}")
 
 
