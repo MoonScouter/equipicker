@@ -49,6 +49,7 @@ SECTION_BAND_COLOR = colors.HexColor("#1F4A82")
 TABLE_BAND_COLOR = colors.HexColor("#E3EFFB")
 SCORE_ARROW_COLOR = colors.HexColor("#22B573")
 LOGO_PATH = Path(__file__).resolve().parent / "logo.jpg"
+REPORT_NAME = "Scoring Board Report"
 
 TABLE_BODY_STYLE = ParagraphStyle(
     "table_body",
@@ -56,6 +57,13 @@ TABLE_BODY_STYLE = ParagraphStyle(
     fontSize=6.2,
     leading=7.2,
     textColor=BRAND_COLORS["muted_text"],
+)
+
+SECTOR_OVERVIEW_BODY_STYLE = ParagraphStyle(
+    "sector_overview_body",
+    parent=TABLE_BODY_STYLE,
+    fontSize=8.2,
+    leading=9.2,
 )
 
 SCORE_COLOR_BANDS: List = [
@@ -145,11 +153,11 @@ POSITIVE_TEXT_HEX = "#0BA360"
 NEGATIVE_TEXT_HEX = "#EB5757"
 NEUTRAL_TEXT_HEX = "#425466"
 BREADTH_THRESHOLD = 50.0
-SECTOR_PULSE_COLUMN_WIDTHS = [150, 115, 90, 90, 70, 25]
+SECTOR_PULSE_COLUMN_WIDTHS = [170, 95, 95, 90, 90, 30]
 CROSS_SECTOR_COLUMN_WIDTHS = [170, 70, 60, 60, 60, 60, 60]
 ROCKET_ICON = "&#128640;"
 SECTOR_SCORE_COLUMNS = [
-    ("avg_total_score", "fundamental_total_score", "Total Fundamental Score"),
+    ("avg_total_score", "fundamental_total_score", "Total"),
     ("avg_value", "fundamental_value", "P1"),
     ("avg_growth", "fundamental_growth", "P2"),
     ("avg_risk", "fundamental_risk", "P3"),
@@ -418,15 +426,15 @@ def _build_sector_anchor_map(pages: List[Dict]) -> Dict[str, str]:
 def _sector_label_cell(sector: str, anchor: Optional[str]) -> Paragraph:
     label = escape(str(sector or "Unspecified"))
     if anchor:
-        return Paragraph(f'<link href="#{anchor}">{label}</link>', TABLE_BODY_STYLE)
-    return Paragraph(label, TABLE_BODY_STYLE)
+        return Paragraph(f'<link href="#{anchor}">{label}</link>', SECTOR_OVERVIEW_BODY_STYLE)
+    return Paragraph(label, SECTOR_OVERVIEW_BODY_STYLE)
 
 
 def _colored_value_cell(text: str, color_hex: Optional[str]) -> Paragraph:
     safe_text = escape(text or "N/A")
     if color_hex:
         safe_text = f'<font color="{color_hex}">{safe_text}</font>'
-    return Paragraph(safe_text, TABLE_BODY_STYLE)
+    return Paragraph(safe_text, SECTOR_OVERVIEW_BODY_STYLE)
 
 
 def _variation_color(value: Optional[float]) -> Optional[str]:
@@ -451,26 +459,26 @@ def _breadth_exceeds_threshold(value: Optional[float]) -> bool:
 
 def _build_signal_cell(has_signal: bool) -> Paragraph:
     if has_signal:
-        return Paragraph(f'<font color="{POSITIVE_TEXT_HEX}">{ROCKET_ICON}</font>', TABLE_BODY_STYLE)
-    return Paragraph("", TABLE_BODY_STYLE)
+        return Paragraph(f'<font color="{POSITIVE_TEXT_HEX}">{ROCKET_ICON}</font>', SECTOR_OVERVIEW_BODY_STYLE)
+    return Paragraph("", SECTOR_OVERVIEW_BODY_STYLE)
 
 
 def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str]) -> Table:
     headers = [
         "Sector",
-        "1M Market Cap Variation",
-        "Market Breadth",
-        "RS Breadth",
-        "OBVM Breadth",
-        "Signal",
+        "1-month %",
+        "Mk Breadth",
+        "Rel. Perf. Breadth",
+        "Rel Vol. Breadth",
+        "",
     ]
     table_data: List[List] = [headers]
     span_empty = False
 
     if sector_stats.empty:
         table_data.append(
-            [Paragraph("No sector data available.", TABLE_BODY_STYLE)]
-            + [Paragraph("", TABLE_BODY_STYLE) for _ in range(5)]
+            [Paragraph("No sector data available.", SECTOR_OVERVIEW_BODY_STYLE)]
+            + [Paragraph("", SECTOR_OVERVIEW_BODY_STYLE) for _ in range(5)]
         )
         span_empty = True
     else:
@@ -488,12 +496,12 @@ def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
     table = Table(table_data, colWidths=SECTOR_PULSE_COLUMN_WIDTHS, repeatRows=1)
     style_cmds = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_COLORS["primary"]),
         ("ALIGN", (1, 0), (-2, 0), "CENTER"),
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 1), (-1, -1), 7),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("ALIGN", (1, 1), (4, -1), "CENTER"),
         ("ALIGN", (5, 1), (5, -1), "CENTER"),
@@ -504,7 +512,9 @@ def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
         ("BOX", (0, 0), (4, -1), 0.25, colors.HexColor("#D3E1EA")),
         ("INNERGRID", (0, 0), (4, -1), 0.25, colors.HexColor("#D3E1EA")),
         ("ALIGN", (0, 1), (0, -1), "LEFT"),
+        ("BACKGROUND", (5, 0), (5, 0), colors.white),
         ("BACKGROUND", (5, 1), (5, -1), colors.white),
+        ("TEXTCOLOR", (5, 0), (5, 0), colors.white),
     ]
     for row_idx in range(1, len(table_data)):
         bg = BRAND_COLORS["row_alt"] if row_idx % 2 else colors.white
@@ -521,8 +531,8 @@ def _build_cross_sector_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
     span_empty = False
     if sector_stats.empty:
         table_data.append(
-            [Paragraph("No sector scoring data available.", TABLE_BODY_STYLE)]
-            + [Paragraph("", TABLE_BODY_STYLE) for _ in range(len(headers) - 1)]
+            [Paragraph("No sector scoring data available.", SECTOR_OVERVIEW_BODY_STYLE)]
+            + [Paragraph("", SECTOR_OVERVIEW_BODY_STYLE) for _ in range(len(headers) - 1)]
         )
         span_empty = True
     else:
@@ -536,12 +546,12 @@ def _build_cross_sector_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
     table = Table(table_data, colWidths=CROSS_SECTOR_COLUMN_WIDTHS, repeatRows=1)
     style_cmds = [
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("BACKGROUND", (0, 0), (-1, 0), BRAND_COLORS["primary"]),
         ("ALIGN", (1, 0), (-1, 0), "CENTER"),
         ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 1), (-1, -1), 7),
+        ("FONTSIZE", (0, 1), (-1, -1), 8),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("ALIGN", (1, 1), (-1, -1), "CENTER"),
         ("LEFTPADDING", (0, 0), (-1, -1), 6),
@@ -556,6 +566,23 @@ def _build_cross_sector_table(sector_stats: pd.DataFrame, anchors: Dict[str, str
         style_cmds.append(("BACKGROUND", (0, row_idx), (-1, row_idx), bg))
     if span_empty:
         style_cmds.append(("SPAN", (0, 1), (-1, 1)))
+    else:
+        for offset, (target_col, _, _) in enumerate(SECTOR_SCORE_COLUMNS, start=1):
+            col_values = pd.to_numeric(sector_stats[target_col], errors="coerce")
+            valid_values = col_values.dropna()
+            if valid_values.empty:
+                continue
+            max_value = valid_values.max()
+            max_rows = col_values[col_values == max_value].index.tolist()
+            for row_idx in max_rows:
+                table_row = row_idx + 1
+                style_cmds.extend(
+                    [
+                        ("BOX", (offset, table_row), (offset, table_row), 1.5, HIGHLIGHT_COLOR),
+                        ("LINEBEFORE", (offset, table_row), (offset, table_row), 1.5, HIGHLIGHT_COLOR),
+                        ("LINEAFTER", (offset, table_row), (offset, table_row), 1.5, HIGHLIGHT_COLOR),
+                    ]
+                )
     table.setStyle(TableStyle(style_cmds))
     return table
 
@@ -571,14 +598,15 @@ def build_sector_overview_page(
             styles,
             "Sector Overview Board",
             anchor=SECTOR_OVERVIEW_ANCHOR,
+            arrow_target=None,
         )
     )
-    flowables.append(Paragraph("Sector Pulse", styles["table_title"]))
-    flowables.append(Spacer(1, 6))
+    flowables.append(_table_title_band("Sector Pulse", styles))
+    flowables.append(Spacer(1, 4))
     flowables.append(_build_sector_pulse_table(sector_stats, anchors))
     flowables.append(Spacer(1, 18))
-    flowables.append(Paragraph("Cross-Sector Fundamental Scoring", styles["table_title"]))
-    flowables.append(Spacer(1, 6))
+    flowables.append(_table_title_band("Cross-Sector Fundamental Scoring", styles))
+    flowables.append(Spacer(1, 4))
     flowables.append(_build_cross_sector_table(sector_stats, anchors))
     return flowables
 
@@ -658,34 +686,9 @@ def _build_styles():
     return styles
 
 
-def _build_toc(
-    styles: Dict[str, ParagraphStyle],
-    pages: List[Dict],
-    include_sector_overview: bool = False,
-) -> List:
-    flowables: List = [
-        Paragraph('<a name="toc"/>Table of Contents', styles["title"]),
-        Spacer(1, 12),
-    ]
-    if include_sector_overview:
-        flowables.append(
-            Paragraph(f'<link href="#{SECTOR_OVERVIEW_ANCHOR}">Sector Overview Board</link>', styles["toc_entry"])
-        )
-    for page in pages:
-        anchor = slugify(page["title"])
-        flowables.append(
-            Paragraph(f'<link href="#{anchor}">{page["scope"]}</link>', styles["toc_entry"])
-        )
-    return flowables
-
-
-def _build_table_block(table_info: Dict, styles: Dict[str, ParagraphStyle]) -> KeepTogether:
-    table = _create_data_table(table_info["data"], table_info["metric"])
-    title_band = Table(
-        [[Paragraph(table_info["title"], styles["table_title"])]],
-        colWidths=[CONTENT_WIDTH],
-    )
-    title_band.setStyle(
+def _table_title_band(title: str, styles: Dict[str, ParagraphStyle]) -> Table:
+    band = Table([[Paragraph(title, styles["table_title"])]], colWidths=[CONTENT_WIDTH])
+    band.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, -1), TABLE_BAND_COLOR),
@@ -696,6 +699,12 @@ def _build_table_block(table_info: Dict, styles: Dict[str, ParagraphStyle]) -> K
             ]
         )
     )
+    return band
+
+
+def _build_table_block(table_info: Dict, styles: Dict[str, ParagraphStyle]) -> KeepTogether:
+    table = _create_data_table(table_info["data"], table_info["metric"])
+    title_band = _table_title_band(table_info["title"], styles)
     return KeepTogether([
         title_band,
         Spacer(1, 4),
@@ -777,10 +786,14 @@ def _build_page_header(
     report_date: date,
     scope_label: str,
     anchor: Optional[str] = None,
+    arrow_target: Optional[str] = SECTOR_OVERVIEW_ANCHOR,
 ) -> List:
     header: List = []
     label_text = f'<a name="{anchor}"/>{scope_label}' if anchor else scope_label
-    arrow = Paragraph('<link href="#toc">&#9650;</link>', styles["button"])
+    arrow = Paragraph(
+        f'<link href="#{arrow_target}">&#9650;</link>',
+        styles["button"],
+    ) if arrow_target else Paragraph("", styles["button"])
     header_table = Table(
         [[Paragraph(label_text, styles["scope"]), arrow]],
         colWidths=[CONTENT_WIDTH - 50, 50],
@@ -816,9 +829,13 @@ def _build_scope_title(
     styles: Dict[str, ParagraphStyle],
     scope_label: str,
     anchor: Optional[str] = None,
+    arrow_target: Optional[str] = SECTOR_OVERVIEW_ANCHOR,
 ) -> List:
     label_text = f'<a name="{anchor}"/>{scope_label}' if anchor else scope_label
-    arrow = Paragraph('<link href="#toc">&#9650;</link>', styles["button"])
+    arrow = Paragraph(
+        f'<link href="#{arrow_target}">&#9650;</link>',
+        styles["button"],
+    ) if arrow_target else Paragraph("", styles["button"])
     band = Table(
         [[Paragraph(label_text, styles["scope"]), arrow]],
         colWidths=[CONTENT_WIDTH - 50, 50],
@@ -873,7 +890,7 @@ def make_header_footer(report_date: date):
             title_y = header_y - 8
             canvas.setFont("Times-BoldItalic", 12)
             canvas.setFillColor(BRAND_COLORS["primary"])
-            canvas.drawString(LEFT_MARGIN, title_y, "Weekly Scoring Board")
+            canvas.drawString(LEFT_MARGIN, title_y, REPORT_NAME)
 
             # Date just under the title
             date_y = title_y - 10
@@ -910,7 +927,7 @@ def make_header_footer(report_date: date):
             canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
 
         # Footer
-        footer_text = f"Equipicker - Weekly Scoring Board   |   Page {doc.page}"
+        footer_text = f"Equipicker - {REPORT_NAME}   |   Page {doc.page}"
         canvas.setFillColor(BRAND_COLORS["muted_text"])
         canvas.setFont("Helvetica", 8)
         canvas.drawString(LEFT_MARGIN, BOTTOM_MARGIN - 20, footer_text)
@@ -955,8 +972,6 @@ def generate_weekly_scoring_board_pdf(
 
     styles = _build_styles()
     story: List = []
-    story.extend(_build_toc(styles, pages, include_sector_overview=True))
-    story.append(PageBreak())
     story.extend(build_sector_overview_page(styles, sector_stats, sector_anchor_map))
     story.append(PageBreak())
     for idx, page in enumerate(pages):
