@@ -5,6 +5,7 @@ import logging
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import json
 
 import pandas as pd
 import numpy as np
@@ -26,7 +27,7 @@ from reportlab.platypus import (
 
 from xml.sax.saxutils import escape
 
-from equipicker_connect import get_dataframe, get_scoring_dataframe
+from equipicker_connect import get_dataframe, get_scoring_dataframe, CACHE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,14 @@ SECTOR_OVERVIEW_CENTER_STYLE = ParagraphStyle(
     "sector_overview_center",
     parent=SECTOR_OVERVIEW_BODY_STYLE,
     alignment=TA_CENTER,
+)
+
+SUMMARY_BODY_STYLE = ParagraphStyle(
+    "summary_body",
+    parent=TABLE_BODY_STYLE,
+    fontSize=10.5,
+    leading=14,
+    textColor=BRAND_COLORS["muted_text"],
 )
 
 SCORE_COLOR_BANDS: List = [
@@ -155,6 +164,7 @@ METRIC_TABLES = [
 ]
 
 SECTOR_OVERVIEW_ANCHOR = "sector-overview-board"
+SUMMARY_PAGE_ANCHOR = "summary-highlights"
 POSITIVE_TEXT_HEX = "#0BA360"
 NEGATIVE_TEXT_HEX = "#EB5757"
 NEUTRAL_TEXT_HEX = "#425466"
@@ -166,6 +176,7 @@ POSITIVE_BULLET_COLOR = colors.HexColor("#0BA360")
 NEGATIVE_BULLET_COLOR = colors.HexColor("#EB5757")
 NEUTRAL_BULLET_COLOR = colors.HexColor("#C4CBD6")
 SECTOR_SCORE_BADGE_DIAMETER = 18
+SECTOR_NOTE_TEXT = "Note: P1 - Value, P2 - Growth, P3 - Quality, P4 - Risk, P5 - Momentum"
 SECTOR_SCORE_COLUMNS = [
     ("avg_total_score", "fundamental_total_score", "Total"),
     ("avg_value", "fundamental_value", "P1"),
@@ -408,7 +419,9 @@ def compute_sector_overview_stats(df: pd.DataFrame) -> pd.DataFrame:
 
         score_avgs = {}
         for target_col, source_col, _ in SECTOR_SCORE_COLUMNS:
-            score_avgs[target_col] = pd.to_numeric(group.get(source_col), errors="coerce").mean()
+            col_values = pd.to_numeric(group.get(source_col), errors="coerce")
+            mean_value = col_values.mean()
+            score_avgs[target_col] = round(mean_value, 2) if pd.notna(mean_value) else np.nan
 
         signal_flag = (
             _breadth_exceeds_threshold(market_breadth_num)
@@ -447,6 +460,43 @@ def _build_sector_anchor_map(pages: List[Dict]) -> Dict[str, str]:
             continue
         anchors[page["title"]] = slugify(page["title"])
     return anchors
+
+
+def build_summary_narratives(sector_stats: pd.DataFrame) -> Dict[str, List[str]]:
+    narratives = {"sector_pulse": [], "cross_sector": []}
+    if sector_stats is None or sector_stats.empty:
+        narratives["sector_pulse"].append("No sector pulse data available for this run.")
+        narratives["cross_sector"].append("No cross-sector scoring data available for this run.")
+        return narratives
+
+    var_stats = sector_stats.dropna(subset=["sector_1m_var_pct_num"])
+    if not var_stats.empty:
+        leader = var_stats.iloc[0]
+        laggard = var_stats.iloc[-1]
+        narratives["sector_pulse"].append(
+            f"{leader['sector']} leads 1-month market-cap variation at {leader['sector_1m_var_pct']} while {laggard['sector']} trails at {laggard['sector_1m_var_pct']}."
+        )
+        breadth_leader = var_stats.sort_values("market_breadth_num", ascending=False).iloc[0]
+        narratives["sector_pulse"].append(
+            f"Best breadth participation: {breadth_leader['sector']} with {breadth_leader['market_breadth']} positive movers."
+        )
+    else:
+        narratives["sector_pulse"].append("Sector variation data unavailable.")
+
+    score_stats = sector_stats.dropna(subset=["avg_total_score"])
+    if not score_stats.empty:
+        top_total = score_stats.sort_values("avg_total_score", ascending=False).iloc[0]
+        narratives["cross_sector"].append(
+            f"Highest average total score: {top_total['sector']} ({top_total['avg_total_score']:.0f})."
+        )
+        momentum_leader = score_stats.sort_values("avg_momentum", ascending=False).iloc[0]
+        narratives["cross_sector"].append(
+            f"Momentum standout: {momentum_leader['sector']} ({momentum_leader['avg_momentum']:.0f})."
+        )
+    else:
+        narratives["cross_sector"].append("Cross-sector scoring data unavailable.")
+
+    return narratives
 
 
 def _sector_label_cell(sector: str, anchor: Optional[str]) -> Paragraph:
@@ -498,6 +548,21 @@ def _build_signal_cell(color_codes: List[Optional[str]]) -> Flowable:
         else:
             fill = NEUTRAL_BULLET_COLOR
     return SectorPulseBullet(fill)
+
+
+def export_sector_stats_json(sector_stats: pd.DataFrame, report_date: date) -> Optional[Path]:
+    output = CACHE_DIR / f"sector_data_json_{report_date.isoformat()}.json"
+    try:
+        if sector_stats is None or sector_stats.empty:
+            payload: List[Dict] = []
+        else:
+            filtered = sector_stats[[col for col in sector_stats.columns if not str(col).endswith("_num")]]
+            payload = json.loads(filtered.to_json(orient="records"))
+        output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return output
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to export sector stats JSON: %s", exc)
+        return None
 
 
 def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str]) -> Table:
@@ -642,6 +707,7 @@ def build_sector_overview_page(
     styles: Dict[str, ParagraphStyle],
     sector_stats: pd.DataFrame,
     anchors: Dict[str, str],
+    include_note: bool = True,
 ) -> List:
     flowables: List = []
     flowables.extend(
@@ -659,6 +725,37 @@ def build_sector_overview_page(
     flowables.append(_table_title_band("Cross-Sector Fundamental Scoring", styles))
     flowables.append(Spacer(1, 4))
     flowables.append(_build_cross_sector_table(sector_stats, anchors))
+    if include_note:
+        flowables.append(Spacer(1, 3))
+        flowables.append(Paragraph(SECTOR_NOTE_TEXT, styles["table_note"]))
+    return flowables
+
+
+def build_summary_page(
+    styles: Dict[str, ParagraphStyle],
+    summary_lines: Dict[str, List[str]],
+) -> List:
+    flowables: List = []
+    flowables.extend(
+        _build_scope_title(
+            styles,
+            "Scoring Board Highlights",
+            anchor=SUMMARY_PAGE_ANCHOR,
+            arrow_target=SECTOR_OVERVIEW_ANCHOR,
+        )
+    )
+
+    def _section(title: str, lines: List[str]):
+        section: List = []
+        section.append(_table_title_band(title, styles))
+        section.append(Spacer(1, 6))
+        for line in lines or ["Narrative unavailable."]:
+            section.append(Paragraph(line, styles["summary_body"]))
+            section.append(Spacer(1, 6))
+        return section
+
+    flowables.extend(_section("Sector Pulse Narrative", summary_lines.get("sector_pulse", [])))
+    flowables.extend(_section("Cross-Sector Fundamental Narrative", summary_lines.get("cross_sector", [])))
     return flowables
 
 
@@ -725,6 +822,15 @@ def _build_styles():
             fontName="Helvetica-Bold",
             textColor=BRAND_COLORS["primary"],
             spaceAfter=0,
+        ),
+        "summary_body": SUMMARY_BODY_STYLE,
+        "table_note": ParagraphStyle(
+            "table_note",
+            parent=sample["BodyText"],
+            fontSize=9,
+            italic=True,
+            leading=12,
+            textColor=BRAND_COLORS["muted_text"],
         ),
         "disclaimer_body": ParagraphStyle(
             "disclaimer_body",
@@ -986,6 +1092,7 @@ def make_header_footer(report_date: date):
     return _draw
 
 
+
 def generate_weekly_scoring_board_pdf(
     output_path: Path | str,
     report_date: Optional[date] = None,
@@ -1007,6 +1114,8 @@ def generate_weekly_scoring_board_pdf(
         raise ValueError("No report pages could be built from scoring data.")
     sector_stats = compute_sector_overview_stats(sector_overview_df)
     sector_anchor_map = _build_sector_anchor_map(pages)
+    summary_lines = build_summary_narratives(sector_stats)
+    export_sector_stats_json(sector_stats, report_date)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1022,6 +1131,8 @@ def generate_weekly_scoring_board_pdf(
 
     styles = _build_styles()
     story: List = []
+    story.extend(build_summary_page(styles, summary_lines))
+    story.append(PageBreak())
     story.extend(build_sector_overview_page(styles, sector_stats, sector_anchor_map))
     story.append(PageBreak())
     for idx, page in enumerate(pages):
