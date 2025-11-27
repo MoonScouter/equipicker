@@ -68,12 +68,23 @@ monthago AS (
 
 monthly_hist AS (
   SELECT em.ticker, em.date, em.high, em.low,
+  em.rs, em.obvm,
          ROW_NUMBER() OVER (PARTITION BY em.ticker ORDER BY em.date DESC) AS rn
   FROM eod_monthly em
   JOIN latest l
     ON l.ticker = em.ticker
    AND em.date <= l.eod_price_date
 ),
+
+monthly_last AS (
+  SELECT
+    ticker,
+    rs  AS rs_monthly,
+    obvm AS obvm_monthly
+  FROM monthly_hist
+  WHERE rn = 1
+),
+
 monthly_agg AS (
   SELECT
     ticker,
@@ -82,6 +93,7 @@ monthly_agg AS (
   FROM monthly_hist
   GROUP BY ticker
 ),
+
 pillar_scores AS (
   SELECT
     fs.ticker,
@@ -148,7 +160,9 @@ SELECT
   ps.fundamental_quality,
   ps.fundamental_momentum,
   pd.peg_ratio,
-  pd.peg_ratio_score
+  pd.peg_ratio_score,
+  ml.rs_monthly,
+  ml.obvm_monthly
 FROM technical_scoring AS s
 JOIN tickers AS tk
   ON tk.ticker = s.ticker
@@ -158,6 +172,8 @@ JOIN lastrow AS lr
   ON lr.ticker = s.ticker
 LEFT JOIN monthly_agg AS ma
   ON ma.ticker = s.ticker
+LEFT JOIN monthly_last AS ml
+  ON ml.ticker = s.ticker
 LEFT JOIN pillar_scores AS ps
   ON ps.ticker = s.ticker 
 LEFT JOIN fiveago f5
