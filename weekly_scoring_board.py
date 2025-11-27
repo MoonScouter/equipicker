@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -23,6 +24,7 @@ from reportlab.platypus import (
     Spacer,
     Table,
     TableStyle,
+    Image,
 )
 
 from xml.sax.saxutils import escape
@@ -50,6 +52,8 @@ SECTION_BAND_COLOR = colors.HexColor("#1F4A82")
 TABLE_BAND_COLOR = colors.HexColor("#E3EFFB")
 SCORE_ARROW_COLOR = colors.HexColor("#22B573")
 LOGO_PATH = Path(__file__).resolve().parent / "logo.jpg"
+BANNER_PATH = Path(__file__).resolve().parent / "banner.png"
+BANNER_HEIGHT = 140
 REPORT_NAME = "Scoring Board Report"
 
 TABLE_BODY_STYLE = ParagraphStyle(
@@ -78,6 +82,25 @@ SUMMARY_BODY_STYLE = ParagraphStyle(
     parent=TABLE_BODY_STYLE,
     fontSize=10.5,
     leading=14,
+    textColor=BRAND_COLORS["muted_text"],
+)
+
+MASTHEAD_STYLE = ParagraphStyle(
+    "masthead",
+    parent=TABLE_BODY_STYLE,
+    fontName="Times-Bold",
+    fontSize=28,
+    leading=32,
+    alignment=TA_CENTER,
+    textColor=BRAND_COLORS["primary"],
+)
+
+MASTHEAD_DATE_STYLE = ParagraphStyle(
+    "masthead_date",
+    parent=TABLE_BODY_STYLE,
+    fontSize=10,
+    italic=True,
+    alignment=TA_CENTER,
     textColor=BRAND_COLORS["muted_text"],
 )
 
@@ -165,6 +188,7 @@ METRIC_TABLES = [
 
 SECTOR_OVERVIEW_ANCHOR = "sector-overview-board"
 SUMMARY_PAGE_ANCHOR = "summary-highlights"
+SUMMARY_TEXT_FILE = CACHE_DIR / "text_generated.json"
 POSITIVE_TEXT_HEX = "#0BA360"
 NEGATIVE_TEXT_HEX = "#EB5757"
 NEUTRAL_TEXT_HEX = "#425466"
@@ -177,6 +201,11 @@ NEGATIVE_BULLET_COLOR = colors.HexColor("#EB5757")
 NEUTRAL_BULLET_COLOR = colors.HexColor("#C4CBD6")
 SECTOR_SCORE_BADGE_DIAMETER = 18
 SECTOR_NOTE_TEXT = "Note: P1 - Value, P2 - Growth, P3 - Quality, P4 - Risk, P5 - Momentum"
+SUMMARY_SECTION_DEFS = [
+    ("sector_pulse_snapshot", "Sector Pulse Snapshot"),
+    ("fundamental_heatmap_snapshot", "Fundamental Heatmap at a Glance"),
+    ("how_to_read", "How to read this report"),
+]
 SECTOR_SCORE_COLUMNS = [
     ("avg_total_score", "fundamental_total_score", "Total"),
     ("avg_value", "fundamental_value", "P1"),
@@ -258,6 +287,22 @@ def _format_score_badge(value, diameter: int = 22):
 
 class SectorPulseBullet(Flowable):
     def __init__(self, fill_color: colors.Color, diameter: int = 14):
+        super().__init__()
+        self.fill_color = fill_color
+        self.diameter = diameter
+
+    def wrap(self, availWidth, availHeight):
+        return self.diameter, self.diameter
+
+    def draw(self):
+        radius = self.diameter / 2
+        self.canv.setFillColor(self.fill_color)
+        self.canv.setStrokeColor(self.fill_color)
+        self.canv.circle(radius, radius, radius - 1, stroke=0, fill=1)
+
+
+class MiniScoreDot(Flowable):
+    def __init__(self, fill_color: colors.Color, diameter: int = 10):
         super().__init__()
         self.fill_color = fill_color
         self.diameter = diameter
@@ -462,43 +507,6 @@ def _build_sector_anchor_map(pages: List[Dict]) -> Dict[str, str]:
     return anchors
 
 
-def build_summary_narratives(sector_stats: pd.DataFrame) -> Dict[str, List[str]]:
-    narratives = {"sector_pulse": [], "cross_sector": []}
-    if sector_stats is None or sector_stats.empty:
-        narratives["sector_pulse"].append("No sector pulse data available for this run.")
-        narratives["cross_sector"].append("No cross-sector scoring data available for this run.")
-        return narratives
-
-    var_stats = sector_stats.dropna(subset=["sector_1m_var_pct_num"])
-    if not var_stats.empty:
-        leader = var_stats.iloc[0]
-        laggard = var_stats.iloc[-1]
-        narratives["sector_pulse"].append(
-            f"{leader['sector']} leads 1-month market-cap variation at {leader['sector_1m_var_pct']} while {laggard['sector']} trails at {laggard['sector_1m_var_pct']}."
-        )
-        breadth_leader = var_stats.sort_values("market_breadth_num", ascending=False).iloc[0]
-        narratives["sector_pulse"].append(
-            f"Best breadth participation: {breadth_leader['sector']} with {breadth_leader['market_breadth']} positive movers."
-        )
-    else:
-        narratives["sector_pulse"].append("Sector variation data unavailable.")
-
-    score_stats = sector_stats.dropna(subset=["avg_total_score"])
-    if not score_stats.empty:
-        top_total = score_stats.sort_values("avg_total_score", ascending=False).iloc[0]
-        narratives["cross_sector"].append(
-            f"Highest average total score: {top_total['sector']} ({top_total['avg_total_score']:.0f})."
-        )
-        momentum_leader = score_stats.sort_values("avg_momentum", ascending=False).iloc[0]
-        narratives["cross_sector"].append(
-            f"Momentum standout: {momentum_leader['sector']} ({momentum_leader['avg_momentum']:.0f})."
-        )
-    else:
-        narratives["cross_sector"].append("Cross-sector scoring data unavailable.")
-
-    return narratives
-
-
 def _sector_label_cell(sector: str, anchor: Optional[str]) -> Paragraph:
     label = escape(str(sector or "Unspecified"))
     if anchor:
@@ -563,6 +571,43 @@ def export_sector_stats_json(sector_stats: pd.DataFrame, report_date: date) -> O
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to export sector stats JSON: %s", exc)
         return None
+
+
+def load_or_initialize_summary_text() -> Dict[str, List[str]]:
+    defaults = {key: ["TBD"] for key, _ in SUMMARY_SECTION_DEFS}
+    path = SUMMARY_TEXT_FILE
+    data: Dict[str, List[str]]
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = defaults.copy()
+        except Exception:
+            data = defaults.copy()
+    else:
+        data = defaults.copy()
+
+    updated = False
+    for key in defaults:
+        if key not in data or not isinstance(data[key], list) or not data[key]:
+            data[key] = ["TBD"]
+            updated = True
+
+    if updated or not path.exists():
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return data
+
+
+def _extract_score_from_text(text: str) -> Optional[float]:
+    if not text:
+        return None
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if match:
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
+    return None
 
 
 def _build_sector_pulse_table(sector_stats: pd.DataFrame, anchors: Dict[str, str]) -> Table:
@@ -734,28 +779,136 @@ def build_sector_overview_page(
 def build_summary_page(
     styles: Dict[str, ParagraphStyle],
     summary_lines: Dict[str, List[str]],
+    report_date: date,
 ) -> List:
     flowables: List = []
-    flowables.extend(
-        _build_scope_title(
-            styles,
-            "Scoring Board Highlights",
-            anchor=SUMMARY_PAGE_ANCHOR,
-            arrow_target=SECTOR_OVERVIEW_ANCHOR,
+
+    flowables.append(Spacer(1, 36))
+    if BANNER_PATH.exists():
+        banner = Image(str(BANNER_PATH), width=CONTENT_WIDTH, height=BANNER_HEIGHT)
+        flowables.append(banner)
+        flowables.append(Spacer(1, 20))
+    else:
+        flowables.append(Spacer(1, 10))
+    masthead = Table(
+        [[Paragraph("Equipicker Scoring Board Report", ParagraphStyle(
+            "masthead_band",
+            parent=styles["scope"],
+            alignment=TA_CENTER,
+            textColor=colors.white,
+            fontSize=16,
+            fontName="Helvetica-Bold",
+        ))]],
+        colWidths=[CONTENT_WIDTH],
+    )
+    masthead.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), SECTION_BAND_COLOR),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
         )
     )
+    flowables.append(masthead)
+    flowables.append(Paragraph(report_date.strftime("%B %d, %Y"), styles["masthead_date"]))
+    flowables.append(Spacer(1, 18))
 
-    def _section(title: str, lines: List[str]):
-        section: List = []
-        section.append(_table_title_band(title, styles))
-        section.append(Spacer(1, 6))
-        for line in lines or ["Narrative unavailable."]:
-            section.append(Paragraph(line, styles["summary_body"]))
-            section.append(Spacer(1, 6))
-        return section
+    def _card(title: str, lines: List[str], include_dots: bool = False, width: float = CONTENT_WIDTH / 2 - 6):
+        header = _table_title_band(title, styles, width=width)
+        body_rows = []
+        entries = lines or ["TBD"]
+        for entry in entries:
+            if include_dots:
+                score = _extract_score_from_text(entry)
+                color = _score_fill_color(score) if score is not None else colors.HexColor("#B0BEC5")
+                body_rows.append([MiniScoreDot(color, diameter=10), Paragraph(escape(entry), styles["summary_body"])])
+            else:
+                body_rows.append([Paragraph(f"• {escape(entry)}", styles["summary_body"])])
+        if include_dots:
+            body_table = Table(body_rows, colWidths=[12, width - 20])
+            body_style = TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        else:
+            body_table = Table([[row[0]] for row in body_rows], colWidths=[width - 8])
+            body_style = TableStyle(
+                [
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        body_table.setStyle(body_style)
+        card = Table([[header], [body_table]], colWidths=[width])
+        card.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#D3E1EA")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]
+            )
+        )
+        return card
 
-    flowables.extend(_section("Sector Pulse Narrative", summary_lines.get("sector_pulse", [])))
-    flowables.extend(_section("Cross-Sector Fundamental Narrative", summary_lines.get("cross_sector", [])))
+    left_card = _card(
+        "Sector Pulse Snapshot",
+        summary_lines.get("sector_pulse_snapshot", []),
+        include_dots=False,
+        width=CONTENT_WIDTH / 2 - 8,
+    )
+    right_card = _card(
+        "Fundamental Heatmap at a Glance",
+        summary_lines.get("fundamental_heatmap_snapshot", []),
+        include_dots=True,
+        width=CONTENT_WIDTH / 2 - 8,
+    )
+    cards_table = Table([[left_card, right_card]], colWidths=[CONTENT_WIDTH / 2 - 6, CONTENT_WIDTH / 2 - 6])
+    cards_table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    flowables.append(cards_table)
+    flowables.append(Spacer(1, 14))
+
+    rule = Table([[""]], colWidths=[CONTENT_WIDTH])
+    rule.setStyle(
+        TableStyle(
+            [
+                ("LINEBELOW", (0, 0), (-1, -1), 0.6, colors.HexColor("#D3E1EA")),
+            ]
+        )
+    )
+    flowables.append(rule)
+    flowables.append(Spacer(1, 10))
+
+    how_to_read_card = _card(
+        "How to read this report",
+        summary_lines.get("how_to_read", []),
+        include_dots=False,
+        width=CONTENT_WIDTH,
+    )
+    flowables.append(how_to_read_card)
     return flowables
 
 
@@ -824,6 +977,8 @@ def _build_styles():
             spaceAfter=0,
         ),
         "summary_body": SUMMARY_BODY_STYLE,
+        "masthead": MASTHEAD_STYLE,
+        "masthead_date": MASTHEAD_DATE_STYLE,
         "table_note": ParagraphStyle(
             "table_note",
             parent=sample["BodyText"],
@@ -843,14 +998,14 @@ def _build_styles():
     return styles
 
 
-def _table_title_band(title: str, styles: Dict[str, ParagraphStyle]) -> Table:
-    band = Table([[Paragraph(title, styles["table_title"])]], colWidths=[CONTENT_WIDTH])
+def _table_title_band(title: str, styles: Dict[str, ParagraphStyle], width: float = CONTENT_WIDTH) -> Table:
+    band = Table([[Paragraph(title, styles["table_title"])]], colWidths=[width])
     band.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, -1), TABLE_BAND_COLOR),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 2),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ]
@@ -1042,45 +1197,64 @@ def make_header_footer(report_date: date):
         canvas.saveState()
         header_y = PAGE_SIZE[1] - TOP_MARGIN + 20
 
-        # Title on the left
-        title_y = header_y - 8
-        canvas.setFont("Times-BoldItalic", 12)
-        canvas.setFillColor(BRAND_COLORS["primary"])
-        canvas.drawString(LEFT_MARGIN, title_y, REPORT_NAME)
-
-        # Date just under the title
-        date_y = title_y - 10
-        canvas.setFont("Helvetica", 7)
-        canvas.setFillColor(BRAND_COLORS["muted_text"])
-        canvas.drawString(LEFT_MARGIN, date_y, report_date.strftime("%b %d, %Y"))
-
-        # Right-hand element: logo or EQUIPICKER text
-        if LOGO_PATH.exists():
-            logo_width = 100
-            logo_height = 60
-            canvas.drawImage(
-                str(LOGO_PATH),
-                PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
-                title_y - (logo_height - 30),  # roughly aligned with title
-                width=logo_width,
-                height=logo_height,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
+        if doc.page == 1:
+            title_y = header_y - 8
+            if LOGO_PATH.exists():
+                logo_width = 120
+                logo_height = 70
+                canvas.drawImage(
+                    str(LOGO_PATH),
+                    PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
+                    title_y - (logo_height - 30),
+                    width=logo_width,
+                    height=logo_height,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            else:
+                canvas.setFont("Helvetica-Bold", 12)
+                canvas.setFillColor(BRAND_COLORS["secondary"])
+                canvas.drawRightString(
+                    PAGE_SIZE[0] - RIGHT_MARGIN,
+                    title_y,
+                    "EQUIPICKER",
+                )
         else:
-            canvas.setFont("Helvetica-Bold", 9)
-            canvas.setFillColor(BRAND_COLORS["secondary"])
-            canvas.drawRightString(
-                PAGE_SIZE[0] - RIGHT_MARGIN,
-                title_y,
-                "EQUIPICKER",
-            )
+            title_y = header_y - 8
+            canvas.setFont("Times-BoldItalic", 12)
+            canvas.setFillColor(BRAND_COLORS["primary"])
+            canvas.drawString(LEFT_MARGIN, title_y, REPORT_NAME)
 
-        # Separator line just under the date
-        line_y = date_y - 6
-        canvas.setStrokeColor(colors.HexColor("#D6DFEB"))
-        canvas.setLineWidth(0.5)
-        canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
+            date_y = title_y - 10
+            canvas.setFont("Helvetica", 7)
+            canvas.setFillColor(BRAND_COLORS["muted_text"])
+            canvas.drawString(LEFT_MARGIN, date_y, report_date.strftime("%b %d, %Y"))
+
+            if LOGO_PATH.exists():
+                logo_width = 100
+                logo_height = 60
+                canvas.drawImage(
+                    str(LOGO_PATH),
+                    PAGE_SIZE[0] - RIGHT_MARGIN - logo_width,
+                    title_y - (logo_height - 30),
+                    width=logo_width,
+                    height=logo_height,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            else:
+                canvas.setFont("Helvetica-Bold", 9)
+                canvas.setFillColor(BRAND_COLORS["secondary"])
+                canvas.drawRightString(
+                    PAGE_SIZE[0] - RIGHT_MARGIN,
+                    title_y,
+                    "EQUIPICKER",
+                )
+
+            line_y = date_y - 6
+            canvas.setStrokeColor(colors.HexColor("#D6DFEB"))
+            canvas.setLineWidth(0.5)
+            canvas.line(LEFT_MARGIN, line_y, PAGE_SIZE[0] - RIGHT_MARGIN, line_y)
 
         # Footer
         footer_text = f"Equipicker - {REPORT_NAME}   |   Page {doc.page}"
@@ -1114,7 +1288,7 @@ def generate_weekly_scoring_board_pdf(
         raise ValueError("No report pages could be built from scoring data.")
     sector_stats = compute_sector_overview_stats(sector_overview_df)
     sector_anchor_map = _build_sector_anchor_map(pages)
-    summary_lines = build_summary_narratives(sector_stats)
+    summary_lines = load_or_initialize_summary_text()
     export_sector_stats_json(sector_stats, report_date)
 
     output_path = Path(output_path)
@@ -1131,7 +1305,7 @@ def generate_weekly_scoring_board_pdf(
 
     styles = _build_styles()
     story: List = []
-    story.extend(build_summary_page(styles, summary_lines))
+    story.extend(build_summary_page(styles, summary_lines, report_date))
     story.append(PageBreak())
     story.extend(build_sector_overview_page(styles, sector_stats, sector_anchor_map))
     story.append(PageBreak())
