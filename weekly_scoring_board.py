@@ -15,6 +15,8 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     Flowable,
     KeepTogether,
@@ -56,9 +58,50 @@ BANNER_PATH = Path(__file__).resolve().parent / "banner.png"
 BANNER_HEIGHT = 140
 REPORT_NAME = "Scoring Board Report"
 
+# unicode-capable font registration
+UNICODE_FONT_NAME = "EquipickerSans"
+UNICODE_FONT_BOLD = "EquipickerSans-Bold"
+_FONT_CANDIDATE_PAIRS = [
+    (
+        Path(__file__).resolve().parent / "DejaVuSans.ttf",
+        Path(__file__).resolve().parent / "DejaVuSans-Bold.ttf",
+    ),
+    (
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ),
+    (
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+    ),
+    (
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/arialbd.ttf"),
+    ),
+]
+_font_registered = False
+for regular, bold in _FONT_CANDIDATE_PAIRS:
+    try:
+        if regular.exists() and bold.exists():
+            pdfmetrics.registerFont(TTFont(UNICODE_FONT_NAME, str(regular)))
+            pdfmetrics.registerFont(TTFont(UNICODE_FONT_BOLD, str(bold)))
+            pdfmetrics.registerFontFamily(
+                UNICODE_FONT_NAME,
+                normal=UNICODE_FONT_NAME,
+                bold=UNICODE_FONT_BOLD,
+                italic=UNICODE_FONT_NAME,
+                boldItalic=UNICODE_FONT_BOLD,
+            )
+            _font_registered = True
+            break
+    except Exception as exc:  # pragma: no cover - best-effort font registration
+        logger.warning("Failed to register font %s / %s: %s", regular, bold, exc)
+if not _font_registered:
+    UNICODE_FONT_NAME = "Helvetica"
+
 TABLE_BODY_STYLE = ParagraphStyle(
     "table_body",
-    fontName="Helvetica",
+    fontName=UNICODE_FONT_NAME,
     fontSize=6.2,
     leading=7.2,
     textColor=BRAND_COLORS["muted_text"],
@@ -189,6 +232,7 @@ METRIC_TABLES = [
 SECTOR_OVERVIEW_ANCHOR = "sector-overview-board"
 SUMMARY_PAGE_ANCHOR = "summary-highlights"
 SUMMARY_TEXT_FILE = CACHE_DIR / "text_generated.json"
+DISCLAIMER_TEXT_FILE = CACHE_DIR / "disclaimer_text.json"
 POSITIVE_TEXT_HEX = "#0BA360"
 NEGATIVE_TEXT_HEX = "#EB5757"
 NEUTRAL_TEXT_HEX = "#425466"
@@ -211,6 +255,14 @@ SUMMARY_SECTION_DEFS = [
     ("fundamental_heatmap_snapshot", "Fundamental Heatmap at a Glance"),
     ("how_to_read", "How to read this report"),
 ]
+DISCLAIMER_SECTION_DEFS = [
+    ("metodologie", "Metodologie"),
+    ("sector_pulse", "Sector Pulse"),
+    ("cross_sector", "Cross-Sector Fundamental Scoring"),
+    ("top_companies", "Topurile de companii"),
+    ("disclaimer", "Disclaimer"),
+]
+DISCLAIMER_PAGE_BREAK_SECTIONS = {"top_companies"}
 SECTOR_SCORE_COLUMNS = [
     ("avg_total_score", "fundamental_total_score", "Total"),
     ("avg_value", "fundamental_value", "P1"),
@@ -603,6 +655,63 @@ def load_or_initialize_summary_text() -> Dict[str, List[str]]:
     return data
 
 
+def load_or_initialize_disclaimer_text() -> Dict[str, List[str]]:
+    defaults = {
+        "metodologie": [
+            "În această secțiune îți explicăm, pe scurt și simplu, cum să înțelegi datele și scorurile pe care le-ai găsit în raportul nostru. Tot ce vezi aici este rezultatul unei metodologii proprii Equipicker, creată special pentru investitorii care vor să se orienteze rapid într-o piață dinamică, fără să piardă vremea cu zgomotul de fundal.",
+        ],
+        "sector_pulse": [
+            "Tabelul Sector Pulse îți arată cum se mișcă fiecare sector din piață, dintr-o privire. Iată ce înseamnă fiecare coloană:",
+            "• <b>1-month %</b> – reprezintă variația capitalizării sectoriale din ultima lună. Dacă procentul e pozitiv, sectorul a crescut în ultimele 30 de zile.",
+            "• <b>Market Breadth</b> – procentul de companii din sector care au înregistrat creșteri în ultima lună. Un nivel de peste 50% înseamnă că majoritatea companiilor „trag sectorul în sus”.",
+            "• <b>Relative Performance Breadth</b> – câte dintre companiile sectorului performează mai bine decât S&P 500 în prezent.",
+            "• <b>Relative Volume Breadth</b> – câte companii înregistrează intrări de bani în prezent.",
+            "Culorile de lângă fiecare sector sunt o formă rapidă de codificare vizuală:",
+            "• <font color=\"#0BA360\"><b><font size=\"15\">●</font> Verde</b></font> – toți indicatorii sunt bullish: sectorul a crescut în ultima lună, peste jumătate din companii au performanță mai bună decât piața și volum pozitiv (intrări de bani).",
+            "• <font color=\"#EB5757\"><b><font size=\"15\">●</font> Roșu</b></font> – toți indicatorii sunt bearish: sectorul a scăzut, majoritatea companiilor subperformează, iar volumele sunt predominant negative (ieșiri de bani).",
+            "• <font color=\"#A0A8B5\"><b><font size=\"15\">●</font> Gri</b></font> – situație mixtă, fără o direcție clară.",
+            "Sectoarele sunt afișate în ordine descrescătoare în funcție de variația lunară a capitalizării bursiere.",
+        ],
+        "cross_sector": [
+            "Aici ai o imagine de ansamblu asupra scorurilor fundamentale pentru fiecare sector – atât scorul total, cât și scorurile pe piloni specifici. Cu cât scorul este mai mare, cu atât sectorul stă mai bine la acel capitol. Cadrăm automat cele mai ridicate valori pentru a le evidenția vizual.",
+            "La ce se referă acești piloni? Sunt 5 piloni de analiză fundamentală, gândiți pentru a acoperi toate unghiurile importante când analizezi o companie:",
+            "• <b>Value</b> – dacă acțiunea este scumpă sau ieftină în raport cu alte companii similare, prin prisma multiplilor de evaluare relativă și a consistenței politicilor de remunerare a acționarilor.",
+            "• <b>Growth</b> – cât de repede scalează afacerea: vânzări, profituri, marje.",
+            "• <b>Quality</b> – stabilitate și eficiență în utilizarea capitalului, sustenabilitatea profiturilor și capacitatea de conversie a acestora în cash.",
+            "• <b>Risk</b> – risc asociat bilanțului: gradul de îndatorare, riscul de lichiditate și cât de robustă este structura financiară.",
+            "• <b>Momentum</b> – soliditatea rezultatelor din trimestrul cel mai recent în ceea ce privește creșterea veniturilor, profitabilitatea și marjele.",
+            "Dacă vrei să aprofundezi cum se calculează fiecare scor și ce semnificație are, găsești detalii complete pe pagina noastră: &#128073; <link href=\"https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/\"><u>https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/</u></link>",
+        ],
+        "top_companies": [
+            "În paginile dedicate topurilor ai cele mai bine cotate companii din perspectiva scoring-urilor fundamentale calculate prin metodologia Equipicker, atât la nivelul întregii piețe (universul Equipicker = S&P 500 + Nasdaq 100 + companii cu lichiditate mai mică, dar relevante), cât și pentru fiecare sector în parte. Pentru fiecare grup, îți prezentăm:",
+            "• Top 5 companii după scorul total;",
+            "• Top 5 pentru fiecare pilon fundamental.",
+        ],
+        "disclaimer": [
+            "Lista companiilor prezentate are scop informativ. Nu este o recomandare de investiție, ci un instrument de selecție și orientare. Tu ești cel care decide ce analizează mai departe și în ce investește – noi îți oferim doar un punct de plecare structurat, eficient și ușor de folosit.",
+        ],
+    }
+    path = DISCLAIMER_TEXT_FILE
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = defaults.copy()
+        except Exception:
+            data = defaults.copy()
+    else:
+        data = defaults.copy()
+
+    updated = False
+    for key, value in defaults.items():
+        if key not in data or not isinstance(data[key], list) or not data[key]:
+            data[key] = value
+            updated = True
+    if updated or not path.exists():
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return data
+
+
 def _extract_score_from_text(text: str) -> Optional[float]:
     if not text:
         return None
@@ -796,7 +905,7 @@ def build_summary_page(
 ) -> List:
     flowables: List = []
 
-    flowables.append(Spacer(1, 36))
+    flowables.append(Spacer(1, 26))
     if BANNER_PATH.exists():
         banner = Image(str(BANNER_PATH), width=CONTENT_WIDTH, height=BANNER_HEIGHT)
         flowables.append(banner)
@@ -992,10 +1101,17 @@ def _build_styles():
         "summary_body": SUMMARY_BODY_STYLE,
         "masthead": MASTHEAD_STYLE,
         "masthead_date": MASTHEAD_DATE_STYLE,
+        "disclaimer_title": ParagraphStyle(
+            "disclaimer_title",
+            parent=sample["Heading3"],
+            fontName=UNICODE_FONT_NAME,
+            fontSize=12,
+            textColor=colors.white,
+        ),
         "table_note": ParagraphStyle(
             "table_note",
             parent=sample["BodyText"],
-            fontName="Helvetica-Oblique",
+            fontName=UNICODE_FONT_NAME,
             fontSize=6,
             leading=8,
             textColor=BRAND_COLORS["muted_text"],
@@ -1003,8 +1119,9 @@ def _build_styles():
         "disclaimer_body": ParagraphStyle(
             "disclaimer_body",
             parent=sample["BodyText"],
+            fontName=UNICODE_FONT_NAME,
             fontSize=10,
-            leading=14,
+            leading=13,
             textColor=BRAND_COLORS["muted_text"],
         ),
     }
@@ -1021,6 +1138,22 @@ def _table_title_band(title: str, styles: Dict[str, ParagraphStyle], width: floa
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 2),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return band
+
+
+def _disclaimer_title_band(title: str, styles: Dict[str, ParagraphStyle], width: float = CONTENT_WIDTH) -> Table:
+    band = Table([[Paragraph(title, styles["disclaimer_title"])]], colWidths=[width])
+    band.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), SECTION_BAND_COLOR),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ]
         )
     )
@@ -1183,26 +1316,21 @@ def _build_scope_title(
 
 
 def _build_disclaimer(styles: Dict[str, ParagraphStyle], report_date: date) -> List:
-    paragraphs = [
-        Paragraph("Disclaimer", styles["title"]),
-        Paragraph(
-            "This Weekly Scoring Board is generated from Equipicker's quantitative models and summarizes the highest scoring equities based on fundamental pillars.",
-            styles["disclaimer_body"],
-        ),
-        Paragraph(
-            "Scores express relative strength within our universe and should not be interpreted as personalized investment advice, a solicitation, or a guarantee of future performance.",
-            styles["disclaimer_body"],
-        ),
-        Paragraph(
-            "Investors should perform their own due diligence, review all available financial disclosures, and consult a licensed financial advisor before taking action.",
-            styles["disclaimer_body"],
-        ),
-        Paragraph(
-            "This document is provided for informational purposes only. Equipicker and its affiliates assume no responsibility for losses arising from reliance on these materials.",
-            styles["disclaimer_body"],
-        ),
-    ]
-    return paragraphs
+    content = load_or_initialize_disclaimer_text()
+    flowables: List = []
+    flowables.append(Spacer(1, 20))
+    for key, title in DISCLAIMER_SECTION_DEFS:
+        if key in DISCLAIMER_PAGE_BREAK_SECTIONS and flowables:
+            flowables.append(PageBreak())
+            flowables.append(Spacer(1, 20))
+        else:
+            flowables.append(Spacer(1, 6))
+        flowables.append(_disclaimer_title_band(title, styles))
+        paragraphs = content.get(key, ["TBD"])
+        for paragraph in paragraphs:
+            flowables.append(Paragraph(paragraph, styles["disclaimer_body"]))
+            flowables.append(Spacer(1, 4))
+    return flowables
 
 
 def make_header_footer(report_date: date):
