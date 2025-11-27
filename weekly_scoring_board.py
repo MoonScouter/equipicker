@@ -200,7 +200,12 @@ POSITIVE_BULLET_COLOR = colors.HexColor("#0BA360")
 NEGATIVE_BULLET_COLOR = colors.HexColor("#EB5757")
 NEUTRAL_BULLET_COLOR = colors.HexColor("#C4CBD6")
 SECTOR_SCORE_BADGE_DIAMETER = 18
-SECTOR_NOTE_TEXT = "Note: P1 - Value, P2 - Growth, P3 - Quality, P4 - Risk, P5 - Momentum"
+SECTOR_NOTE_TEXT = (
+    "Note: P1 - Value, P2 - Growth, P3 - Quality, P4 - Risk, P5 - Momentum; "
+    'For explanations on scoring methodology, check '
+    '<link href="https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/">'
+    "<u>this Equipicker guide</u></link>."
+)
 SUMMARY_SECTION_DEFS = [
     ("sector_pulse_snapshot", "Sector Pulse Snapshot"),
     ("fundamental_heatmap_snapshot", "Fundamental Heatmap at a Glance"),
@@ -753,6 +758,7 @@ def build_sector_overview_page(
     sector_stats: pd.DataFrame,
     anchors: Dict[str, str],
     include_note: bool = True,
+    eod_date: Optional[str] = None,
 ) -> List:
     flowables: List = []
     flowables.extend(
@@ -766,12 +772,19 @@ def build_sector_overview_page(
     flowables.append(_table_title_band("Sector Pulse", styles))
     flowables.append(Spacer(1, 4))
     flowables.append(_build_sector_pulse_table(sector_stats, anchors))
-    flowables.append(Spacer(1, 18))
+    if include_note:
+        note_text = (
+            f"Note: 1-month variation and Market breadth are computed from price moves over the 30 days ending on {eod_date or 'latest close'}; "
+            f"Relative Performance and Relative Volume breadth are based on indicators as of {eod_date or 'latest close'}."
+        )
+        flowables.append(Spacer(1, 3))
+        flowables.append(Paragraph(note_text, styles["table_note"]))
+    flowables.append(Spacer(1, 10))
     flowables.append(_table_title_band("Cross-Sector Fundamental Scoring", styles))
     flowables.append(Spacer(1, 4))
     flowables.append(_build_cross_sector_table(sector_stats, anchors))
     if include_note:
-        flowables.append(Spacer(1, 3))
+        flowables.append(Spacer(1, 2))
         flowables.append(Paragraph(SECTOR_NOTE_TEXT, styles["table_note"]))
     return flowables
 
@@ -982,9 +995,9 @@ def _build_styles():
         "table_note": ParagraphStyle(
             "table_note",
             parent=sample["BodyText"],
-            fontSize=9,
-            italic=True,
-            leading=12,
+            fontName="Helvetica-Oblique",
+            fontSize=6,
+            leading=8,
             textColor=BRAND_COLORS["muted_text"],
         ),
         "disclaimer_body": ParagraphStyle(
@@ -1287,6 +1300,12 @@ def generate_weekly_scoring_board_pdf(
     if not pages:
         raise ValueError("No report pages could be built from scoring data.")
     sector_stats = compute_sector_overview_stats(sector_overview_df)
+    eod_date = None
+    if sector_overview_df is not None and not sector_overview_df.empty:
+        if "eod_price_date" in sector_overview_df.columns:
+            eod_date = pd.to_datetime(sector_overview_df["eod_price_date"]).max()
+            if pd.notna(eod_date):
+                eod_date = eod_date.strftime("%Y-%m-%d")
     sector_anchor_map = _build_sector_anchor_map(pages)
     summary_lines = load_or_initialize_summary_text()
     export_sector_stats_json(sector_stats, report_date)
@@ -1307,7 +1326,7 @@ def generate_weekly_scoring_board_pdf(
     story: List = []
     story.extend(build_summary_page(styles, summary_lines, report_date))
     story.append(PageBreak())
-    story.extend(build_sector_overview_page(styles, sector_stats, sector_anchor_map))
+    story.extend(build_sector_overview_page(styles, sector_stats, sector_anchor_map, eod_date=eod_date))
     story.append(PageBreak())
     for idx, page in enumerate(pages):
         anchor = slugify(page["title"])
