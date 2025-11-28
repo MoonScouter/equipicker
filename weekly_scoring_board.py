@@ -505,17 +505,15 @@ def compute_sector_overview_stats(df: pd.DataFrame) -> pd.DataFrame:
         positive_var = int((group.loc[valid_var_mask, "1m_price_var_pct_num"] > 0).sum())
         market_breadth, market_breadth_num = _format_ratio(positive_var, total_var_count)
 
-        rs_daily = pd.to_numeric(group.get("rs_daily"), errors="coerce")
-        rs_sma20 = pd.to_numeric(group.get("rs_sma20"), errors="coerce")
-        valid_rs_mask = rs_daily.notna() & rs_sma20.notna()
-        rs_success = int(((rs_daily > 0) & (rs_daily > rs_sma20) & valid_rs_mask).sum())
+        rs_monthly = pd.to_numeric(group.get("rs_monthly"), errors="coerce")
+        valid_rs_mask = rs_monthly.notna()
+        rs_success = int(((rs_monthly > 0) & valid_rs_mask).sum())
         total_rs = int(valid_rs_mask.sum())
         rs_breadth, rs_breadth_num = _format_ratio(rs_success, total_rs)
 
-        obvm_daily = pd.to_numeric(group.get("obvm_daily"), errors="coerce")
-        obvm_sma20 = pd.to_numeric(group.get("obvm_sma20"), errors="coerce")
-        valid_obvm_mask = obvm_daily.notna() & obvm_sma20.notna()
-        obvm_success = int(((obvm_daily > 0) & (obvm_daily > obvm_sma20) & valid_obvm_mask).sum())
+        obvm_monthly = pd.to_numeric(group.get("obvm_monthly"), errors="coerce")
+        valid_obvm_mask = obvm_monthly.notna()
+        obvm_success = int(((obvm_monthly > 0) & valid_obvm_mask).sum())
         total_obvm = int(valid_obvm_mask.sum())
         obvm_breadth, obvm_breadth_num = _format_ratio(obvm_success, total_obvm)
 
