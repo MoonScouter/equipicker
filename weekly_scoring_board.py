@@ -11,14 +11,14 @@ import json
 import pandas as pd
 import numpy as np
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     Flowable,
+    KeepInFrame,
     KeepTogether,
     PageBreak,
     Paragraph,
@@ -123,8 +123,9 @@ SECTOR_OVERVIEW_CENTER_STYLE = ParagraphStyle(
 SUMMARY_BODY_STYLE = ParagraphStyle(
     "summary_body",
     parent=TABLE_BODY_STYLE,
-    fontSize=10.5,
-    leading=14,
+    fontSize=7.8,
+    leading=13,
+    alignment=TA_JUSTIFY,
     textColor=BRAND_COLORS["muted_text"],
 )
 
@@ -597,19 +598,21 @@ def _breadth_exceeds_threshold(value: Optional[float]) -> bool:
     return value is not None and not pd.isna(value) and value > BREADTH_THRESHOLD
 
 
-def _build_signal_cell(color_codes: List[Optional[str]]) -> Flowable:
+def _resolve_signal(color_codes: List[Optional[str]]) -> Tuple[str, colors.Color]:
     cleaned = [code for code in color_codes if code]
     if len(cleaned) != len(color_codes):
-        fill = NEUTRAL_BULLET_COLOR
-    else:
-        all_positive = all(code == POSITIVE_TEXT_HEX for code in cleaned)
-        all_negative = all(code == NEGATIVE_TEXT_HEX for code in cleaned)
-        if all_positive:
-            fill = POSITIVE_BULLET_COLOR
-        elif all_negative:
-            fill = NEGATIVE_BULLET_COLOR
-        else:
-            fill = NEUTRAL_BULLET_COLOR
+        return "mixed", NEUTRAL_BULLET_COLOR
+    all_positive = all(code == POSITIVE_TEXT_HEX for code in cleaned)
+    all_negative = all(code == NEGATIVE_TEXT_HEX for code in cleaned)
+    if all_positive:
+        return "positive", POSITIVE_BULLET_COLOR
+    if all_negative:
+        return "negative", NEGATIVE_BULLET_COLOR
+    return "mixed", NEUTRAL_BULLET_COLOR
+
+
+def _build_signal_cell(color_codes: List[Optional[str]]) -> Flowable:
+    _, fill = _resolve_signal(color_codes)
     return SectorPulseBullet(fill)
 
 
@@ -635,12 +638,18 @@ def export_sector_stats_json(sector_stats: pd.DataFrame, report_date: date) -> O
             lines = ["<TABLES>"]
             lines.append("<SECTOR_PULSE>")
             lines.append("Sector | 1m_market_cap_var | market_breadth | rel_perf_breadth | rel_vol_breadth | signal")
-            for _, row in export_df.iterrows():
-                signal_value = "Yes" if row.get("signal") else "No"
+            for idx, row in export_df.iterrows():
+                original_row = sector_stats.loc[idx]
+                signal_status, _ = _resolve_signal([
+                    _variation_color(original_row.get("sector_1m_var_pct_num")),
+                    _breadth_color(original_row.get("market_breadth_num")),
+                    _breadth_color(original_row.get("rs_breadth_num")),
+                    _breadth_color(original_row.get("obvm_breadth_num")),
+                ])
                 lines.append(
                     f"{row.get('sector','')} | {row.get('sector_1m_var_pct','')} | "
                     f"{row.get('market_breadth','')} | {row.get('rs_breadth','')} | "
-                    f"{row.get('obvm_breadth','')} | {signal_value}"
+                    f"{row.get('obvm_breadth','')} | {signal_status}"
                 )
             lines.append("</SECTOR_PULSE>")
             lines.append("")
@@ -980,9 +989,9 @@ def build_summary_page(
             if include_dots:
                 score = _extract_score_from_text(entry)
                 color = _score_fill_color(score) if score is not None else colors.HexColor("#B0BEC5")
-                body_rows.append([MiniScoreDot(color, diameter=10), Paragraph(escape(entry), styles["summary_body"])])
+                body_rows.append([MiniScoreDot(color, diameter=10), Paragraph(entry, styles["summary_body"])])
             else:
-                body_rows.append([Paragraph(f"• {escape(entry)}", styles["summary_body"])])
+                body_rows.append([Paragraph(f"• {entry}", styles["summary_body"])])
         if include_dots:
             body_table = Table(body_rows, colWidths=[12, width - 20])
             body_style = TableStyle(
@@ -1005,12 +1014,11 @@ def build_summary_page(
                 ]
             )
         body_table.setStyle(body_style)
-        card = Table([[header], [body_table]], colWidths=[width])
+        card = Table([[header], [Spacer(1, 6)], [body_table]], colWidths=[width])
         card.setStyle(
             TableStyle(
                 [
                     ("BACKGROUND", (0, 1), (-1, -1), colors.white),
-                    ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#D3E1EA")),
                     ("LEFTPADDING", (0, 0), (-1, -1), 0),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                     ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -1018,21 +1026,30 @@ def build_summary_page(
                 ]
             )
         )
-        return card
+        _, card_height = card.wrap(width, 0)
+        return card, card_height
 
-    left_card = _card(
+    half_width = CONTENT_WIDTH / 2 - 8
+    left_card, left_height = _card(
         "Sector Pulse Snapshot",
         summary_lines.get("sector_pulse_snapshot", []),
         include_dots=False,
-        width=CONTENT_WIDTH / 2 - 8,
+        width=half_width,
     )
-    right_card = _card(
+    right_card, right_height = _card(
         "Fundamental Heatmap at a Glance",
         summary_lines.get("fundamental_heatmap_snapshot", []),
-        include_dots=True,
-        width=CONTENT_WIDTH / 2 - 8,
+        include_dots=False,
+        width=half_width,
     )
-    cards_table = Table([[left_card, right_card]], colWidths=[CONTENT_WIDTH / 2 - 6, CONTENT_WIDTH / 2 - 6])
+    max_card_height = max(left_height, right_height)
+    left_cell = KeepInFrame(half_width, max_card_height, [left_card], hAlign="LEFT", vAlign="TOP")
+    right_cell = KeepInFrame(half_width, max_card_height, [right_card], hAlign="LEFT", vAlign="TOP")
+    cards_table = Table(
+        [[left_cell, right_cell]],
+        colWidths=[CONTENT_WIDTH / 2 - 6, CONTENT_WIDTH / 2 - 6],
+        rowHeights=[max_card_height],
+    )
     cards_table.setStyle(
         TableStyle(
             [
@@ -1041,11 +1058,13 @@ def build_summary_page(
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                 ("TOPPADDING", (0, 0), (-1, -1), 0),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("BOX", (0, 0), (0, 0), 0.75, colors.HexColor("#D3E1EA")),
+                ("BOX", (1, 0), (1, 0), 0.75, colors.HexColor("#D3E1EA")),
             ]
         )
     )
     flowables.append(cards_table)
-    flowables.append(Spacer(1, 14))
+    flowables.append(Spacer(1, 3))
 
     rule = Table([[""]], colWidths=[CONTENT_WIDTH])
     rule.setStyle(
@@ -1058,7 +1077,7 @@ def build_summary_page(
     flowables.append(rule)
     flowables.append(Spacer(1, 10))
 
-    how_to_read_card = _card(
+    how_to_read_card, _ = _card(
         "How to read this report",
         summary_lines.get("how_to_read", []),
         include_dots=False,
