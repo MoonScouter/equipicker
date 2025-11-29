@@ -615,13 +615,49 @@ def _build_signal_cell(color_codes: List[Optional[str]]) -> Flowable:
 
 def export_sector_stats_json(sector_stats: pd.DataFrame, report_date: date) -> Optional[Path]:
     output = CACHE_DIR / f"sector_data_json_{report_date.isoformat()}.json"
+    txt_output = CACHE_DIR / f"sector_data_tables_{report_date.isoformat()}.txt"
     try:
         if sector_stats is None or sector_stats.empty:
             payload: List[Dict] = []
+            table_text = ""
         else:
             filtered = sector_stats[[col for col in sector_stats.columns if not str(col).endswith("_num")]]
-            payload = json.loads(filtered.to_json(orient="records"))
+            rename_map = {
+                "avg_total_score": "total_score",
+                "avg_value": "score_value",
+                "avg_growth": "score_growth",
+                "avg_quality": "score_quality",
+                "avg_risk": "score_risk",
+                "avg_momentum": "score_momentum",
+            }
+            export_df = filtered.rename(columns=rename_map)
+            payload = json.loads(export_df.to_json(orient="records"))
+            lines = ["<TABLES>"]
+            lines.append("<SECTOR_PULSE>")
+            lines.append("Sector | 1m_market_cap_var | market_breadth | rel_perf_breadth | rel_vol_breadth | signal")
+            for _, row in export_df.iterrows():
+                signal_value = "Yes" if row.get("signal") else "No"
+                lines.append(
+                    f"{row.get('sector','')} | {row.get('sector_1m_var_pct','')} | "
+                    f"{row.get('market_breadth','')} | {row.get('rs_breadth','')} | "
+                    f"{row.get('obvm_breadth','')} | {signal_value}"
+                )
+            lines.append("</SECTOR_PULSE>")
+            lines.append("")
+            lines.append("<CROSS_SECTOR_FUNDAMENTAL>")
+            lines.append("Sector | total_score | score_value | score_growth | score_quality | score_risk | score_momentum")
+            for _, row in export_df.iterrows():
+                lines.append(
+                    f"{row.get('sector','')} | {row.get('total_score','')} | {row.get('score_value','')} | "
+                    f"{row.get('score_growth','')} | {row.get('score_quality','')} | "
+                    f"{row.get('score_risk','')} | {row.get('score_momentum','')}"
+                )
+            lines.append("</CROSS_SECTOR_FUNDAMENTAL>")
+            lines.append("</TABLES>")
+            table_text = "\n".join(lines)
         output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        if table_text:
+            txt_output.write_text(table_text, encoding="utf-8")
         return output
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to export sector stats JSON: %s", exc)
