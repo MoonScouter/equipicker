@@ -246,15 +246,15 @@ NEGATIVE_BULLET_COLOR = colors.HexColor("#EB5757")
 NEUTRAL_BULLET_COLOR = colors.HexColor("#C4CBD6")
 SECTOR_SCORE_BADGE_DIAMETER = 18
 SECTOR_NOTE_TEXT = (
-    "Note: P1 - Value, P2 - Growth, P3 - Quality, P4 - Risk, P5 - Momentum; "
-    'For explanations on scoring methodology, check '
+    "Notă: P1 - Value, P2 - Growth, P3 - Quality, P4 - Risk, P5 - Momentum; "
+    'Pentru explicații legate de metodologia de calcul al scoring-ului, puteți consulta '
     '<link href="https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/">'
-    "<u>this Equipicker guide</u></link>."
+    "<u>acest ghid Equupicker</u></link>."
 )
 SUMMARY_SECTION_DEFS = [
-    ("sector_pulse_snapshot", "Sector Pulse Snapshot"),
-    ("fundamental_heatmap_snapshot", "Fundamental Heatmap at a Glance"),
-    ("how_to_read", "How to read this report"),
+    ("sector_pulse_snapshot", "Sector Pulse"),
+    ("fundamental_heatmap_snapshot", "Fundamental Heatmap"),
+    ("how_to_read", "Ce informații puteți găsi în raport"),
 ]
 DISCLAIMER_SECTION_DEFS = [
     ("metodologie", "Metodologie"),
@@ -268,8 +268,8 @@ SECTOR_SCORE_COLUMNS = [
     ("avg_total_score", "fundamental_total_score", "Total"),
     ("avg_value", "fundamental_value", "P1"),
     ("avg_growth", "fundamental_growth", "P2"),
-    ("avg_risk", "fundamental_risk", "P3"),
-    ("avg_quality", "fundamental_quality", "P4"),
+    ("avg_quality", "fundamental_quality", "P3"),
+    ("avg_risk", "fundamental_risk", "P4"),
     ("avg_momentum", "fundamental_momentum", "P5"),
 ]
 
@@ -926,8 +926,8 @@ def build_sector_overview_page(
     flowables.append(_build_sector_pulse_table(sector_stats, anchors))
     if include_note:
         note_text = (
-            f"Note: 1-month variation and Market breadth are computed from price moves over the 30 days ending on {eod_date or 'latest close'}; "
-            f"Relative Performance and Relative Volume breadth are based on indicators as of {eod_date or 'latest close'}."
+            f"Notă: Variația 1-month și Market breadth sunt calculate pe baza evoluției capitalizării companiilor în ultimele 30 de zile față de data de referință {eod_date or 'latest close'}; "
+            f"Indicatorii Relative Performance Breadth și Relative Volume Breadth sunt calculați la data de {eod_date or 'latest close'} pe baza seriilor monthly de preț și volum."
         )
         flowables.append(Spacer(1, 3))
         flowables.append(Paragraph(note_text, styles["table_note"]))

@@ -6,8 +6,8 @@
     "Tabelul Sector Pulse îți arată cum se mișcă fiecare sector din piață, dintr-o privire. Iată ce înseamnă fiecare coloană:",
     "• <b>1-month %</b> – reprezintă variația capitalizării sectoriale din ultima lună. Dacă procentul e pozitiv, sectorul a crescut în ultimele 30 de zile.",
     "• <b>Market Breadth</b> – procentul de companii din sector care au înregistrat creșteri în ultima lună. Un nivel de peste 50% înseamnă că majoritatea companiilor ‘trag sectorul în sus’.",
-    "• <b>Relative Performance Breadth</b> – procentul companiilor care performează mai bine decât S&P500 în prezent.",
-    "• <b>Relative Volume Breadth</b> – procentul companiilor care înregistrează intrări de bani în prezent.",
+    "• <b>Relative Performance Breadth (monthly)</b> – procentul companiilor care performează mai bine decât SP500.",
+    "• <b>Relative Volume Breadth (monthly)</b> – procentul companiilor care înregistrează \"intrări\" de bani.",
     "Culorile de lângă fiecare sector sunt o formă rapidă de codificare vizuală:",
     "<font color=\"#0BA360\"><b><font size=\"15\">●</font> Verde</b></font> – toți indicatorii sunt bullish: sectorul a crescut în ultima lună, peste jumătate din companii au performanță mai bună decât piața și volum pozitiv (intrări de bani).",
     "<font color=\"#EB5757\"><b><font size=\"15\">●</font> Roșu</b></font> – toți indicatorii sunt bearish: sectorul a scăzut, majoritatea companiilor subperformează, iar volumele sunt predominant negative (ieșiri de bani).",
@@ -25,7 +25,7 @@
     "Dacă vrei să aprofundezi cum se calculează fiecare scor și ce semnificație are, găsești detalii complete pe pagina noastră: &#128073; <link href=\"https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/\"><u>https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/</u></link>"
   ],
   "top_companies": [
-    "În paginile dedicate topurilor ai cele mai bine cotate companii din perspectiva scoring-urilor fundamentale calculate prin metodologia Equipicker, atât la nivelul întregii piețe (universul Equipicker = S&P 500 + Nasdaq 100 + companii cu lichiditate mai mică, dar relevante), cât și pentru fiecare sector în parte. Pentru fiecare grup, îți prezentăm:",
+    "În paginile dedicate topurilor ai cele mai bine cotate companii din perspectiva scoring-urilor fundamentale calculate prin metodologia Equipicker, atât la nivelul întregii piețe (universul Equipicker = SP500 + Nasdaq 100 + companii cu lichiditate mai mică, dar relevante), cât și pentru fiecare sector în parte. Pentru fiecare grup, îți prezentăm:",
     "• Top 5 companii după scorul total;",
     "• Top 5 pentru fiecare pilon fundamental."
   ],
