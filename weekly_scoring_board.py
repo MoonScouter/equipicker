@@ -1545,7 +1545,7 @@ def generate_weekly_scoring_board_pdf(
 def main():
     today = date.today()
     reports_dir = Path("reports")
-    filename = reports_dir / f"Weekly_Scoring_Board_{today.isoformat()}.pdf"
+    filename = reports_dir / f"Monthly_Scoring_Board_{today.isoformat()}.pdf"
     generated = generate_weekly_scoring_board_pdf(filename, report_date=today, run_sql=False, use_cache=True)
     print(f"Weekly scoring board written to: {generated.resolve()}")
 
