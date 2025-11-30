@@ -396,9 +396,16 @@ def shortlist_top(df: pd.DataFrame, metric: str, top_n: int = 5) -> pd.DataFrame
         return filtered
     sort_cols = [metric]
     ascending = [False]
-    if MOMENTUM_COLUMN in filtered.columns and metric != MOMENTUM_COLUMN:
-        sort_cols.append(MOMENTUM_COLUMN)
+    if metric == MOMENTUM_COLUMN:
+        sort_cols.append("market_cap")
         ascending.append(False)
+    else:
+        if MOMENTUM_COLUMN in filtered.columns:
+            sort_cols.append(MOMENTUM_COLUMN)
+            ascending.append(False)
+        if "market_cap" in filtered.columns:
+            sort_cols.append("market_cap")
+            ascending.append(False)
     shortlisted = filtered.sort_values(sort_cols, ascending=ascending).head(top_n)
     return shortlisted.reset_index(drop=True)
 
@@ -450,8 +457,8 @@ def _format_percentage_value(value) -> str:
 def _format_ratio(success_count: int, total_count: int) -> Tuple[str, Optional[float]]:
     if not total_count:
         return "N/A", np.nan
-    pct_value = round((success_count / total_count) * 100, 2)
-    return f"{pct_value:.2f}%", pct_value
+    pct_value = round((success_count / total_count) * 100, 0)
+    return f"{pct_value:.0f}%", pct_value
 
 
 def _prepare_sector_overview_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -1031,13 +1038,13 @@ def build_summary_page(
 
     half_width = CONTENT_WIDTH / 2 - 8
     left_card, left_height = _card(
-        "Sector Pulse Snapshot",
+        "Sector Pulse",
         summary_lines.get("sector_pulse_snapshot", []),
         include_dots=False,
         width=half_width,
     )
     right_card, right_height = _card(
-        "Fundamental Heatmap at a Glance",
+        "Fundamental Heatmap",
         summary_lines.get("fundamental_heatmap_snapshot", []),
         include_dots=False,
         width=half_width,
@@ -1078,7 +1085,7 @@ def build_summary_page(
     flowables.append(Spacer(1, 10))
 
     how_to_read_card, _ = _card(
-        "How to read this report",
+        "Ce informații puteți găsi în raport",
         summary_lines.get("how_to_read", []),
         include_dots=False,
         width=CONTENT_WIDTH,
@@ -1147,7 +1154,7 @@ def _build_styles():
             "table_title",
             parent=sample["Heading4"],
             fontSize=10.5,
-            fontName="Helvetica-Bold",
+            fontName=UNICODE_FONT_BOLD,
             textColor=BRAND_COLORS["primary"],
             spaceAfter=0,
         ),
