@@ -1,0 +1,19 @@
+{
+"sector_pulse_snapshot": [
+"În ultima lună, 6 sectoare au randament pozitiv și 5 sunt pe scădere. <b>Healthcare</b> conduce cu <font color=\"#0BA360\"><b>+9.16%</b></font>, susținut de creșteri ale majorității companiilor din sector, iar <b>Technology</b> este codaș cu <font color=\"#EB5757\"><b>-6.72%</b></font> pe fondul unor scăderi generalizate. Mișcarea reflectă rotația recentă din megacap-urile tech către sectoare defensive, pe fondul reevaluării așteptărilor privind dobânzile și tematica AI.",
+"Raportat la SP500, <b>Utilities</b> are cele mai multe acțiuni care bat piața, în timp ce <b>Real Estate</b> are cel mai mic procent, semn că majoritatea emitenților imobiliari rămân în urmă. Acest pattern se potrivește cu preferința recentă a pieței pentru fluxuri de numerar stabile, în timp ce imobiliarele rămân sub presiunea costurilor de finanțare ridicate și a incertitudinii pe segmentul de birouri.",
+"Fluxurile de bani pozitive se concentrează în <b>Utilities</b>, <b>Industrials</b>, <b>Healthcare</b>, unde o pondere ridicată de acțiuni arată volume bullish. Intrările în utilități și industrii reflectă căutarea randamentelor stabile și a tematicilor de infrastructură și tranziție energetică, în timp ce <b>Healthcare</b> este sprijinit de rezultatele solide și boom-ul medicamentelor inovatoare (inclusiv anti-obezitate).",
+"Semnalele sunt în mare parte <b>mixte</b>, fără ca vreun sector să aibă toți indicatorii bullish în linie. <b>Communication Services</b> este singurul sector în care toți indicatorii afișează valori din zona bearish. Acest tablou mixt este în linie cu o piață aflată într-o fază de rotație, fără un lider structural clar și cu episoade de volatilitate legate de dobânzi și politică monetară."
+],
+"fundamental_heatmap_snapshot": [
+"<b>Financial Services</b> este principalul lider fundamental, cu cel mai ridicat scor total, susținut de profitabilitate solidă, risc bine controlat și rezultate recente peste medie, într-un context în care marile bănci au raportat creșteri de câștiguri și randamente mai bune ale capitalului.",
+"La pilonul <b>VALUE</b>, sectorul <b>Consumer Defensive</b> conduce, sugerând evaluări mai atractive raportat la multipli și politica de remunerare, urmat îndeaproape de <b>Utilities</b> și <b>Energy</b>, unde combinația dintre dividende și vizibilitatea cash-flow-urilor rămâne atractivă în mediul actual de dobânzi ridicate și inflație prezentă.",
+"<b>Financial Services</b> este lider și pe pilonul <b>GROWTH</b>, în contextul relansării activității de investment banking și a veniturilor din dobânzi, în timp ce <b>Utilities</b> excelează la <b>QUALITY</b> datorită vizibilității ridicate a veniturilor. Tot <b>Financial Services</b> domină pilonul <b>RISK</b>, indicând bilanțuri robuste și capitalizare confortabilă.",
+"Pe <b>MOMENTUM</b>, <b>Financial Services</b> și <b>Technology</b> se detașează, semn că rezultatele recente (venituri, profit, marje) au surprins pozitiv, chiar dacă prețurile din sectorul tech au traversat o fază de corecție după entuziasmul inițial legat de AI.",
+"Aceste scoruri reflectă sănătatea financiară a companiilor din sector, nu evoluția de preț din ultima lună."
+],
+"how_to_read": [
+"<b>Sector Pulse</b> arată unde se concentrează randamentele și fluxurile de bani din ultima lună, iar <b>Cross-Sector Fundamental Scoring</b> evidențiază sectoarele fundamental mai solide sau mai vulnerabile, pe baza celor mai recente scoruri pe piloni.",
+"Topurile de companii de pe paginile următoare pot fi privite ca shortlist-uri suplimentare de idei cu scoring fundamental ridicat în fiecare sector, iar pentru detalii suplimentare poți aprofunda oricând pe <link href=\"https://www.equipicker.ro\">www.equipicker.ro</link>."
+]
+}

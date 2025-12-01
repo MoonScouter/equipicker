@@ -1,0 +1,35 @@
+{
+  "metodologie": [
+    "În această secțiune îți explicăm, pe scurt și simplu, cum să înțelegi datele și scorurile pe care le-ai găsit în raportul nostru. Tot ce vezi aici este rezultatul unei metodologii proprii Equipicker, creată special pentru investitorii care vor să se orienteze rapid într-o piață dinamică, fără să piardă vremea cu zgomotul de fundal."
+  ],
+  "sector_pulse": [
+    "Tabelul Sector Pulse îți arată cum se mișcă fiecare sector din piață, dintr-o privire. Iată ce înseamnă fiecare coloană:",
+    "• <b>1-month %</b> – reprezintă variația capitalizării sectoriale din ultima lună. Dacă procentul e pozitiv, sectorul a crescut în ultimele 30 de zile.",
+    "• <b>Market Breadth</b> – procentul de companii din sector care au înregistrat creșteri în ultima lună. Un nivel de peste 50% înseamnă că majoritatea companiilor ‘trag sectorul în sus’.",
+    "• <b>Relative Performance Breadth (monthly)</b> – procentul companiilor care performează mai bine decât SP500.",
+    "• <b>Relative Volume Breadth (monthly)</b> – procentul companiilor care înregistrează \"intrări\" de bani.",
+    "Culorile de lângă fiecare sector sunt o formă rapidă de codificare vizuală:",
+    "<font color=\"#0BA360\"><b><font size=\"15\">●</font> Verde</b></font> – toți indicatorii sunt bullish: sectorul a crescut în ultima lună, peste jumătate din companii au performanță mai bună decât piața și volum pozitiv (intrări de bani).",
+    "<font color=\"#EB5757\"><b><font size=\"15\">●</font> Roșu</b></font> – toți indicatorii sunt bearish: sectorul a scăzut, majoritatea companiilor subperformează, iar volumele sunt predominant negative (ieșiri de bani).",
+    "<font color=\"#A0A8B5\"><b><font size=\"15\">●</font> Gri</b></font> – situație mixtă, fără o direcție clară.",
+    "Sectoarele sunt afișate în ordine descrescătoare în funcție de variația lunară a capitalizării bursiere."
+  ],
+  "cross_sector": [
+    "Aici ai o imagine de ansamblu asupra scorurilor fundamentale pentru fiecare sector – atât scorul total, cât și scorurile pe piloni specifici. Cu cât scorul este mai mare, cu atât sectorul stă mai bine la acel capitol. Cadrăm automat cele mai ridicate valori pentru a le evidenția vizual.",
+    "La ce se referă acești piloni? Sunt 5 piloni de analiză fundamentală, gândiți pentru a acoperi toate unghiurile importante când analizezi o companie:",
+    "• <b>VALUE</b> – dacă acțiunea este scumpă sau ieftină în raport cu alte companii similare, prin prisma multiplilor de evaluare relativă și a consistenței politicilor de remunerare a acționarilor.",
+    "• <b>GROWTH</b> – cât de repede scalează afacerea: vânzări, profituri, marje.",
+    "• <b>QUALITY</b> – stabilitate și eficiență în utilizarea capitalului, sustenabilitatea profiturilor și capacitatea de conversie a acestora în cash.",
+    "• <b>RISK</b> – risc asociat bilanțului: gradul de îndatorare, riscul de lichiditate și cât de robustă este structura financiară.",
+    "• <b>MOMENTUM</b> – soliditatea rezultatelor din trimestrul cel mai recent în ceea ce privește creșterea veniturilor, profitabilitatea și marjele.",
+    "Dacă vrei să aprofundezi cum se calculează fiecare scor și ce semnificație are, găsești detalii complete pe pagina noastră: &#128073; <link href=\"https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/\"><u>https://equipicker.com/ro/cum-interpretam-scorurile-din-equipicker/</u></link>"
+  ],
+  "top_companies": [
+    "În paginile dedicate topurilor ai cele mai bine cotate companii din perspectiva scoring-urilor fundamentale calculate prin metodologia Equipicker, atât la nivelul întregii piețe, cât și pentru fiecare sector în parte. <b>Universul Equipicker</b> considerat în aceste topuri este reprezentat de companii din cadrul SP500 + Nasdaq 100 + alte companii din Nasdaq cu lichiditate mai mică, dar relevante, având capitalizare de piață > 5 bln. Pentru fiecare grup, îți prezentăm:",
+    "• Top 5 companii după scorul total;",
+    "• Top 5 companii pentru fiecare pilon fundamental."
+  ],
+  "disclaimer": [
+    "Lista companiilor prezentate are scop informativ. Nu este o recomandare de investiție, ci un instrument de selecție și orientare. Tu ești cel care decide ce analizează mai departe și în ce investește – noi îți oferim doar un punct de plecare structurat, eficient și ușor de folosit."
+  ]
+}
