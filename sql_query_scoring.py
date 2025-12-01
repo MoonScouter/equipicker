@@ -17,5 +17,6 @@ SELECT
   LEFT JOIN indicators_eodhd eodhd 
   	  ON eodhd.ticker = fs.ticker
    WHERE t.exclude_from_screener = 0
+   AND t.market_cap >= 5000000000
   GROUP BY fs.ticker, fs.total_score;
 """
