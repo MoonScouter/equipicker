@@ -31,7 +31,8 @@ from reportlab.platypus import (
 
 from xml.sax.saxutils import escape
 
-from equipicker_connect import get_dataframe, get_scoring_dataframe, CACHE_DIR
+from equipicker_connect import get_report_dataframe, get_scoring_dataframe, CACHE_DIR
+from report_config import DEFAULT_CONFIG_PATH, load_report_config
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ SECTOR_OVERVIEW_CENTER_STYLE = ParagraphStyle(
 SUMMARY_BODY_STYLE = ParagraphStyle(
     "summary_body",
     parent=TABLE_BODY_STYLE,
-    fontSize=7.8,
+    fontSize=7.5,
     leading=13,
     alignment=TA_JUSTIFY,
     textColor=BRAND_COLORS["muted_text"],
@@ -468,19 +469,34 @@ def _prepare_sector_overview_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     working["sector"] = working.get("sector", pd.Series(dtype=str)).fillna("Unspecified")
     one_m_close = pd.to_numeric(working.get("1m_close"), errors="coerce")
     eod_price = pd.to_numeric(working.get("eod_price_used"), errors="coerce")
+    ic_eod_price = pd.to_numeric(working.get("ic_eod_price_used"), errors="coerce")
     market_cap = pd.to_numeric(working.get("market_cap"), errors="coerce")
+
+    valid_override = (
+        eod_price.notna()
+        & ic_eod_price.notna()
+        & (ic_eod_price != 0)
+    )
+    market_cap_current = np.where(
+        valid_override,
+        (eod_price / ic_eod_price) * market_cap,
+        market_cap,
+    )
+    market_cap_current = pd.Series(market_cap_current, index=working.index)
+    market_cap_current_num = pd.to_numeric(market_cap_current, errors="coerce")
 
     valid_prices = (
         one_m_close.notna()
         & eod_price.notna()
+        & market_cap_current_num.notna()
         & (one_m_close != 0)
         & (eod_price != 0)
     )
 
-    working["market_cap_numeric"] = market_cap
+    working["market_cap_numeric"] = market_cap_current_num
     working["1m_market_cap"] = np.where(
         valid_prices,
-        (one_m_close / eod_price) * market_cap,
+        (one_m_close / eod_price) * market_cap_current_num,
         np.nan,
     )
     working["1m_price_var_pct_num"] = np.where(
@@ -1473,16 +1489,33 @@ def generate_weekly_scoring_board_pdf(
     report_date: Optional[date] = None,
     run_sql: bool = True,
     use_cache: bool = True,
+    config_path: Optional[Path | str] = None,
+    eod_as_of_date: Optional[date] = None,
+    cache_date: Optional[date] = None,
+    use_config: bool = True,
 ) -> Path:
     """Create the Weekly Scoring Board PDF at the given location."""
-    report_date = report_date or date.today()
+    config = None
+    if use_config and (config_path or DEFAULT_CONFIG_PATH.exists()):
+        config = load_report_config(config_path)
+    if report_date is None:
+        report_date = config.report_date if config else date.today()
+    if eod_as_of_date is None and config:
+        eod_as_of_date = config.eod_as_of_date
+    if cache_date is None and config:
+        cache_date = config.cache_date
     logger.info("Fetching scoring dataframe (run_sql=%s, use_cache=%s)", run_sql, use_cache)
-    df = get_scoring_dataframe(run_sql=run_sql, use_cache=use_cache)
+    df = get_scoring_dataframe(run_sql=run_sql, use_cache=use_cache, cache_date=cache_date)
     if df.empty:
         raise ValueError("Scoring query returned no data.")
 
     logger.info("Fetching sector overview dataframe (run_sql=%s, use_cache=%s)", run_sql, use_cache)
-    sector_overview_df = get_dataframe(run_sql=run_sql, use_cache=use_cache)
+    sector_overview_df = get_report_dataframe(
+        run_sql=run_sql,
+        use_cache=use_cache,
+        cache_date=cache_date,
+        eod_as_of_date=eod_as_of_date,
+    )
     df = prepare_scoring_dataframe(df)
     pages = build_report_pages(df)
     if not pages:
@@ -1543,10 +1576,14 @@ def generate_weekly_scoring_board_pdf(
 
 
 def main():
-    today = date.today()
+    if DEFAULT_CONFIG_PATH.exists():
+        config = load_report_config()
+        report_date = config.report_date
+    else:
+        report_date = date.today()
     reports_dir = Path("reports")
-    filename = reports_dir / f"Monthly_Scoring_Board_{today.isoformat()}.pdf"
-    generated = generate_weekly_scoring_board_pdf(filename, report_date=today, run_sql=False, use_cache=True)
+    filename = reports_dir / f"Monthly_Scoring_Board_{report_date.isoformat()}.pdf"
+    generated = generate_weekly_scoring_board_pdf(filename, report_date=report_date, run_sql=False, use_cache=True)
     print(f"Weekly scoring board written to: {generated.resolve()}")
 
 

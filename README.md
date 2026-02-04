@@ -21,3 +21,15 @@ To render the PDF scoring report:
 2. Run the generator from the project root: `python weekly_scoring_board.py`.
    - The script fetches fresh scoring data by default and writes a file such as `reports/Weekly_Scoring_Board_YYYY-MM-DD.pdf`.
    - Pass a different output path or reuse cached SQL results by calling `generate_weekly_scoring_board_pdf` directly from Python.
+
+### Report config (JSON)
+
+The report generator reads `config/report_config.json` if it exists. You can also edit these values from the Streamlit UI.
+
+- `report_date`: date used in the filename and first page (YYYY-MM-DD)
+- `eod_as_of_date`: optional EOD date used only for the 30-day window fields (YYYY-MM-DD or null)
+- `cache_date`: optional date used to load/write cache files (YYYY-MM-DD or null)
+
+Report cache files:
+- `data/report_select_YYYY-MM-DD.xlsx` (report query)
+- `data/scoring_YYYY-MM-DD.xlsx` (scoring query)
