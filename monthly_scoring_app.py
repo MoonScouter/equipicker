@@ -12,6 +12,12 @@ from typing import Dict, Optional
 import streamlit as st
 from streamlit.components.v1 import html
 
+from equipicker_connect import (
+    bucharest_today_str,
+    report_cache_path,
+    scoring_cache_path,
+)
+from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -19,6 +25,7 @@ DATA_DIR = BASE_DIR / "data"
 PROMPT_PATH = BASE_DIR / "summary_prompt.txt"
 REPORTS_DIR = BASE_DIR / "reports"
 SUMMARY_JSON_PATH = DATA_DIR / "text_generated.json"
+CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 
 def _format_ts(path: Optional[Path]) -> str:
@@ -84,7 +91,12 @@ class StreamlitLogHandler(logging.Handler):
         append_log(self.format(record))
 
 
-def run_generation(report_date: date, run_sql: bool) -> None:
+def run_generation(
+    report_date: date,
+    run_sql: bool,
+    eod_as_of_date: Optional[date],
+    cache_date: Optional[date],
+) -> None:
     output = REPORTS_DIR / f"Monthly_Scoring_Board_{report_date.isoformat()}.pdf"
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
@@ -100,6 +112,9 @@ def run_generation(report_date: date, run_sql: bool) -> None:
                 report_date=report_date,
                 run_sql=run_sql,
                 use_cache=True,
+                eod_as_of_date=eod_as_of_date,
+                cache_date=cache_date,
+                use_config=False,
             )
         append_log(f"PDF generated successfully: {output}")
         st.success(f"PDF generated: {output}")
@@ -145,16 +160,49 @@ force_sync = st.session_state.pop("force_sync", False)
 sync_editors(force=force_sync)
 
 st.title("Monthly Scoring Board")
-today = date.today()
-st.caption(today.strftime("%B %d, %Y"))
-output_hint = REPORTS_DIR / f"Monthly_Scoring_Board_{today.isoformat()}.pdf"
+try:
+    config = load_report_config(CONFIG_PATH)
+except Exception as exc:  # pragma: no cover - UI feedback
+    st.error(f"Invalid config: {exc}")
+    config = ReportConfig(report_date=date.today())
+
+st.subheader("Report Config")
+report_date_value = st.date_input("Report date", value=config.report_date, key="report_date")
+override_eod = st.checkbox("Override EOD as-of date", value=config.eod_as_of_date is not None)
+eod_as_of_value = None
+if override_eod:
+    eod_as_of_value = st.date_input(
+        "EOD as-of date (30-day window anchor)",
+        value=config.eod_as_of_date or report_date_value,
+        key="eod_as_of_date",
+    )
+override_cache = st.checkbox("Override cache date", value=config.cache_date is not None)
+cache_date_value = None
+if override_cache:
+    cache_date_value = st.date_input(
+        "Cache date",
+        value=config.cache_date or report_date_value,
+        key="cache_date",
+    )
+if st.button("Save config"):
+    save_report_config(ReportConfig(report_date_value, eod_as_of_value, cache_date_value), CONFIG_PATH)
+    st.success(f"Saved config: {CONFIG_PATH}")
+    st.rerun()
+
+effective_cache_date = cache_date_value.isoformat() if cache_date_value else bucharest_today_str()
+st.caption(f"Cache date in use: {effective_cache_date}")
+st.caption(f"Report cache: {report_cache_path(cache_date=cache_date_value)}")
+st.caption(f"Scoring cache: {scoring_cache_path(cache_date=cache_date_value)}")
+
+st.caption(report_date_value.strftime("%B %d, %Y"))
+output_hint = REPORTS_DIR / f"Monthly_Scoring_Board_{report_date_value.isoformat()}.pdf"
 st.caption(f"Output path: {output_hint}")
 
 controls_col, _ = st.columns([1, 3])
 with controls_col:
     run_sql_toggle = st.checkbox("Run SQL (ignore cache)", value=False)
     if st.button("Generate PDF", use_container_width=True):
-        run_generation(today, run_sql_toggle)
+        run_generation(report_date_value, run_sql_toggle, eod_as_of_value, cache_date_value)
     if st.button("Refresh Files", use_container_width=True):
         refresh_files()
         st.session_state["force_sync"] = True
