@@ -5,6 +5,12 @@ WITH latest AS (
   FROM indicators_computed ic
   -- WHERE ic.ticker IN ('OKLO.US')
 ),
+anchor AS (
+  SELECT
+    l.ticker,
+    COALESCE(:eod_as_of_date, l.eod_price_date) AS anchor_date
+  FROM latest l
+),
 hist AS (
   SELECT t.ticker, t.date, t.rs, t.obvm, t.adjusted_close
   FROM (
@@ -12,9 +18,9 @@ hist AS (
       ed.ticker, ed.date, ed.rs, ed.obvm, ed.adjusted_close,
       ROW_NUMBER() OVER (PARTITION BY ed.ticker ORDER BY ed.date DESC) AS rn
     FROM eod_data ed
-    JOIN latest l
-      ON l.ticker = ed.ticker
-     AND ed.date <= l.eod_price_date
+    JOIN anchor a
+      ON a.ticker = ed.ticker
+     AND ed.date <= a.anchor_date
   ) t
   WHERE t.rn <= 50
 ),
@@ -60,27 +66,27 @@ eod_asof AS (
       ed.adjusted_close,
       ROW_NUMBER() OVER (PARTITION BY ed.ticker ORDER BY ed.date DESC) AS rn
     FROM eod_data ed
-    JOIN indicators_computed ic
-      ON ic.ticker = ed.ticker
-    WHERE ed.date <= COALESCE(:eod_as_of_date, ic.eod_price_date)
+    JOIN anchor a
+      ON a.ticker = ed.ticker
+    WHERE ed.date <= a.anchor_date
   ) t
   WHERE t.rn = 1
 ),
 
--- NEW: pick date and close ~30 days before latest eod date, from the 50-day hist window
+-- NEW: pick date and close ~30 days before anchored eod date, from the 50-day hist window
 monthago AS (
   SELECT
     h1.ticker,
     h1.date       AS date_30d_ago,
     h1.adjusted_close AS adj_close_30d_ago
   FROM hist h1
-  JOIN latest l
-    ON l.ticker = h1.ticker
+  JOIN anchor a
+    ON a.ticker = h1.ticker
   WHERE h1.date = (
     SELECT MAX(h2.date)
     FROM hist h2
     WHERE h2.ticker = h1.ticker
-      AND h2.date <= DATE_SUB(COALESCE(:eod_as_of_date, l.eod_price_date), INTERVAL 30 DAY)
+      AND h2.date <= DATE_SUB(a.anchor_date, INTERVAL 30 DAY)
   )
 ),
 
@@ -89,9 +95,9 @@ monthly_hist AS (
   em.rs, em.obvm,
          ROW_NUMBER() OVER (PARTITION BY em.ticker ORDER BY em.date DESC) AS rn
   FROM eod_monthly em
-  JOIN latest l
-    ON l.ticker = em.ticker
-   AND em.date <= l.eod_price_date
+  JOIN anchor a
+    ON a.ticker = em.ticker
+   AND em.date <= a.anchor_date
 ),
 
 monthly_last AS (
@@ -159,11 +165,26 @@ SELECT
   lr.obvm_sma20,
   ma.y1_high AS `1y_high`,
   ma.y1_low  AS `1y_low`,
-  CASE WHEN ABS(ic.eod_price_used - ma.y1_high) / NULLIF(ma.y1_high,0) <= 0.05 THEN 'yes' ELSE 'no' END AS near_1y_high_5pct,
-  CASE WHEN ABS(ic.eod_price_used - ma.y1_low)  / NULLIF(ma.y1_low,0)  <= 0.05 THEN 'yes' ELSE 'no' END  AS near_1y_low_5pct,
-  CASE WHEN ABS(ic.eod_price_used - ic.sma_daily_20) / NULLIF(ic.sma_daily_20,0) <= 0.05 THEN 'yes' ELSE 'no' END AS near_ma20_5pct,
-  CASE WHEN ABS(ic.eod_price_used - ic.sma_daily_50) / NULLIF(ic.sma_daily_50,0) <= 0.05 THEN 'yes' ELSE 'no' END AS near_ma50_5pct,
-  CASE WHEN ABS(ic.eod_price_used - ic.sma_daily_200)/ NULLIF(ic.sma_daily_200,0) <= 0.05 THEN 'yes' ELSE 'no' END AS near_ma200_5pct,
+  CASE
+    WHEN ABS(COALESCE(ea.eod_as_of_close, ic.eod_price_used) - ma.y1_high) / NULLIF(ma.y1_high,0) <= 0.05
+    THEN 'yes' ELSE 'no'
+  END AS near_1y_high_5pct,
+  CASE
+    WHEN ABS(COALESCE(ea.eod_as_of_close, ic.eod_price_used) - ma.y1_low) / NULLIF(ma.y1_low,0) <= 0.05
+    THEN 'yes' ELSE 'no'
+  END AS near_1y_low_5pct,
+  CASE
+    WHEN ABS(COALESCE(ea.eod_as_of_close, ic.eod_price_used) - ic.sma_daily_20) / NULLIF(ic.sma_daily_20,0) <= 0.05
+    THEN 'yes' ELSE 'no'
+  END AS near_ma20_5pct,
+  CASE
+    WHEN ABS(COALESCE(ea.eod_as_of_close, ic.eod_price_used) - ic.sma_daily_50) / NULLIF(ic.sma_daily_50,0) <= 0.05
+    THEN 'yes' ELSE 'no'
+  END AS near_ma50_5pct,
+  CASE
+    WHEN ABS(COALESCE(ea.eod_as_of_close, ic.eod_price_used) - ic.sma_daily_200) / NULLIF(ic.sma_daily_200,0) <= 0.05
+    THEN 'yes' ELSE 'no'
+  END AS near_ma200_5pct,
   100.0 * (lr.last_adj_close / NULLIF(f5.adj_close_5ago, 0) - 1.0) AS `1w_variation`,
 
   -- NEW: 30-days-ago date and close (from hist)

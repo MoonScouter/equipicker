@@ -2,5 +2,5 @@
 SETLOCAL
 cd /d %~dp0
 call .venv\Scripts\activate
-streamlit run monthly_scoring_app.py
+streamlit run equipilot_app.py
 ENDLOCAL

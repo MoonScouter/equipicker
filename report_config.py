@@ -13,6 +13,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "report_confi
 class ReportConfig:
     report_date: date
     eod_as_of_date: Optional[date] = None
+    # Legacy field retained for backward compatibility with older callers.
     cache_date: Optional[date] = None
 
 
@@ -59,7 +60,6 @@ def save_report_config(config: ReportConfig, path: Path | str | None = None) -> 
     payload = {
         "report_date": config.report_date.isoformat(),
         "eod_as_of_date": config.eod_as_of_date.isoformat() if config.eod_as_of_date else None,
-        "cache_date": config.cache_date.isoformat() if config.cache_date else None,
     }
     config_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return config_path
