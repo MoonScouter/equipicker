@@ -1,10 +1,16 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-def extreme_accel(df: pd.DataFrame, cache_dir: Path) -> pd.DataFrame:
+def extreme_accel(
+    df: pd.DataFrame,
+    cache_dir: Path,
+    *,
+    save_output: bool = True,
+    output_date: date | None = None,
+) -> pd.DataFrame:
     """Full-blown extreme acceleration filter + save results to Excel."""
     m = pd.Series(True, index=df.index)
 
@@ -57,12 +63,11 @@ def extreme_accel(df: pd.DataFrame, cache_dir: Path) -> pd.DataFrame:
             (mc/1_000_000).round(2).astype(str) + "M"
         )
 
-    # Save to Excel (always overwrite)
-    today = datetime.now(ZoneInfo("Europe/Bucharest")).date().isoformat()
-    path = cache_dir / f"extreme_accel_{today}.xlsx"
-    out.to_excel(path, index=False)
-
-    print(f"[extreme_accel] saved {len(out)} rows to {path}")
+    if save_output:
+        run_day = output_date or datetime.now(ZoneInfo("Europe/Bucharest")).date()
+        path = cache_dir / f"extreme_accel_{run_day.isoformat()}.xlsx"
+        out.to_excel(path, index=False)
+        print(f"[extreme_accel] saved {len(out)} rows to {path}")
     return out
 
 # placeholders for other variants
@@ -129,7 +134,14 @@ def accel_normal(df: pd.DataFrame, out_dir: Path, tighten: bool = True) -> pd.Da
     out.to_excel(path, index=False)
     return out
 
-def accel_weak(df: pd.DataFrame, out_dir: Path, tighten: bool = True) -> pd.DataFrame:
+def accel_weak(
+    df: pd.DataFrame,
+    out_dir: Path,
+    tighten: bool = True,
+    *,
+    save_output: bool = True,
+    output_date: date | None = None,
+) -> pd.DataFrame:
     """
     Acceleration (weak). Early-to-moderate strength, not extreme.
     Saves accel_weak_{YYYY-MM-DD}.xlsx in out_dir.
@@ -182,9 +194,10 @@ def accel_weak(df: pd.DataFrame, out_dir: Path, tighten: bool = True) -> pd.Data
                                   (mc/1_000_000).round(2).astype(str) + "M"
         )
 
-    today = datetime.now(ZoneInfo("Europe/Bucharest")).date().isoformat()
-    path = out_dir / f"accel_weak_{today}.xlsx"
-    out.to_excel(path, index=False)
+    if save_output:
+        run_day = output_date or datetime.now(ZoneInfo("Europe/Bucharest")).date()
+        path = out_dir / f"accel_weak_{run_day.isoformat()}.xlsx"
+        out.to_excel(path, index=False)
     return out
 
 
@@ -315,4 +328,3 @@ def peg_value(df: pd.DataFrame, out_dir: Path,
     path = out_dir / f"peg_value_{today}.xlsx"
     out.to_excel(path, index=False)
     return out
-

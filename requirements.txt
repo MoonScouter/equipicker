@@ -3,6 +3,7 @@ langchain
 numpy
 openpyxl
 pandas
+pandas_market_calendars
 plotly
 requests
 reportlab
