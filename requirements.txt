@@ -3,6 +3,7 @@ langchain
 numpy
 openpyxl
 pandas
+plotly
 requests
 reportlab
 scikit-learn
