@@ -31,7 +31,7 @@ from reportlab.platypus import (
 
 from xml.sax.saxutils import escape
 
-from equipicker_connect import get_report_dataframe, get_scoring_dataframe, CACHE_DIR
+from equipicker_connect import get_report_dataframe, get_scoring_dataframe, CACHE_DIR, bucharest_today_str
 from report_config import DEFAULT_CONFIG_PATH, load_report_config
 
 logger = logging.getLogger(__name__)
@@ -233,8 +233,9 @@ METRIC_TABLES = [
 
 SECTOR_OVERVIEW_ANCHOR = "sector-overview-board"
 SUMMARY_PAGE_ANCHOR = "summary-highlights"
-SUMMARY_TEXT_FILE = CACHE_DIR / "text_generated.json"
-DISCLAIMER_TEXT_FILE = CACHE_DIR / "disclaimer_text.json"
+CONFIG_DIR = DEFAULT_CONFIG_PATH.parent
+SUMMARY_TEXT_FILE = CONFIG_DIR / "text_generated.json"
+DISCLAIMER_TEXT_FILE = CONFIG_DIR / "disclaimer_text.json"
 POSITIVE_TEXT_HEX = "#0BA360"
 NEGATIVE_TEXT_HEX = "#EB5757"
 NEUTRAL_TEXT_HEX = "#425466"
@@ -639,9 +640,9 @@ def _build_signal_cell(color_codes: List[Optional[str]]) -> Flowable:
     return SectorPulseBullet(fill)
 
 
-def export_sector_stats_json(sector_stats: pd.DataFrame, report_date: date) -> Optional[Path]:
-    output = CACHE_DIR / f"sector_data_json_{report_date.isoformat()}.json"
-    txt_output = CACHE_DIR / f"sector_data_tables_{report_date.isoformat()}.txt"
+def export_sector_stats_json(sector_stats: pd.DataFrame, export_date: date) -> Optional[Path]:
+    output = CACHE_DIR / f"sector_data_json_{export_date.isoformat()}.json"
+    txt_output = CACHE_DIR / f"sector_data_tables_{export_date.isoformat()}.txt"
     try:
         if sector_stats is None or sector_stats.empty:
             payload: List[Dict] = []
@@ -717,6 +718,7 @@ def load_or_initialize_summary_text() -> Dict[str, List[str]]:
             updated = True
 
     if updated or not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data
 
@@ -774,6 +776,7 @@ def load_or_initialize_disclaimer_text() -> Dict[str, List[str]]:
             data[key] = value
             updated = True
     if updated or not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return data
 
@@ -1529,7 +1532,12 @@ def generate_weekly_scoring_board_pdf(
                 eod_date = eod_date.strftime("%Y-%m-%d")
     sector_anchor_map = _build_sector_anchor_map(pages)
     summary_lines = load_or_initialize_summary_text()
-    export_sector_stats_json(sector_stats, report_date)
+    export_date = None
+    if cache_date:
+        export_date = cache_date if isinstance(cache_date, date) else date.fromisoformat(str(cache_date))
+    if export_date is None:
+        export_date = date.fromisoformat(bucharest_today_str())
+    export_sector_stats_json(sector_stats, export_date)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
