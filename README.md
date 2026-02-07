@@ -100,53 +100,77 @@ Output/log behavior:
 
 ## Trade Ideas filters
 
-The `Trade Ideas` tab currently uses two filter presets from `equipicker_filters.py`: `extreme_accel` and `accel_weak`.
+The `Trade Ideas` tab uses four presets from `equipicker_filters.py`:
+- `extreme_accel_up`
+- `accel_up_weak`
+- `extreme_accel_down`
+- `accel_down_weak`
 
-### `extreme_accel` filter logic
+Legacy names `extreme_accel` and `accel_weak` are kept as compatibility wrappers to the corresponding `*_up` filters.
 
-Hard requirements:
-- `general_technical_score >= 99.9`
-- `relative_performance >= 99.9`
-- `relative_volume >= 99.9`
-- `momentum >= 99.9`
-- `intermediate_trend >= 99.9`
-- `long_term_trend >= 99.9`
-- `rs_daily > rs_sma20`
-- `obvm_daily > 1.5 * obvm_sma20`
+### `extreme_accel_up`
 
-Conditional requirements (applied only when columns exist):
-- If `rs_monthly` exists: `rs_monthly >= 2.0`
-- If `obvm_weekly` and `obvm_monthly` exist: both must be `> 0`
-- If `rsi_weekly` and `rsi_daily` exist: `rsi_weekly >= 70` and `rsi_daily >= 80`
-- If `sma_daily_20`, `sma_daily_50`, `sma_daily_200`, `eod_price_used` exist:
-  - `sma_daily_20 >= 1.02 * sma_daily_50`
-  - `sma_daily_50 >= 1.02 * sma_daily_200`
-  - `eod_price_used >= 1.03 * sma_daily_20`
+Bullish high-conviction acceleration:
+- Scores pinned near max (`general_technical_score`, `relative_performance`, `relative_volume`, `momentum`, `intermediate_trend`, `long_term_trend`)
+- Positive RS/OBVM thrust (`rs_daily > rs_sma20`, `obvm_daily > 1.5 * obvm_sma20`)
+- Optional guards when fields exist:
+  - `rs_monthly >= 2.0`
+  - `obvm_weekly > 0` and `obvm_monthly > 0`
+  - `rsi_weekly >= 70` and `rsi_daily >= 80`
+  - MA stack + price extension above MA20
+- Sort: strongest bullish first (`fundamental_total_score DESC`, then `general_technical_score DESC` when available)
 
-Sorting:
-- If `fundamental_total_score` exists: sort by `fundamental_total_score DESC`, then `general_technical_score DESC`
-- Otherwise: sort by `general_technical_score DESC`
+### `accel_up_weak`
 
-### `accel_weak` filter logic
-
-Hard requirements:
+Bullish moderate acceleration:
 - `general_technical_score >= 72`
 - `relative_volume >= 75`
 - `relative_performance >= 65`
 - `momentum >= 72`
 - `intermediate_trend >= 80`
 - `long_term_trend >= 70`
+- Optional guards when fields exist:
+  - `obvm_monthly > 0`
+  - `rs_monthly >= 0` (tighten mode)
+  - RSI band: weekly `[60,75]`, daily `[60,70]`, and `daily <= weekly`
+  - `rs_daily < rs_sma20`
+  - `obvm_daily < obvm_sma20`
+- Sort: `general_technical_score DESC`, then `fundamental_total_score DESC`
 
-Conditional requirements (applied only when columns exist):
-- If `obvm_weekly` and `obvm_monthly` exist: `obvm_monthly > 0`
-- If `rs_monthly` exists (with `tighten=True`, default): `rs_monthly >= 0`
-- If `rsi_weekly` and `rsi_daily` exist:
-  - `rsi_weekly` in `[60, 75]`
-  - `rsi_daily` in `[60, 70]`
-  - `rsi_daily <= rsi_weekly`
-- If `rs_daily` and `rs_sma20` exist: `rs_daily < rs_sma20`
-- If `obvm_daily` and `obvm_sma20` exist: `obvm_daily < obvm_sma20`
+### `extreme_accel_down`
 
-Sorting:
-- If `fundamental_total_score` exists: sort by `general_technical_score DESC`, then `fundamental_total_score DESC`
-- Otherwise: sort by `general_technical_score DESC`
+Bearish high-conviction acceleration (mirror of extreme up):
+- `general_technical_score <= 0.1`
+- `relative_performance <= 0.1` and optional `rs_monthly <= -2.0`
+- `relative_volume <= 0.1` and optional `obvm_weekly < 0`, `obvm_monthly < 0`
+- `momentum <= 0.1` and optional `rsi_weekly <= 30`, `rsi_daily <= 20`
+- `intermediate_trend <= 0.1`
+- `long_term_trend <= 0.1`
+- Optional MA mirror:
+  - `sma_daily_20 <= 0.98 * sma_daily_50`
+  - `sma_daily_50 <= 0.98 * sma_daily_200`
+  - `eod_price_used <= 0.97 * sma_daily_20`
+- Downside thrust mirror:
+  - `rs_daily < rs_sma20`
+  - `obvm_daily < (obvm_sma20 / 1.5)`
+- Sort: strongest bearish first (`general_technical_score ASC`, then `fundamental_total_score ASC`)
+
+### `accel_down_weak`
+
+Bearish moderate acceleration (mirror of weak up):
+- `general_technical_score <= 28`
+- `relative_volume <= 25` and optional `obvm_monthly < 0`
+- `relative_performance <= 35` and optional `rs_monthly <= 0` (tighten mode)
+- `momentum <= 28`
+- `intermediate_trend <= 20`
+- `long_term_trend <= 30`
+- Optional RSI mirror:
+  - `rsi_weekly` in `[25,40]`
+  - `rsi_daily` in `[30,40]`
+  - `rsi_daily >= rsi_weekly`
+- Weak downside thrust mirror:
+  - `rs_daily > rs_sma20`
+  - `obvm_daily > obvm_sma20`
+- Sort: `general_technical_score ASC`, then `fundamental_total_score ASC`
+
+All four filters format `market_cap` for display as `x.xxB` or `x.xxM`.
