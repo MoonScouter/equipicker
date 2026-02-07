@@ -4,7 +4,17 @@ from pathlib import Path
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-def extreme_accel(
+
+def _format_market_cap_series(series: pd.Series) -> pd.Series:
+    mc = pd.to_numeric(series, errors='coerce')
+    return np.where(
+        mc >= 1_000_000_000,
+        (mc/1_000_000_000).round(2).astype(str) + "B",
+        (mc/1_000_000).round(2).astype(str) + "M"
+    )
+
+
+def extreme_accel_up(
     df: pd.DataFrame,
     cache_dir: Path,
     *,
@@ -56,18 +66,13 @@ def extreme_accel(
 
     # Market cap display: ≥$1B in B, else in M
     if 'market_cap' in out.columns:
-        mc = pd.to_numeric(out['market_cap'], errors='coerce')
-        out['market_cap'] = np.where(
-            mc >= 1_000_000_000,
-            (mc/1_000_000_000).round(2).astype(str) + "B",
-            (mc/1_000_000).round(2).astype(str) + "M"
-        )
+        out['market_cap'] = _format_market_cap_series(out['market_cap'])
 
     if save_output:
         run_day = output_date or datetime.now(ZoneInfo("Europe/Bucharest")).date()
-        path = cache_dir / f"extreme_accel_{run_day.isoformat()}.xlsx"
+        path = cache_dir / f"extreme_accel_up_{run_day.isoformat()}.xlsx"
         out.to_excel(path, index=False)
-        print(f"[extreme_accel] saved {len(out)} rows to {path}")
+        print(f"[extreme_accel_up] saved {len(out)} rows to {path}")
     return out
 
 # placeholders for other variants
@@ -134,7 +139,7 @@ def accel_normal(df: pd.DataFrame, out_dir: Path, tighten: bool = True) -> pd.Da
     out.to_excel(path, index=False)
     return out
 
-def accel_weak(
+def accel_up_weak(
     df: pd.DataFrame,
     out_dir: Path,
     tighten: bool = True,
@@ -143,8 +148,8 @@ def accel_weak(
     output_date: date | None = None,
 ) -> pd.DataFrame:
     """
-    Acceleration (weak). Early-to-moderate strength, not extreme.
-    Saves accel_weak_{YYYY-MM-DD}.xlsx in out_dir.
+    Acceleration (weak up). Early-to-moderate upside strength, not extreme.
+    Saves accel_up_weak_{YYYY-MM-DD}.xlsx in out_dir.
     """
     m = pd.Series(True, index=df.index)
 
@@ -188,17 +193,161 @@ def accel_weak(
 
     # Market cap display
     if 'market_cap' in out.columns:
-        mc = pd.to_numeric(out['market_cap'], errors='coerce')
-        out['market_cap'] = np.where(
-            mc >= 1_000_000_000, (mc/1_000_000_000).round(2).astype(str) + "B",
-                                  (mc/1_000_000).round(2).astype(str) + "M"
-        )
+        out['market_cap'] = _format_market_cap_series(out['market_cap'])
 
     if save_output:
         run_day = output_date or datetime.now(ZoneInfo("Europe/Bucharest")).date()
-        path = out_dir / f"accel_weak_{run_day.isoformat()}.xlsx"
+        path = out_dir / f"accel_up_weak_{run_day.isoformat()}.xlsx"
         out.to_excel(path, index=False)
     return out
+
+
+def extreme_accel_down(
+    df: pd.DataFrame,
+    out_dir: Path,
+    *,
+    save_output: bool = True,
+    output_date: date | None = None,
+) -> pd.DataFrame:
+    """Full-blown downside acceleration filter + optional save to Excel."""
+    m = pd.Series(True, index=df.index)
+
+    m &= df['general_technical_score'] <= 0.1
+
+    m &= df['relative_performance'] <= 0.1
+    if 'rs_monthly' in df.columns:
+        m &= df['rs_monthly'] <= -2.0
+
+    m &= df['relative_volume'] <= 0.1
+    if {'obvm_weekly', 'obvm_monthly'}.issubset(df.columns):
+        m &= df['obvm_weekly'] < 0
+        m &= df['obvm_monthly'] < 0
+
+    m &= df['momentum'] <= 0.1
+    if {'rsi_weekly', 'rsi_daily'}.issubset(df.columns):
+        m &= (df['rsi_weekly'] <= 30) & (df['rsi_daily'] <= 20)
+
+    m &= df['intermediate_trend'] <= 0.1
+    m &= df['long_term_trend'] <= 0.1
+
+    if {'sma_daily_20', 'sma_daily_50', 'sma_daily_200', 'eod_price_used'}.issubset(df.columns):
+        m &= df['sma_daily_20'] <= 0.98 * df['sma_daily_50']
+        m &= df['sma_daily_50'] <= 0.98 * df['sma_daily_200']
+        m &= df['eod_price_used'] <= 0.97 * df['sma_daily_20']
+
+    m &= df['rs_daily'] < df['rs_sma20']
+    m &= df['obvm_daily'] < (df['obvm_sma20'] / 1.5)
+
+    out = df.loc[m].copy()
+
+    if 'fundamental_total_score' in out.columns:
+        out = out.sort_values(
+            by=['general_technical_score', 'fundamental_total_score'],
+            ascending=[True, True],
+        )
+    else:
+        out = out.sort_values(by='general_technical_score', ascending=True)
+
+    if 'market_cap' in out.columns:
+        out['market_cap'] = _format_market_cap_series(out['market_cap'])
+
+    if save_output:
+        run_day = output_date or datetime.now(ZoneInfo("Europe/Bucharest")).date()
+        path = out_dir / f"extreme_accel_down_{run_day.isoformat()}.xlsx"
+        out.to_excel(path, index=False)
+    return out
+
+
+def accel_down_weak(
+    df: pd.DataFrame,
+    out_dir: Path,
+    tighten: bool = True,
+    *,
+    save_output: bool = True,
+    output_date: date | None = None,
+) -> pd.DataFrame:
+    """
+    Acceleration (weak down). Early-to-moderate downside strength, not extreme.
+    Saves accel_down_weak_{YYYY-MM-DD}.xlsx in out_dir.
+    """
+    m = pd.Series(True, index=df.index)
+
+    m &= df['general_technical_score'] <= 28
+
+    m &= df['relative_volume'] <= 25
+    if {'obvm_weekly', 'obvm_monthly'}.issubset(df.columns):
+        m &= df['obvm_monthly'] < 0
+
+    m &= df['relative_performance'] <= 35
+    if tighten and ('rs_monthly' in df.columns):
+        m &= df['rs_monthly'] <= 0
+
+    m &= df['momentum'] <= 28
+    if {'rsi_weekly', 'rsi_daily'}.issubset(df.columns):
+        m &= df['rsi_weekly'].between(25, 40)
+        m &= df['rsi_daily'].between(30, 40)
+        m &= df['rsi_daily'] >= df['rsi_weekly']
+
+    m &= df['intermediate_trend'] <= 20
+    m &= df['long_term_trend'] <= 30
+
+    if {'rs_daily', 'rs_sma20'}.issubset(df.columns):
+        m &= df['rs_daily'] > df['rs_sma20']
+    if {'obvm_daily', 'obvm_sma20'}.issubset(df.columns):
+        m &= df['obvm_daily'] > df['obvm_sma20']
+
+    out = df.loc[m].copy()
+
+    if 'fundamental_total_score' in out.columns:
+        out = out.sort_values(
+            by=['general_technical_score', 'fundamental_total_score'],
+            ascending=[True, True],
+        )
+    else:
+        out = out.sort_values(by='general_technical_score', ascending=True)
+
+    if 'market_cap' in out.columns:
+        out['market_cap'] = _format_market_cap_series(out['market_cap'])
+
+    if save_output:
+        run_day = output_date or datetime.now(ZoneInfo("Europe/Bucharest")).date()
+        path = out_dir / f"accel_down_weak_{run_day.isoformat()}.xlsx"
+        out.to_excel(path, index=False)
+    return out
+
+
+def extreme_accel(
+    df: pd.DataFrame,
+    cache_dir: Path,
+    *,
+    save_output: bool = True,
+    output_date: date | None = None,
+) -> pd.DataFrame:
+    """Backward-compatible wrapper for extreme_accel_up."""
+    return extreme_accel_up(
+        df,
+        cache_dir,
+        save_output=save_output,
+        output_date=output_date,
+    )
+
+
+def accel_weak(
+    df: pd.DataFrame,
+    out_dir: Path,
+    tighten: bool = True,
+    *,
+    save_output: bool = True,
+    output_date: date | None = None,
+) -> pd.DataFrame:
+    """Backward-compatible wrapper for accel_up_weak."""
+    return accel_up_weak(
+        df,
+        out_dir,
+        tighten=tighten,
+        save_output=save_output,
+        output_date=output_date,
+    )
 
 
 def wake_up(df: pd.DataFrame, out_dir: Path, tighten: bool = True) -> pd.DataFrame:

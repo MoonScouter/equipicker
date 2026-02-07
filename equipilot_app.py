@@ -24,7 +24,12 @@ from equipicker_connect import (
     report_cache_path,
     scoring_cache_path,
 )
-from equipicker_filters import accel_weak, extreme_accel
+from equipicker_filters import (
+    accel_down_weak,
+    accel_up_weak,
+    extreme_accel_down,
+    extreme_accel_up,
+)
 from report_select_service import generate_report_select_cache
 from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
@@ -1272,10 +1277,12 @@ def render_pdf_like_table(
     highlight_max_cols: Optional[list[str]] = None,
     value_color_rules: Optional[Dict[str, Callable[[object], str]]] = None,
     format_map: Optional[Dict[str, str]] = None,
-) -> None:
+    selectable: bool = False,
+    selection_key: Optional[str] = None,
+) -> Optional[int]:
     if df.empty:
         st.info("No data available for current selection.")
-        return
+        return None
 
     style_frame = df.copy()
     styler = style_frame.style.hide(axis="index")
@@ -1336,7 +1343,139 @@ def render_pdf_like_table(
             styler = styler.format(valid_formats, na_rep="N/A")
     # Keep board tables fully visible by sizing the widget to fit all rows.
     estimated_height = max(220, 72 + len(style_frame) * 38)
-    st.dataframe(styler, use_container_width=True, height=estimated_height)
+    if not selectable:
+        st.dataframe(styler, use_container_width=True, height=estimated_height)
+        return None
+
+    try:
+        selection_event = st.dataframe(
+            styler,
+            use_container_width=True,
+            height=estimated_height,
+            on_select="rerun",
+            selection_mode="single-row",
+            key=selection_key,
+        )
+    except TypeError:
+        st.dataframe(styler, use_container_width=True, height=estimated_height)
+        st.warning("Row click selection is unavailable on this Streamlit version.")
+        return None
+
+    selected_rows: list[int] = []
+    if hasattr(selection_event, "selection") and hasattr(selection_event.selection, "rows"):
+        selected_rows = list(selection_event.selection.rows or [])
+    elif isinstance(selection_event, dict):
+        selected_rows = list(
+            selection_event.get("selection", {}).get("rows", [])
+        )
+
+    if not selected_rows:
+        return None
+    selected_index = selected_rows[0]
+    if selected_index < 0 or selected_index >= len(style_frame):
+        return None
+    return int(selected_index)
+
+
+def _clear_drilldown_selection(prefix: str) -> None:
+    st.session_state.pop(f"{prefix}_selected_key", None)
+    st.session_state.pop(f"{prefix}_selected_mode", None)
+
+
+def _sync_drilldown_signature(prefix: str, signature: tuple[str, str, str]) -> None:
+    signature_key = f"{prefix}_drilldown_signature"
+    previous_signature = st.session_state.get(signature_key)
+    if previous_signature != signature:
+        _clear_drilldown_selection(prefix)
+        st.session_state[signature_key] = signature
+
+
+def _format_market_cap_display(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    raw = str(value).strip()
+    if not raw:
+        return "N/A"
+
+    if raw[-1:].upper() in {"B", "M"}:
+        return raw
+
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return raw
+    if numeric_value >= 1_000_000_000:
+        return f"{numeric_value / 1_000_000_000:.2f}B"
+    return f"{numeric_value / 1_000_000:.2f}M"
+
+
+def build_company_drilldown_table(
+    report_df: pd.DataFrame,
+    *,
+    selected_sector: str,
+    selected_mode: str,
+    selected_key: str,
+    sort_by: str = "technical",
+) -> tuple[str, Optional[pd.DataFrame], Optional[str]]:
+    required_columns = {
+        "ticker",
+        "sector",
+        "industry",
+        "market_cap",
+        "fundamental_total_score",
+        "general_technical_score",
+    }
+    missing = sorted(required_columns.difference(report_df.columns))
+    if missing:
+        return "", None, f"Missing required columns for company list: {', '.join(missing)}"
+
+    working = report_df.copy()
+    working["sector"] = working["sector"].fillna("Unspecified")
+    working["industry"] = working["industry"].fillna("Unspecified")
+
+    if selected_mode == "sector":
+        filtered = working[working["sector"] == selected_key]
+        title = f"Companies in Sector: {selected_key}"
+    else:
+        filtered = working[(working["sector"] == selected_sector) & (working["industry"] == selected_key)]
+        title = f"Companies in {selected_sector} / {selected_key}"
+
+    details = (
+        filtered[
+            [
+                "ticker",
+                "sector",
+                "industry",
+                "market_cap",
+                "fundamental_total_score",
+                "general_technical_score",
+            ]
+        ]
+        .rename(
+            columns={
+                "ticker": "Ticker",
+                "sector": "Sector",
+                "industry": "Industry",
+                "market_cap": "Market Cap",
+                "fundamental_total_score": "Fundamental Score",
+                "general_technical_score": "Technical Score",
+            }
+        )
+        .copy()
+    )
+
+    details["Fundamental Score"] = pd.to_numeric(details["Fundamental Score"], errors="coerce")
+    details["Technical Score"] = pd.to_numeric(details["Technical Score"], errors="coerce")
+    details["Market Cap"] = details["Market Cap"].map(_format_market_cap_display)
+    if sort_by == "fundamental":
+        sort_columns = ["Fundamental Score", "Technical Score"]
+    else:
+        sort_columns = ["Technical Score", "Fundamental Score"]
+    details = details.sort_values(
+        by=sort_columns,
+        ascending=[False, False],
+        na_position="last",
+    ).reset_index(drop=True)
+    return title, details, None
 
 
 def apply_trend_symbols_to_table(
@@ -1709,11 +1848,23 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         previous_table_df = build_fundamental_table(previous_report_df, selected_sector)
         render_df = apply_trend_symbols_to_table(table_df, previous_table_df, score_columns, threshold=5.0)
         format_map = None
+    drilldown_signature = (
+        selected_eod.isoformat(),
+        previous_eod.isoformat(),
+        selected_sector,
+    )
+    _sync_drilldown_signature("fundamental", drilldown_signature)
+    drilldown_nonce_key = "fundamental_drilldown_nonce"
+    drilldown_nonce = st.session_state.setdefault(drilldown_nonce_key, 0)
+    table_widget_key = (
+        f"fundamental_scoring_select_{selected_eod.isoformat()}_"
+        f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_{drilldown_nonce}"
+    )
     if selected_sector == "All sectors":
         render_board_title_band("Cross-Sector Fundamental Scoring")
     else:
         render_board_title_band(f"{selected_sector} - Industry Fundamental Scoring")
-    render_pdf_like_table(
+    selected_row_index = render_pdf_like_table(
         render_df,
         center_all_except_first=True,
         highlight_max_cols=["Total", "P1", "P2", "P3", "P4", "P5"],
@@ -1726,7 +1877,44 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             "P5": _score_color_css,
         },
         format_map=format_map,
+        selectable=True,
+        selection_key=table_widget_key,
     )
+    if selected_row_index is not None:
+        selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
+        selected_mode = "sector" if selected_sector == "All sectors" else "industry"
+        st.session_state["fundamental_selected_key"] = selected_key
+        st.session_state["fundamental_selected_mode"] = selected_mode
+
+    selected_key = st.session_state.get("fundamental_selected_key")
+    selected_mode = st.session_state.get("fundamental_selected_mode")
+    if selected_key and selected_mode:
+        details_title, details_df, details_error = build_company_drilldown_table(
+            report_df,
+            selected_sector=selected_sector,
+            selected_mode=selected_mode,
+            selected_key=selected_key,
+            sort_by="fundamental",
+        )
+        if details_error:
+            st.warning(details_error)
+        elif details_df is not None:
+            st.markdown("---")
+            st.caption(details_title)
+            if details_df.empty:
+                st.info("No companies found for the selected row.")
+            else:
+                details_display = details_df.copy()
+                for score_col in ["Fundamental Score", "Technical Score"]:
+                    details_display[score_col] = details_display[score_col].map(
+                        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+                    )
+                details_height = max(220, 72 + len(details_display) * 34)
+                st.dataframe(details_display, use_container_width=True, height=details_height, hide_index=True)
+            if st.button("Hide company list", key="fundamental_hide_company_list"):
+                _clear_drilldown_selection("fundamental")
+                st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
+                st.rerun()
 
 
 def render_technical_scoring_board(config: ReportConfig) -> None:
@@ -1827,21 +2015,74 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         previous_table_df = build_technical_table(previous_report_df, selected_sector)
         render_df = apply_trend_symbols_to_table(table_df, previous_table_df, score_columns, threshold=5.0)
         format_map = None
-    render_pdf_like_table(
+    drilldown_signature = (
+        selected_eod.isoformat(),
+        previous_eod.isoformat(),
+        selected_sector,
+    )
+    _sync_drilldown_signature("technical", drilldown_signature)
+    drilldown_nonce_key = "technical_drilldown_nonce"
+    drilldown_nonce = st.session_state.setdefault(drilldown_nonce_key, 0)
+    table_widget_key = (
+        f"technical_scoring_select_{selected_eod.isoformat()}_"
+        f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_{drilldown_nonce}"
+    )
+    selected_row_index = render_pdf_like_table(
         render_df,
         center_all_except_first=True,
         highlight_max_cols=score_columns,
         value_color_rules={column: _score_color_css for column in score_columns},
         format_map=format_map,
+        selectable=True,
+        selection_key=table_widget_key,
     )
+    if selected_row_index is not None:
+        selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
+        selected_mode = "sector" if selected_sector == "All sectors" else "industry"
+        st.session_state["technical_selected_key"] = selected_key
+        st.session_state["technical_selected_mode"] = selected_mode
+
+    selected_key = st.session_state.get("technical_selected_key")
+    selected_mode = st.session_state.get("technical_selected_mode")
+    if selected_key and selected_mode:
+        details_title, details_df, details_error = build_company_drilldown_table(
+            report_df,
+            selected_sector=selected_sector,
+            selected_mode=selected_mode,
+            selected_key=selected_key,
+            sort_by="technical",
+        )
+        if details_error:
+            st.warning(details_error)
+        elif details_df is not None:
+            st.markdown("---")
+            st.caption(details_title)
+            if details_df.empty:
+                st.info("No companies found for the selected row.")
+            else:
+                details_display = details_df.copy()
+                for score_col in ["Fundamental Score", "Technical Score"]:
+                    details_display[score_col] = details_display[score_col].map(
+                        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+                    )
+                details_height = max(220, 72 + len(details_display) * 34)
+                st.dataframe(details_display, use_container_width=True, height=details_height, hide_index=True)
+            if st.button("Hide company list", key="technical_hide_company_list"):
+                _clear_drilldown_selection("technical")
+                st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
+                st.rerun()
 
 
 def _run_trade_idea_filter(strategy_name: str, report_df: pd.DataFrame) -> pd.DataFrame:
     working_df = report_df.copy()
-    if strategy_name == "extreme_accel":
-        return extreme_accel(working_df, DATA_DIR, save_output=False)
-    if strategy_name == "accel_weak":
-        return accel_weak(working_df, DATA_DIR, save_output=False)
+    if strategy_name == "extreme_accel_up":
+        return extreme_accel_up(working_df, DATA_DIR, save_output=False)
+    if strategy_name == "accel_up_weak":
+        return accel_up_weak(working_df, DATA_DIR, save_output=False)
+    if strategy_name == "extreme_accel_down":
+        return extreme_accel_down(working_df, DATA_DIR, save_output=False)
+    if strategy_name == "accel_down_weak":
+        return accel_down_weak(working_df, DATA_DIR, save_output=False)
     raise ValueError(f"Unsupported trade-idea strategy: {strategy_name}")
 
 
@@ -1940,19 +2181,21 @@ def render_trade_ideas(config: ReportConfig) -> None:
     )
     render_chip_row(
         [
-            "Strategies currently active: extreme_accel, accel_weak",
+            "Strategies currently active: extreme_accel_up, accel_up_weak, extreme_accel_down, accel_down_weak",
             "Data source: report_select_<EOD> file",
         ]
     )
-    extreme_tab, weak_tab = st.tabs(["extreme_accel", "accel_weak"])
+    extreme_up_tab, weak_up_tab, extreme_down_tab, weak_down_tab = st.tabs(
+        ["extreme_accel_up", "accel_up_weak", "extreme_accel_down", "accel_down_weak"]
+    )
 
-    with extreme_tab:
-        render_board_title_band("Trade Ideas - extreme_accel")
+    with extreme_up_tab:
+        render_board_title_band("Trade Ideas - extreme_accel_up")
         _render_trade_idea_strategy(
             config,
-            strategy_name="extreme_accel",
-            board_title="Trade Ideas / extreme_accel",
-            strategy_subtitle="Highest-conviction acceleration setup with strict technical and thrust constraints.",
+            strategy_name="extreme_accel_up",
+            board_title="Trade Ideas / extreme_accel_up",
+            strategy_subtitle="Highest-conviction bullish acceleration setup with strict technical and thrust constraints.",
             required_columns={
                 "general_technical_score",
                 "relative_performance",
@@ -1965,16 +2208,16 @@ def render_trade_ideas(config: ReportConfig) -> None:
                 "obvm_daily",
                 "obvm_sma20",
             },
-            eod_key="trade_ideas_extreme_eod",
+            eod_key="trade_ideas_extreme_up_eod",
         )
 
-    with weak_tab:
-        render_board_title_band("Trade Ideas - accel_weak")
+    with weak_up_tab:
+        render_board_title_band("Trade Ideas - accel_up_weak")
         _render_trade_idea_strategy(
             config,
-            strategy_name="accel_weak",
-            board_title="Trade Ideas / accel_weak",
-            strategy_subtitle="Moderate acceleration profile with constructive but cooling momentum behavior.",
+            strategy_name="accel_up_weak",
+            board_title="Trade Ideas / accel_up_weak",
+            strategy_subtitle="Moderate bullish acceleration profile with constructive but cooling momentum behavior.",
             required_columns={
                 "general_technical_score",
                 "relative_performance",
@@ -1983,7 +2226,47 @@ def render_trade_ideas(config: ReportConfig) -> None:
                 "intermediate_trend",
                 "long_term_trend",
             },
-            eod_key="trade_ideas_weak_eod",
+            eod_key="trade_ideas_up_weak_eod",
+        )
+
+    with extreme_down_tab:
+        render_board_title_band("Trade Ideas - extreme_accel_down")
+        _render_trade_idea_strategy(
+            config,
+            strategy_name="extreme_accel_down",
+            board_title="Trade Ideas / extreme_accel_down",
+            strategy_subtitle="Highest-conviction bearish acceleration setup with strict downside momentum and trend constraints.",
+            required_columns={
+                "general_technical_score",
+                "relative_performance",
+                "relative_volume",
+                "momentum",
+                "intermediate_trend",
+                "long_term_trend",
+                "rs_daily",
+                "rs_sma20",
+                "obvm_daily",
+                "obvm_sma20",
+            },
+            eod_key="trade_ideas_extreme_down_eod",
+        )
+
+    with weak_down_tab:
+        render_board_title_band("Trade Ideas - accel_down_weak")
+        _render_trade_idea_strategy(
+            config,
+            strategy_name="accel_down_weak",
+            board_title="Trade Ideas / accel_down_weak",
+            strategy_subtitle="Moderate bearish acceleration profile with early downside follow-through behavior.",
+            required_columns={
+                "general_technical_score",
+                "relative_performance",
+                "relative_volume",
+                "momentum",
+                "intermediate_trend",
+                "long_term_trend",
+            },
+            eod_key="trade_ideas_down_weak_eod",
         )
 
 
