@@ -5,6 +5,8 @@ import io
 import json
 import logging
 import base64
+import re
+from html import escape as html_escape
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -703,11 +705,226 @@ def apply_theme_styles() -> None:
     st.markdown(
         """
 <style>
+:root {
+    --ep-navy:#0F2747;
+    --ep-sky:#2E90FA;
+    --ep-sky-soft:#DAECFF;
+    --ep-mint:#22C55E;
+    --ep-amber:#F59E0B;
+    --ep-rose:#EF4444;
+    --ep-ink:#1F2A44;
+    --ep-muted:#64748B;
+    --ep-surface:#FFFFFF;
+    --ep-surface-soft:#F8FCFF;
+    --ep-border:#D9E4EE;
+}
 .stApp {
+    color: var(--ep-ink);
     background:
-        radial-gradient(circle at 12% 8%, rgba(111, 196, 132, 0.10) 0%, rgba(111, 196, 132, 0.00) 34%),
-        radial-gradient(circle at 90% 12%, rgba(115, 185, 240, 0.08) 0%, rgba(115, 185, 240, 0.00) 38%),
-        linear-gradient(180deg, #f9fcf8 0%, #f8fbff 58%, #f7fbf9 100%);
+        radial-gradient(circle at 10% 6%, rgba(34, 197, 94, 0.11) 0%, rgba(34, 197, 94, 0.00) 36%),
+        radial-gradient(circle at 88% 8%, rgba(46, 144, 250, 0.13) 0%, rgba(46, 144, 250, 0.00) 42%),
+        linear-gradient(180deg, #FBFDF8 0%, #F7FBFF 60%, #F6FBF8 100%);
+}
+.block-container {
+    max-width: 1580px;
+    padding-top: 2.3rem;
+    padding-bottom: 1.8rem;
+}
+h1, h2, h3 {
+    color: var(--ep-ink);
+    letter-spacing: -0.02em;
+}
+div[data-baseweb="tab-list"] {
+    gap: 0.32rem;
+    margin-top: 0.2rem;
+    margin-bottom: 0.7rem;
+    border-bottom: 0;
+}
+button[role="tab"] {
+    border: 1px solid var(--ep-border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.78);
+    padding: 0.38rem 0.9rem;
+    font-weight: 600;
+    color: #3D4D66;
+    transition: all 0.2s ease;
+}
+button[role="tab"]:hover {
+    border-color: var(--ep-sky);
+    color: var(--ep-sky);
+}
+button[role="tab"][aria-selected="true"] {
+    background: linear-gradient(110deg, #ECF4FF 0%, #E6F5EC 100%);
+    border-color: rgba(46, 144, 250, 0.42);
+    color: #123159;
+    box-shadow: 0 6px 14px rgba(17, 42, 78, 0.08);
+}
+.stButton > button {
+    border-radius: 12px;
+    border: 1px solid var(--ep-border);
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+.stButton > button:hover {
+    border-color: var(--ep-sky);
+    color: var(--ep-sky);
+}
+.stDateInput > div,
+.stSelectbox > div > div,
+.stTextArea textarea {
+    border-radius: 12px !important;
+}
+.ep-appbar {
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:1rem;
+    padding:0.75rem 0 0.6rem 0;
+}
+.ep-brand {
+    font-size:1.72rem;
+    font-weight:800;
+    color: var(--ep-navy);
+    line-height:1.15;
+}
+.ep-tagline {
+    margin-top:0.1rem;
+    font-size:0.93rem;
+    color: #4C617E;
+}
+.ep-time-wrap {
+    text-align:right;
+}
+.ep-time-label {
+    color: var(--ep-muted);
+    font-size:0.76rem;
+    font-weight:600;
+}
+.ep-time-value {
+    color: var(--ep-navy);
+    font-size:0.95rem;
+    font-weight:700;
+    margin-top:0.12rem;
+}
+.ep-banner-wrap {
+    margin:0.35rem 0 0.95rem 0;
+    border-radius:14px;
+    overflow:hidden;
+    border:1px solid #D4E3EF;
+    box-shadow:0 12px 28px rgba(17, 42, 78, 0.08);
+}
+.ep-section-shell {
+    background: rgba(255, 255, 255, 0.72);
+    border: 1px solid #D9E7F1;
+    border-radius: 14px;
+    padding: 0.86rem 0.95rem;
+    margin-bottom: 0.72rem;
+}
+.ep-breadcrumb {
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #5F7694;
+}
+.ep-page-title {
+    font-size: 1.34rem;
+    font-weight: 780;
+    color: var(--ep-navy);
+    margin-top: 0.17rem;
+}
+.ep-page-subtitle {
+    margin-top: 0.18rem;
+    color: #4D627F;
+    font-size: 0.93rem;
+}
+.ep-kpi-card {
+    border-radius: 14px;
+    border: 1px solid #D9E6F0;
+    background: linear-gradient(180deg, #FFFFFF 0%, #F9FCFF 100%);
+    padding: 0.72rem 0.86rem;
+    min-height: 108px;
+    box-shadow: 0 8px 20px rgba(15, 39, 71, 0.06);
+}
+.ep-kpi-label {
+    font-size: 0.74rem;
+    color: #607691;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.ep-kpi-value {
+    margin-top: 0.3rem;
+    font-size: 1.26rem;
+    font-weight: 800;
+    color: var(--ep-navy);
+    line-height: 1.2;
+}
+.ep-kpi-note {
+    margin-top: 0.32rem;
+    color: #5A708C;
+    font-size: 0.82rem;
+}
+.ep-tone-positive .ep-kpi-value {
+    color: #0E9B56;
+}
+.ep-tone-warn .ep-kpi-value {
+    color: #D97706;
+}
+.ep-tone-neutral .ep-kpi-value {
+    color: var(--ep-navy);
+}
+.ep-log-timeline {
+    margin-top: 0.45rem;
+    border: 1px solid var(--ep-border);
+    border-radius: 12px;
+    background: #FBFDFF;
+    max-height: 260px;
+    overflow-y: auto;
+}
+.ep-log-timeline ul {
+    margin: 0;
+    padding: 0.5rem 0.68rem;
+    list-style: none;
+}
+.ep-log-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.77rem;
+    line-height: 1.35;
+    padding: 0.16rem 0;
+    color: #3D4E66;
+    border-bottom: 1px dashed rgba(151, 171, 196, 0.35);
+}
+.ep-log-item:last-child {
+    border-bottom: 0;
+}
+.ep-log-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    margin-top: 0.31rem;
+    background: #93A8C3;
+    flex: none;
+}
+.ep-log-item.positive .ep-log-dot { background: var(--ep-mint); }
+.ep-log-item.warning .ep-log-dot { background: var(--ep-amber); }
+.ep-log-item.error .ep-log-dot { background: var(--ep-rose); }
+.ep-chip-row {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    margin-top: 0.4rem;
+}
+.ep-chip {
+    border-radius: 999px;
+    border: 1px solid #D2E2ED;
+    padding: 0.2rem 0.56rem;
+    font-size: 0.75rem;
+    color: #3A567B;
+    background: rgba(255, 255, 255, 0.84);
 }
 </style>
         """,
@@ -716,10 +933,22 @@ def apply_theme_styles() -> None:
 
 
 def render_header() -> None:
-    clock_col, _ = st.columns([1, 5])
-    with clock_col:
-        now_bucharest = datetime.now(ZoneInfo("Europe/Bucharest"))
-        st.caption(f"Current time (Europe/Bucharest): {now_bucharest:%Y-%m-%d %H:%M:%S}")
+    now_bucharest = datetime.now(ZoneInfo("Europe/Bucharest"))
+    st.markdown(
+        f"""
+<div class="ep-appbar">
+  <div>
+    <div class="ep-brand">Equipilot</div>
+    <div class="ep-tagline">Professional cockpit for monthly scoring and market monitoring.</div>
+  </div>
+  <div class="ep-time-wrap">
+    <div class="ep-time-label">Current time (Europe/Bucharest)</div>
+    <div class="ep-time-value">{now_bucharest:%Y-%m-%d %H:%M:%S}</div>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
     banner_path = get_banner_path()
     if banner_path:
         banner_uri = _banner_data_uri(str(banner_path))
@@ -727,11 +956,10 @@ def render_header() -> None:
         side_banner_uri = _banner_data_uri(str(side_banner_path))
         st.markdown(
             f"""
-<div style="width:100%; margin:0.25rem 0 0.9rem 0;">
+<div class="ep-banner-wrap">
   <div style="
       width:100%;
       height:150px;
-      border-radius:12px;
       overflow:hidden;
       background-image:url('{side_banner_uri}');
       background-size:cover;
@@ -752,6 +980,69 @@ def render_header() -> None:
         )
     else:
         st.empty()
+
+
+def render_page_intro(title: str, subtitle: str, breadcrumb: str) -> None:
+    st.markdown(
+        f"""
+<div class="ep-section-shell">
+  <div class="ep-breadcrumb">{breadcrumb}</div>
+  <div class="ep-page-title">{title}</div>
+  <div class="ep-page-subtitle">{subtitle}</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_kpi_card(label: str, value: str, note: str = "", tone: str = "neutral") -> None:
+    safe_label = html_escape(label)
+    safe_value = html_escape(value)
+    safe_note = html_escape(note)
+    st.markdown(
+        f"""
+<div class="ep-kpi-card ep-tone-{tone}">
+  <div class="ep-kpi-label">{safe_label}</div>
+  <div class="ep-kpi-value">{safe_value}</div>
+  <div class="ep-kpi-note">{safe_note}</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_chip_row(chips: list[str]) -> None:
+    if not chips:
+        return
+    payload = "".join(f'<span class="ep-chip">{html_escape(chip)}</span>' for chip in chips)
+    st.markdown(f'<div class="ep-chip-row">{payload}</div>', unsafe_allow_html=True)
+
+
+def render_log_timeline(log_text: str, empty_message: str = "No log events yet.") -> None:
+    lines = [line.strip() for line in log_text.splitlines() if line.strip()]
+    if not lines:
+        st.caption(empty_message)
+        return
+
+    items: list[str] = []
+    for line in lines[-80:]:
+        line_lower = line.lower()
+        css_class = "info"
+        if any(token in line_lower for token in ("error", "failed", "traceback", "exception")):
+            css_class = "error"
+        elif any(token in line_lower for token in ("warning", "warn")):
+            css_class = "warning"
+        elif any(token in line_lower for token in ("success", "generated", "completed", "updated")):
+            css_class = "positive"
+        items.append(
+            f'<li class="ep-log-item {css_class}">'
+            f'<span class="ep-log-dot"></span><span>{html_escape(line)}</span></li>'
+        )
+
+    st.markdown(
+        f'<div class="ep-log-timeline"><ul>{"".join(items)}</ul></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def run_report_select_export(anchor_date: date, run_sql: bool) -> None:
@@ -836,6 +1127,13 @@ def get_default_board_eod(config: ReportConfig) -> date:
     return date.fromisoformat(bucharest_today_str())
 
 
+def get_default_previous_board_eod(current_eod: date) -> date:
+    previous_dates = [entry for entry in list_report_select_dates() if entry < current_eod]
+    if previous_dates:
+        return previous_dates[-1]
+    return current_eod - timedelta(days=30)
+
+
 def load_report_select_for_eod(
     eod_date: date,
 ) -> Tuple[Optional[pd.DataFrame], Optional[Path], Tuple[Path, Path], Optional[str]]:
@@ -876,12 +1174,14 @@ def render_board_title_band(title: str) -> None:
     st.markdown(
         f"""
 <div style="
-  background:#0B2D5C;
-  color:#FFFFFF;
+  background:linear-gradient(92deg, #0F2747 0%, #1A4B7A 70%, #2169A8 100%);
+  color:#F7FBFF;
   font-weight:700;
-  padding:8px 12px;
-  border-radius:8px;
+  padding:9px 12px;
+  border-radius:10px;
   margin:8px 0 10px 0;
+  border:1px solid rgba(255,255,255,0.18);
+  box-shadow:0 7px 14px rgba(15,39,71,0.16);
 ">
   {title}
 </div>
@@ -897,11 +1197,14 @@ def _parse_number(value: object) -> Optional[float]:
         if isinstance(value, float) and np.isnan(value):
             return None
         return float(value)
-    raw = str(value).strip().replace("%", "")
+    raw = str(value).strip()
     if not raw:
         return None
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", raw.replace("%", "").replace(",", ""))
+    if not match:
+        return None
     try:
-        return float(raw)
+        return float(match.group(0))
     except ValueError:
         return None
 
@@ -949,7 +1252,7 @@ def _signal_color_css(value: object) -> str:
 
 
 def _highlight_max_style(series: pd.Series) -> list[str]:
-    numeric = pd.to_numeric(series, errors="coerce")
+    numeric = pd.to_numeric(series.map(_parse_number), errors="coerce")
     valid = numeric.dropna()
     if valid.empty:
         return ["" for _ in range(len(series))]
@@ -964,6 +1267,7 @@ def _highlight_max_style(series: pd.Series) -> list[str]:
 def render_pdf_like_table(
     df: pd.DataFrame,
     *,
+    center_all_except_first: bool = False,
     center_cols: Optional[list[str]] = None,
     highlight_max_cols: Optional[list[str]] = None,
     value_color_rules: Optional[Dict[str, Callable[[object], str]]] = None,
@@ -1007,6 +1311,10 @@ def render_pdf_like_table(
 
     first_col = style_frame.columns[0]
     styler = styler.set_properties(subset=[first_col], **{"text-align": "left", "font-weight": "600"})
+    if center_all_except_first:
+        other_cols = style_frame.columns[1:].tolist()
+        if other_cols:
+            styler = styler.set_properties(subset=other_cols, **{"text-align": "center"})
     if center_cols:
         usable_center_cols = [col for col in center_cols if col in style_frame.columns]
         if usable_center_cols:
@@ -1029,6 +1337,56 @@ def render_pdf_like_table(
     # Keep board tables fully visible by sizing the widget to fit all rows.
     estimated_height = max(220, 72 + len(style_frame) * 38)
     st.dataframe(styler, use_container_width=True, height=estimated_height)
+
+
+def apply_trend_symbols_to_table(
+    current_table: pd.DataFrame,
+    previous_table: pd.DataFrame,
+    score_columns: list[str],
+    *,
+    threshold: float = 5.0,
+) -> pd.DataFrame:
+    if current_table.empty:
+        return current_table
+
+    key_col = current_table.columns[0]
+    annotated = current_table.copy()
+    if key_col not in previous_table.columns:
+        return annotated
+
+    current_subset = current_table[[key_col] + [col for col in score_columns if col in current_table.columns]].copy()
+    previous_subset = previous_table[[key_col] + [col for col in score_columns if col in previous_table.columns]].copy()
+    merged = current_subset.merge(previous_subset, on=key_col, how="left", suffixes=("_curr", "_prev"))
+
+    for col in score_columns:
+        if col not in annotated.columns:
+            continue
+        curr_col = f"{col}_curr"
+        prev_col = f"{col}_prev"
+        current_numeric = merged[curr_col].map(_parse_number) if curr_col in merged.columns else pd.Series([None] * len(merged))
+        previous_numeric = merged[prev_col].map(_parse_number) if prev_col in merged.columns else pd.Series([None] * len(merged))
+
+        deltas = []
+        for curr_value, prev_value in zip(current_numeric, previous_numeric):
+            if curr_value is None or prev_value is None:
+                deltas.append(None)
+            else:
+                deltas.append(curr_value - prev_value)
+
+        rendered_values: list[str] = []
+        for curr_value, delta_value in zip(current_numeric, deltas):
+            if curr_value is None:
+                rendered_values.append("N/A")
+                continue
+            symbol = ""
+            if delta_value is not None:
+                if delta_value > threshold:
+                    symbol = " 📈"
+                elif delta_value < -threshold:
+                    symbol = " 📉"
+            rendered_values.append(f"{curr_value:.1f}{symbol}")
+        annotated[col] = rendered_values
+    return annotated
 
 
 def build_sector_pulse_display(df: pd.DataFrame) -> pd.DataFrame:
@@ -1195,20 +1553,25 @@ def build_technical_table(df: pd.DataFrame, selected_sector: str) -> pd.DataFram
 
 
 def render_sector_pulse_board(config: ReportConfig) -> None:
-    st.subheader("Sector Pulse")
+    render_page_intro(
+        "Sector Pulse",
+        "Sector breadth, monthly variation, and signal parity with PDF logic.",
+        "Equipilot / Sector Pulse",
+    )
     selected_eod = st.date_input(
         "EOD date",
         value=get_default_board_eod(config),
         key="sector_pulse_eod",
     )
-    report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
+    with st.spinner("Loading sector pulse data..."):
+        report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
     if source_path is None:
         render_missing_report_select(selected_eod, candidates)
         return
     if load_error:
         st.error(f"Failed reading {source_path}: {load_error}")
         return
-    st.caption(f"Source file: {source_path}")
+    render_chip_row([f"Source file: {source_path}", f"EOD: {selected_eod.isoformat()}"])
     if not validate_required_columns(
         report_df,
         {
@@ -1226,10 +1589,11 @@ def render_sector_pulse_board(config: ReportConfig) -> None:
         return
 
     pulse_df = build_sector_pulse_display(report_df)
+    st.caption(f"Rows displayed: {len(pulse_df)}")
     render_board_title_band("Sector Pulse")
     render_pdf_like_table(
         pulse_df,
-        center_cols=["1-month %", "Mk Breadth", "Rel. Perf. Breadth", "Rel Vol. Breadth", "Signal"],
+        center_all_except_first=True,
         value_color_rules={
             "1-month %": _variation_color_css,
             "Mk Breadth": _breadth_color_css,
@@ -1241,20 +1605,43 @@ def render_sector_pulse_board(config: ReportConfig) -> None:
 
 
 def render_fundamental_scoring_board(config: ReportConfig) -> None:
-    st.subheader("Fundamental Scoring")
-    selected_eod = st.date_input(
-        "EOD date",
-        value=get_default_board_eod(config),
-        key="fundamental_scoring_eod",
+    render_page_intro(
+        "Fundamental Scoring",
+        "Cross-sector and sector-to-industry drill-down view using report_select snapshots.",
+        "Equipilot / Fundamental Scoring",
     )
-    report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
+    default_eod = get_default_board_eod(config)
+    selected_eod = st.date_input("EOD date", value=default_eod, key="fundamental_scoring_eod")
+    previous_eod = st.date_input(
+        "EOD date (previous)",
+        value=get_default_previous_board_eod(selected_eod),
+        key="fundamental_scoring_prev_eod",
+    )
+    with st.spinner("Loading fundamental scoring data..."):
+        report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
     if source_path is None:
         render_missing_report_select(selected_eod, candidates)
         return
     if load_error:
         st.error(f"Failed reading {source_path}: {load_error}")
         return
-    st.caption(f"Source file: {source_path}")
+    previous_report_df: Optional[pd.DataFrame] = None
+    previous_path: Optional[Path] = None
+    previous_ready = False
+    previous_df, previous_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
+    if previous_path is None:
+        render_missing_report_select(previous_eod, previous_candidates)
+    elif previous_error:
+        st.error(f"Failed reading {previous_path}: {previous_error}")
+    else:
+        previous_report_df = previous_df
+        previous_ready = True
+
+    chips = [f"Current file: {source_path}", f"EOD: {selected_eod.isoformat()}"]
+    if previous_path is not None:
+        chips.append(f"Previous file: {previous_path}")
+    chips.append(f"EOD previous: {previous_eod.isoformat()}")
+    render_chip_row(chips)
     if not validate_required_columns(
         report_df,
         {
@@ -1277,6 +1664,28 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         "Fundamental Scoring",
     ):
         return
+    if previous_ready and previous_report_df is not None and previous_path is not None:
+        previous_ready = validate_required_columns(
+            previous_report_df,
+            {
+                "sector",
+                "industry",
+                "1m_close",
+                "eod_price_used",
+                "ic_eod_price_used",
+                "market_cap",
+                "rs_monthly",
+                "obvm_monthly",
+                "fundamental_total_score",
+                "fundamental_value",
+                "fundamental_growth",
+                "fundamental_quality",
+                "fundamental_risk",
+                "fundamental_momentum",
+            },
+            previous_path,
+            "Fundamental Scoring (previous EOD)",
+        )
 
     sector_options = ["All sectors"] + sorted(report_df["sector"].fillna("Unspecified").unique().tolist())
     selected_sector = st.selectbox(
@@ -1286,13 +1695,27 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         key="fundamental_scoring_sector_select",
     )
     table_df = build_fundamental_table(report_df, selected_sector)
+    score_columns = ["Total", "P1", "P2", "P3", "P4", "P5"]
+    render_df = table_df
+    format_map = {
+        "Total": "{:.1f}",
+        "P1": "{:.1f}",
+        "P2": "{:.1f}",
+        "P3": "{:.1f}",
+        "P4": "{:.1f}",
+        "P5": "{:.1f}",
+    }
+    if previous_ready and previous_report_df is not None:
+        previous_table_df = build_fundamental_table(previous_report_df, selected_sector)
+        render_df = apply_trend_symbols_to_table(table_df, previous_table_df, score_columns, threshold=5.0)
+        format_map = None
     if selected_sector == "All sectors":
         render_board_title_band("Cross-Sector Fundamental Scoring")
     else:
         render_board_title_band(f"{selected_sector} - Industry Fundamental Scoring")
     render_pdf_like_table(
-        table_df,
-        center_cols=["Total", "P1", "P2", "P3", "P4", "P5"],
+        render_df,
+        center_all_except_first=True,
         highlight_max_cols=["Total", "P1", "P2", "P3", "P4", "P5"],
         value_color_rules={
             "Total": _score_color_css,
@@ -1302,32 +1725,48 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             "P4": _score_color_css,
             "P5": _score_color_css,
         },
-        format_map={
-            "Total": "{:.1f}",
-            "P1": "{:.1f}",
-            "P2": "{:.1f}",
-            "P3": "{:.1f}",
-            "P4": "{:.1f}",
-            "P5": "{:.1f}",
-        },
+        format_map=format_map,
     )
 
 
 def render_technical_scoring_board(config: ReportConfig) -> None:
-    st.subheader("Technical Scoring")
-    selected_eod = st.date_input(
-        "EOD date",
-        value=get_default_board_eod(config),
-        key="technical_scoring_eod",
+    render_page_intro(
+        "Technical Scoring",
+        "Technical pillar scoring with sector view and industry drill-down by selected sector.",
+        "Equipilot / Technical Scoring",
     )
-    report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
+    default_eod = get_default_board_eod(config)
+    selected_eod = st.date_input("EOD date", value=default_eod, key="technical_scoring_eod")
+    previous_eod = st.date_input(
+        "EOD date (previous)",
+        value=get_default_previous_board_eod(selected_eod),
+        key="technical_scoring_prev_eod",
+    )
+    with st.spinner("Loading technical scoring data..."):
+        report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
     if source_path is None:
         render_missing_report_select(selected_eod, candidates)
         return
     if load_error:
         st.error(f"Failed reading {source_path}: {load_error}")
         return
-    st.caption(f"Source file: {source_path}")
+    previous_report_df: Optional[pd.DataFrame] = None
+    previous_path: Optional[Path] = None
+    previous_ready = False
+    previous_df, previous_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
+    if previous_path is None:
+        render_missing_report_select(previous_eod, previous_candidates)
+    elif previous_error:
+        st.error(f"Failed reading {previous_path}: {previous_error}")
+    else:
+        previous_report_df = previous_df
+        previous_ready = True
+
+    chips = [f"Current file: {source_path}", f"EOD: {selected_eod.isoformat()}"]
+    if previous_path is not None:
+        chips.append(f"Previous file: {previous_path}")
+    chips.append(f"EOD previous: {previous_eod.isoformat()}")
+    render_chip_row(chips)
 
     if not validate_required_columns(
         report_df,
@@ -1345,6 +1784,22 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         "Technical Scoring",
     ):
         return
+    if previous_ready and previous_report_df is not None and previous_path is not None:
+        previous_ready = validate_required_columns(
+            previous_report_df,
+            {
+                "sector",
+                "industry",
+                "general_technical_score",
+                "relative_performance",
+                "relative_volume",
+                "momentum",
+                "intermediate_trend",
+                "long_term_trend",
+            },
+            previous_path,
+            "Technical Scoring (previous EOD)",
+        )
 
     sector_options = ["All sectors"] + sorted(report_df["sector"].fillna("Unspecified").unique().tolist())
     selected_sector = st.selectbox(
@@ -1366,12 +1821,18 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         "Intermediate Trend",
         "Long-term Trend",
     ]
+    render_df = table_df
+    format_map = {column: "{:.1f}" for column in score_columns}
+    if previous_ready and previous_report_df is not None:
+        previous_table_df = build_technical_table(previous_report_df, selected_sector)
+        render_df = apply_trend_symbols_to_table(table_df, previous_table_df, score_columns, threshold=5.0)
+        format_map = None
     render_pdf_like_table(
-        table_df,
-        center_cols=score_columns,
+        render_df,
+        center_all_except_first=True,
         highlight_max_cols=score_columns,
         value_color_rules={column: _score_color_css for column in score_columns},
-        format_map={column: "{:.1f}" for column in score_columns},
+        format_map=format_map,
     )
 
 
@@ -1412,22 +1873,25 @@ def _render_trade_idea_strategy(
     *,
     strategy_name: str,
     board_title: str,
+    strategy_subtitle: str,
     required_columns: set[str],
     eod_key: str,
 ) -> None:
+    st.caption(strategy_subtitle)
     selected_eod = st.date_input(
         "EOD date",
         value=get_default_board_eod(config),
         key=eod_key,
     )
-    report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
+    with st.spinner(f"Loading {strategy_name} candidates..."):
+        report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
     if source_path is None:
         render_missing_report_select(selected_eod, candidates)
         return
     if load_error:
         st.error(f"Failed reading {source_path}: {load_error}")
         return
-    st.caption(f"Source file: {source_path}")
+    render_chip_row([f"Source file: {source_path}", f"EOD: {selected_eod.isoformat()}"])
     if not validate_required_columns(report_df, required_columns, source_path, board_title):
         return
 
@@ -1443,12 +1907,43 @@ def _render_trade_idea_strategy(
         st.info("No stocks matched this filter for the selected EOD.")
         return
 
+    export_cols = st.columns([1, 1, 4])
+    csv_data = display_df.to_csv(index=False).encode("utf-8")
+    with export_cols[0]:
+        st.download_button(
+            "Download CSV",
+            data=csv_data,
+            file_name=f"{strategy_name}_{selected_eod.isoformat()}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"{strategy_name}_{eod_key}_download_csv",
+        )
+    with export_cols[1]:
+        st.download_button(
+            "Download JSON",
+            data=display_df.to_json(orient="records", force_ascii=False, indent=2),
+            file_name=f"{strategy_name}_{selected_eod.isoformat()}.json",
+            mime="application/json",
+            use_container_width=True,
+            key=f"{strategy_name}_{eod_key}_download_json",
+        )
+
     estimated_height = max(260, 72 + len(display_df) * 38)
     st.dataframe(display_df, use_container_width=True, height=estimated_height, hide_index=True)
 
 
 def render_trade_ideas(config: ReportConfig) -> None:
-    st.subheader("Trade Ideas")
+    render_page_intro(
+        "Trade Ideas",
+        "Actionable candidates from curated acceleration filters.",
+        "Equipilot / Trade Ideas",
+    )
+    render_chip_row(
+        [
+            "Strategies currently active: extreme_accel, accel_weak",
+            "Data source: report_select_<EOD> file",
+        ]
+    )
     extreme_tab, weak_tab = st.tabs(["extreme_accel", "accel_weak"])
 
     with extreme_tab:
@@ -1457,6 +1952,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
             config,
             strategy_name="extreme_accel",
             board_title="Trade Ideas / extreme_accel",
+            strategy_subtitle="Highest-conviction acceleration setup with strict technical and thrust constraints.",
             required_columns={
                 "general_technical_score",
                 "relative_performance",
@@ -1478,6 +1974,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
             config,
             strategy_name="accel_weak",
             board_title="Trade Ideas / accel_weak",
+            strategy_subtitle="Moderate acceleration profile with constructive but cooling momentum behavior.",
             required_columns={
                 "general_technical_score",
                 "relative_performance",
@@ -1491,18 +1988,65 @@ def render_trade_ideas(config: ReportConfig) -> None:
 
 
 def render_home(config: ReportConfig) -> None:
-    st.subheader("Home Cockpit")
-    st.caption("Generate report_select Excel only (no PDF).")
-    default_anchor = config.eod_as_of_date or date.fromisoformat(bucharest_today_str())
-    home_anchor_date = st.date_input(
-        "Report-select date (EOD anchor)",
-        value=default_anchor,
-        key="home_report_select_date",
+    render_page_intro(
+        "Home Cockpit",
+        "Generate report_select Excel only (no PDF) and manage EOD report cache.",
+        "Equipilot / Home",
     )
-    run_sql_home = st.checkbox(
-        "Run SQL (force overwrite for selected date)",
-        value=False,
-        key="home_run_sql_toggle",
+    default_anchor = config.eod_as_of_date or date.fromisoformat(bucharest_today_str())
+    controls_col, toggles_col = st.columns([1.15, 1])
+    with controls_col:
+        home_anchor_date = st.date_input(
+            "Report-select date (EOD anchor)",
+            value=default_anchor,
+            key="home_report_select_date",
+        )
+    with toggles_col:
+        run_sql_home = st.checkbox(
+            "Run SQL (force overwrite for selected date)",
+            value=False,
+            key="home_run_sql_toggle",
+        )
+    available_dates = list_report_select_dates()
+    latest_date = available_dates[-1] if available_dates else None
+    latest_source, _ = resolve_report_select_path(latest_date) if latest_date else (None, (None, None))
+    latest_rows = "n/a"
+    if latest_source:
+        try:
+            latest_rows = str(len(load_report_select(str(latest_source))))
+        except Exception:
+            latest_rows = "Unavailable"
+
+    selected_source, _ = resolve_report_select_path(home_anchor_date)
+    selected_status = "ready" if selected_source else "missing"
+
+    kpi_cols = st.columns(3)
+    with kpi_cols[0]:
+        render_kpi_card(
+            "Latest report_select",
+            latest_date.isoformat() if latest_date else "None",
+            "Most recent EOD cache available",
+            "neutral" if latest_date else "warn",
+        )
+    with kpi_cols[1]:
+        render_kpi_card(
+            "Rows in latest file",
+            latest_rows,
+            latest_source.name if latest_source else "No report_select file yet",
+            "positive" if latest_source else "warn",
+        )
+    with kpi_cols[2]:
+        render_kpi_card(
+            "Selected EOD status",
+            selected_status.upper(),
+            home_anchor_date.isoformat(),
+            "positive" if selected_source else "warn",
+        )
+
+    render_chip_row(
+        [
+            f"Output target: {report_cache_path(cache_date=home_anchor_date).name}",
+        ]
     )
     st.caption(f"Output: {report_cache_path(cache_date=home_anchor_date)}")
     with st.expander("Home logs", expanded=True):
@@ -1512,13 +2056,21 @@ def render_home(config: ReportConfig) -> None:
         if st.button("Clear home logs", key="home_clear_logs"):
             st.session_state["home_logs"] = ""
             home_placeholder.code("(no logs yet)")
+        render_log_timeline(
+            st.session_state.get("home_logs", ""),
+            "No runtime events yet. Trigger generation to populate logs.",
+        )
     if st.button("Generate report_select Excel", use_container_width=True, key="home_generate_report_select"):
         with st.spinner("Generating report_select..."):
             run_report_select_export(home_anchor_date, run_sql_home)
 
 
 def render_monthly_board(config: ReportConfig) -> None:
-    st.subheader("Monthly Scoring Board")
+    render_page_intro(
+        "Monthly Scoring Board",
+        "Configure report dates, run generation, and manage prompt/source files.",
+        "Equipilot / Monthly Scoring Board",
+    )
     report_date_value = st.date_input("Report date", value=config.report_date, key="monthly_report_date")
     eod_as_of_value = st.date_input(
         "EOD as-of date (30-day window anchor)",
@@ -1531,13 +2083,24 @@ def render_monthly_board(config: ReportConfig) -> None:
         st.rerun()
 
     effective_cache_date = eod_as_of_value.isoformat()
-    st.caption(f"Cache date in use (from EOD): {effective_cache_date}")
-    st.caption(f"Report cache: {report_cache_path(cache_date=eod_as_of_value)}")
-    st.caption(f"Scoring cache: {scoring_cache_path(cache_date=eod_as_of_value)}")
-
     output_hint = REPORTS_DIR / f"Monthly_Scoring_Board_{report_date_value.isoformat()}.pdf"
-    st.caption(report_date_value.strftime("%B %d, %Y"))
-    st.caption(f"Output path: {output_hint}")
+    meta_cols = st.columns(4)
+    with meta_cols[0]:
+        render_kpi_card("Report date", report_date_value.isoformat(), report_date_value.strftime("%B %d, %Y"))
+    with meta_cols[1]:
+        render_kpi_card("EOD anchor", eod_as_of_value.isoformat(), "Controls report_select/scoring cache date")
+    with meta_cols[2]:
+        render_kpi_card("Report cache", report_cache_path(cache_date=eod_as_of_value).name, effective_cache_date)
+    with meta_cols[3]:
+        render_kpi_card("PDF output", output_hint.name, "Filename remains unchanged")
+
+    render_chip_row(
+        [
+            f"Report cache path: {report_cache_path(cache_date=eod_as_of_value)}",
+            f"Scoring cache path: {scoring_cache_path(cache_date=eod_as_of_value)}",
+            f"Cache date in use: {effective_cache_date}",
+        ]
+    )
 
     controls_col, _ = st.columns([1, 3])
     with controls_col:
@@ -1560,6 +2123,7 @@ def render_monthly_board(config: ReportConfig) -> None:
         if st.button("Clear logs", key="monthly_clear_logs"):
             st.session_state["logs"] = ""
             placeholder.code("(no logs yet)")
+        render_log_timeline(st.session_state.get("logs", ""), "PDF generation logs will appear here.")
 
     bundle = st.session_state["file_bundle"]
 
@@ -1648,7 +2212,11 @@ def render_monthly_board(config: ReportConfig) -> None:
 
 
 def render_quadrants(default_anchor: date) -> None:
-    st.subheader("T vs P Quadrants")
+    render_page_intro(
+        "T vs P Quadrants",
+        "Relative sector positioning across technical strength and participation.",
+        "Equipilot / Quadrants",
+    )
     st.caption("Quadrants are computed from existing report_select files only (no SQL).")
     if st.button("Refresh Quadrants", use_container_width=True, key="quadrants_refresh"):
         clear_quadrant_caches()
@@ -1692,8 +2260,13 @@ def render_quadrants(default_anchor: date) -> None:
         )
         return
 
-    st.caption(f"Current file: {curr_path}")
-    st.caption(f"Previous file: {prev_path}")
+    render_chip_row(
+        [
+            f"Current file: {curr_path}",
+            f"Previous file: {prev_path}",
+            f"Delta window: {quadrant_date_prev.isoformat()} -> {quadrant_date_curr.isoformat()}",
+        ]
+    )
 
     with st.expander("Quadrants settings", expanded=False):
         st.markdown("**Participation (P) discounts**")
@@ -1722,28 +2295,29 @@ def render_quadrants(default_anchor: date) -> None:
             st.warning("P thresholds should be descending: strong +% > weak +% > weak -%.")
 
     try:
-        t_curr = compute_sector_T(str(curr_path), t_max_tilt, t_extreme_target)
-        t_prev = compute_sector_T(str(prev_path), t_max_tilt, t_extreme_target)
-        p_curr, curr_mc_var_all_negative = compute_sector_P(
-            str(curr_path),
-            p_strong_pos_thresh,
-            p_weak_pos_thresh,
-            p_weak_neg_thresh,
-            p_mult_strong_pos,
-            p_mult_weak_pos,
-            p_mult_weak_neg,
-            p_mult_strong_neg,
-        )
-        p_prev, prev_mc_var_all_negative = compute_sector_P(
-            str(prev_path),
-            p_strong_pos_thresh,
-            p_weak_pos_thresh,
-            p_weak_neg_thresh,
-            p_mult_strong_pos,
-            p_mult_weak_pos,
-            p_mult_weak_neg,
-            p_mult_strong_neg,
-        )
+        with st.spinner("Computing T/P components and quadrants..."):
+            t_curr = compute_sector_T(str(curr_path), t_max_tilt, t_extreme_target)
+            t_prev = compute_sector_T(str(prev_path), t_max_tilt, t_extreme_target)
+            p_curr, curr_mc_var_all_negative = compute_sector_P(
+                str(curr_path),
+                p_strong_pos_thresh,
+                p_weak_pos_thresh,
+                p_weak_neg_thresh,
+                p_mult_strong_pos,
+                p_mult_weak_pos,
+                p_mult_weak_neg,
+                p_mult_strong_neg,
+            )
+            p_prev, prev_mc_var_all_negative = compute_sector_P(
+                str(prev_path),
+                p_strong_pos_thresh,
+                p_weak_pos_thresh,
+                p_weak_neg_thresh,
+                p_mult_strong_pos,
+                p_mult_weak_pos,
+                p_mult_weak_neg,
+                p_mult_strong_neg,
+            )
     except ValueError as exc:
         st.error(str(exc))
         return
@@ -1839,7 +2413,6 @@ def main() -> None:
         config = ReportConfig(report_date=date.today(), eod_as_of_date=date.fromisoformat(bucharest_today_str()))
 
     render_header()
-    st.title("Equipilot")
 
     home_tab, monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab, trade_ideas_tab, quadrants_tab = st.tabs(
         [
