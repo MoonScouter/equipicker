@@ -6,6 +6,7 @@ import json
 import logging
 import base64
 import re
+import time
 from html import escape as html_escape
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import date, datetime, timedelta
@@ -53,6 +54,8 @@ BANNER_CANDIDATES = [
 BANNER_SIDE_CANDIDATES = [
     BASE_DIR / "banner_equipilot_2.png",
 ]
+CAP_BUCKET_ORDER = ["Nano", "Micro", "Small", "Mid", "Large", "Mega", "Unknown"]
+QUADRANT_BORDER_D_T_THRESHOLD = 5.0
 
 
 def _format_ts(path: Optional[Path]) -> str:
@@ -152,6 +155,8 @@ def compute_sector_T(
         "intermediate_trend",
         "long_term_trend",
         "momentum",
+        "relative_performance",
+        "relative_volume",
         "rs_daily",
         "rs_sma20",
         "obvm_daily",
@@ -165,6 +170,8 @@ def compute_sector_T(
         "intermediate_trend",
         "long_term_trend",
         "momentum",
+        "relative_performance",
+        "relative_volume",
         "rs_daily",
         "rs_sma20",
         "obvm_daily",
@@ -184,6 +191,8 @@ def compute_sector_T(
         avg_intermediate = group["intermediate_trend"].mean()
         avg_long_term = group["long_term_trend"].mean()
         avg_momentum = group["momentum"].mean()
+        rs_score_avg = group["relative_performance"].mean()
+        obvm_score_avg = group["relative_volume"].mean()
 
         rs_breadth = np.nan
         rs_mask = group["rs_daily"].notna() & group["rs_sma20"].notna()
@@ -195,7 +204,13 @@ def compute_sector_T(
         if obvm_mask.any():
             obvm_breadth = (group.loc[obvm_mask, "obvm_daily"] > group.loc[obvm_mask, "obvm_sma20"]).mean() * 100.0
 
-        raw_components = [avg_intermediate, avg_long_term, avg_momentum, rs_breadth, obvm_breadth]
+        rs_components = [rs_breadth, rs_score_avg]
+        rs_pillar = np.nanmean(rs_components) if any(pd.notna(rs_components)) else np.nan
+
+        obvm_components = [obvm_breadth, obvm_score_avg]
+        obvm_pillar = np.nanmean(obvm_components) if any(pd.notna(obvm_components)) else np.nan
+
+        raw_components = [avg_intermediate, avg_long_term, avg_momentum, rs_pillar, obvm_pillar]
         raw_t = np.nanmean(raw_components) if any(pd.notna(raw_components)) else np.nan
 
         high_count = int(group["near_1y_high_5pct"].apply(is_yes).sum())
@@ -229,6 +244,10 @@ def compute_sector_T(
             "avg_momentum": avg_momentum,
             "rs_breadth_daily": rs_breadth,
             "obvm_breadth_daily": obvm_breadth,
+            "rs_score_avg": rs_score_avg,
+            "obvm_score_avg": obvm_score_avg,
+            "rs_pillar_blended": rs_pillar,
+            "obvm_pillar_blended": obvm_pillar,
             "near_high_count": high_count,
             "near_low_count": low_count,
             "extreme_coverage": extreme_coverage,
@@ -383,6 +402,14 @@ def save_quadrant_json(
             "dP": to_float(row.get("dP")),
             "raw_T_prev": to_float(row.get("raw_T_prev")),
             "raw_T_curr": to_float(row.get("raw_T_curr")),
+            "rs_score_avg_prev": to_float(row.get("rs_score_avg_prev")),
+            "rs_score_avg_curr": to_float(row.get("rs_score_avg_curr")),
+            "obvm_score_avg_prev": to_float(row.get("obvm_score_avg_prev")),
+            "obvm_score_avg_curr": to_float(row.get("obvm_score_avg_curr")),
+            "rs_pillar_blended_prev": to_float(row.get("rs_pillar_blended_prev")),
+            "rs_pillar_blended_curr": to_float(row.get("rs_pillar_blended_curr")),
+            "obvm_pillar_blended_prev": to_float(row.get("obvm_pillar_blended_prev")),
+            "obvm_pillar_blended_curr": to_float(row.get("obvm_pillar_blended_curr")),
             "t_multiplier_prev": to_float(row.get("t_multiplier_prev")),
             "t_multiplier_curr": to_float(row.get("t_multiplier_curr")),
             "near_high_count_prev": to_float(row.get("near_high_count_prev")),
@@ -418,13 +445,11 @@ def plot_quadrants(df: pd.DataFrame, mode: str) -> go.Figure:
     if mode == "percentile":
         x_col = "P_pct_curr"
         y_col = "T_pct_curr"
-        y_prev_col = "T_pct_prev"
         x_label = "Participation (P) percentile"
         y_label = "Technical strength (T) percentile"
     else:
         x_col = "P_curr"
         y_col = "T_curr"
-        y_prev_col = "T_prev"
         x_label = "Participation (P)"
         y_label = "Technical strength (T)"
 
@@ -471,17 +496,17 @@ def plot_quadrants(df: pd.DataFrame, mode: str) -> go.Figure:
                   line=dict(color="rgba(90, 90, 90, 0.2)", width=1))
 
     df_plot = df.sort_values("sector")
-    outline_colors = []
+    outline_specs: list[tuple[int, str]] = []
     for _, row in df_plot.iterrows():
         d_t = row.get("dT")
         if pd.isna(d_t):
-            outline_colors.append("#A0A8B5")
-        elif d_t > 0:
-            outline_colors.append("#0BA360")
-        elif d_t < 0:
-            outline_colors.append("#EB5757")
+            outline_specs.append((0, "rgba(0,0,0,0)"))
+        elif d_t > QUADRANT_BORDER_D_T_THRESHOLD:
+            outline_specs.append((5, "#0BA360"))
+        elif d_t < -QUADRANT_BORDER_D_T_THRESHOLD:
+            outline_specs.append((5, "#EB5757"))
         else:
-            outline_colors.append("#A0A8B5")
+            outline_specs.append((0, "rgba(0,0,0,0)"))
 
     palette = [
         "#0072B2",  # blue
@@ -499,7 +524,7 @@ def plot_quadrants(df: pd.DataFrame, mode: str) -> go.Figure:
     ]
     for idx, (_, row) in enumerate(df_plot.iterrows()):
         color = palette[idx % len(palette)]
-        line_color = outline_colors[idx]
+        line_width, line_color = outline_specs[idx]
         fig.add_trace(go.Scatter(
             x=[row.get(x_col)],
             y=[row.get(y_col)],
@@ -507,7 +532,7 @@ def plot_quadrants(df: pd.DataFrame, mode: str) -> go.Figure:
             marker=dict(
                 size=28,
                 color=color,
-                line=dict(width=5, color=line_color),
+                line=dict(width=line_width, color=line_color),
             ),
             name=str(row.get("sector", "")),
             hovertemplate="<b>%{text}</b><br>P: %{x:.1f}<br>T: %{y:.1f}<extra></extra>",
@@ -556,6 +581,9 @@ def clear_quadrant_caches() -> None:
     compute_sector_T.clear()
     compute_sector_participation_components.clear()
     compute_sector_P.clear()
+    build_fundamental_tables_for_path.clear()
+    build_technical_tables_for_path.clear()
+    build_trended_table_for_paths.clear()
 
 def load_all_texts() -> Dict[str, str]:
     latest_sector = get_latest_sector_tables_file()
@@ -580,6 +608,10 @@ def sync_editors(force: bool = False) -> None:
 
 
 def refresh_files() -> None:
+    load_report_select.clear()
+    build_fundamental_tables_for_path.clear()
+    build_technical_tables_for_path.clear()
+    build_trended_table_for_paths.clear()
     st.session_state["file_bundle"] = load_all_texts()
     sync_editors(force=True)
 
@@ -1069,6 +1101,9 @@ def run_report_select_export(anchor_date: date, run_sql: bool) -> None:
         with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
             generated_path = generate_report_select_cache(anchor_date=anchor_date, run_sql=run_sql)
             load_report_select.clear()
+            build_fundamental_tables_for_path.clear()
+            build_technical_tables_for_path.clear()
+            build_trended_table_for_paths.clear()
             loaded_rows = len(load_report_select(str(generated_path)))
         append_log(
             f"Rows loaded: {loaded_rows}",
@@ -1150,6 +1185,17 @@ def load_report_select_for_eod(
     except Exception as exc:  # pragma: no cover - UI feedback
         return None, resolved_path, expected_candidates, str(exc)
     return loaded_df, resolved_path, expected_candidates, None
+
+
+def _perf_mark(timings: list[tuple[str, float]], label: str, started_at: float) -> None:
+    timings.append((label, (time.perf_counter() - started_at) * 1000.0))
+
+
+def _render_perf_timings(show_perf: bool, timings: list[tuple[str, float]]) -> None:
+    if not show_perf or not timings:
+        return
+    joined = " | ".join(f"{label}: {duration:.1f}ms" for label, duration in timings)
+    st.caption(f"Perf timings: {joined}")
 
 
 def validate_required_columns(
@@ -1285,6 +1331,80 @@ def render_pdf_like_table(
         return None
 
     style_frame = df.copy()
+    estimated_height = max(220, 72 + len(style_frame) * 38)
+
+    if selectable:
+        display_frame = style_frame.copy()
+        needs_light_styling = bool(
+            value_color_rules or highlight_max_cols or center_all_except_first or center_cols
+        )
+        if needs_light_styling:
+            selectable_view = display_frame.style.hide(axis="index")
+            first_col = display_frame.columns[0]
+            selectable_view = selectable_view.set_properties(
+                subset=[first_col], **{"text-align": "left", "font-weight": "600"}
+            )
+            if center_all_except_first:
+                other_cols = display_frame.columns[1:].tolist()
+                if other_cols:
+                    selectable_view = selectable_view.set_properties(
+                        subset=other_cols, **{"text-align": "center"}
+                    )
+            if center_cols:
+                usable_center_cols = [col for col in center_cols if col in display_frame.columns]
+                if usable_center_cols:
+                    selectable_view = selectable_view.set_properties(
+                        subset=usable_center_cols, **{"text-align": "center"}
+                    )
+            if value_color_rules:
+                for col, rule_fn in value_color_rules.items():
+                    if col in display_frame.columns:
+                        selectable_view = selectable_view.applymap(rule_fn, subset=[col])
+            if highlight_max_cols:
+                for col in highlight_max_cols:
+                    if col in display_frame.columns:
+                        selectable_view = selectable_view.apply(_highlight_max_style, axis=0, subset=[col])
+            if format_map:
+                valid_formats = {col: fmt for col, fmt in format_map.items() if col in display_frame.columns}
+                if valid_formats:
+                    selectable_view = selectable_view.format(valid_formats, na_rep="N/A")
+        else:
+            if format_map:
+                valid_formats = {col: fmt for col, fmt in format_map.items() if col in display_frame.columns}
+                for col, fmt in valid_formats.items():
+                    display_frame[col] = display_frame[col].map(
+                        lambda value, f=fmt: (f.format(value) if pd.notna(value) else "N/A")
+                    )
+            selectable_view = display_frame
+        try:
+            selection_event = st.dataframe(
+                selectable_view,
+                use_container_width=True,
+                height=estimated_height,
+                on_select="rerun",
+                selection_mode="single-row",
+                hide_index=True,
+                key=selection_key,
+            )
+        except TypeError:
+            st.dataframe(selectable_view, use_container_width=True, height=estimated_height, hide_index=True)
+            st.warning("Row click selection is unavailable on this Streamlit version.")
+            return None
+
+        selected_rows: list[int] = []
+        if hasattr(selection_event, "selection") and hasattr(selection_event.selection, "rows"):
+            selected_rows = list(selection_event.selection.rows or [])
+        elif isinstance(selection_event, dict):
+            selected_rows = list(
+                selection_event.get("selection", {}).get("rows", [])
+            )
+        if not selected_rows:
+            return None
+        selected_index = selected_rows[0]
+        if selected_index < 0 or selected_index >= len(style_frame):
+            return None
+        return int(selected_index)
+
     styler = style_frame.style.hide(axis="index")
     styler = styler.set_table_styles(
         [
@@ -1341,53 +1461,46 @@ def render_pdf_like_table(
         valid_formats = {col: fmt for col, fmt in format_map.items() if col in style_frame.columns}
         if valid_formats:
             styler = styler.format(valid_formats, na_rep="N/A")
-    # Keep board tables fully visible by sizing the widget to fit all rows.
-    estimated_height = max(220, 72 + len(style_frame) * 38)
-    if not selectable:
-        st.dataframe(styler, use_container_width=True, height=estimated_height)
-        return None
-
-    try:
-        selection_event = st.dataframe(
-            styler,
-            use_container_width=True,
-            height=estimated_height,
-            on_select="rerun",
-            selection_mode="single-row",
-            key=selection_key,
-        )
-    except TypeError:
-        st.dataframe(styler, use_container_width=True, height=estimated_height)
-        st.warning("Row click selection is unavailable on this Streamlit version.")
-        return None
-
-    selected_rows: list[int] = []
-    if hasattr(selection_event, "selection") and hasattr(selection_event.selection, "rows"):
-        selected_rows = list(selection_event.selection.rows or [])
-    elif isinstance(selection_event, dict):
-        selected_rows = list(
-            selection_event.get("selection", {}).get("rows", [])
-        )
-
-    if not selected_rows:
-        return None
-    selected_index = selected_rows[0]
-    if selected_index < 0 or selected_index >= len(style_frame):
-        return None
-    return int(selected_index)
+    st.dataframe(styler, use_container_width=True, height=estimated_height)
+    return None
 
 
 def _clear_drilldown_selection(prefix: str) -> None:
     st.session_state.pop(f"{prefix}_selected_key", None)
     st.session_state.pop(f"{prefix}_selected_mode", None)
+    for suffix in (
+        "signature",
+        "default_sector",
+        "default_industry",
+        "pending_reset",
+        "sector",
+        "industry",
+        "cap",
+        "fund_range",
+        "tech_range",
+        "ticker",
+    ):
+        st.session_state.pop(f"{prefix}_drilldown_filter_{suffix}", None)
 
 
-def _sync_drilldown_signature(prefix: str, signature: tuple[str, str, str]) -> None:
+def _sync_drilldown_signature(prefix: str, signature: tuple[str, ...]) -> None:
     signature_key = f"{prefix}_drilldown_signature"
     previous_signature = st.session_state.get(signature_key)
     if previous_signature != signature:
         _clear_drilldown_selection(prefix)
         st.session_state[signature_key] = signature
+
+
+def _sort_table_by_total_desc(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "Total" not in df.columns:
+        return df
+    sorted_df = df.copy()
+    sorted_df["__total_sort"] = pd.to_numeric(sorted_df["Total"].map(_parse_number), errors="coerce")
+    return (
+        sorted_df.sort_values("__total_sort", ascending=False, na_position="last", kind="mergesort")
+        .drop(columns=["__total_sort"])
+        .reset_index(drop=True)
+    )
 
 
 def _format_market_cap_display(value: object) -> str:
@@ -1408,14 +1521,27 @@ def _format_market_cap_display(value: object) -> str:
     return f"{numeric_value / 1_000_000:.2f}M"
 
 
-def build_company_drilldown_table(
+def _market_cap_bucket_from_usd(value: object) -> str:
+    market_cap_num = pd.to_numeric(value, errors="coerce")
+    if pd.isna(market_cap_num) or float(market_cap_num) < 0:
+        return "Unknown"
+    market_cap_b = float(market_cap_num) / 1_000_000_000.0
+    if market_cap_b < 0.05:
+        return "Nano"
+    if market_cap_b < 0.3:
+        return "Micro"
+    if market_cap_b < 2:
+        return "Small"
+    if market_cap_b < 10:
+        return "Mid"
+    if market_cap_b < 200:
+        return "Large"
+    return "Mega"
+
+
+def _prepare_company_drilldown_universe(
     report_df: pd.DataFrame,
-    *,
-    selected_sector: str,
-    selected_mode: str,
-    selected_key: str,
-    sort_by: str = "technical",
-) -> tuple[str, Optional[pd.DataFrame], Optional[str]]:
+) -> tuple[Optional[pd.DataFrame], Optional[str]]:
     required_columns = {
         "ticker",
         "sector",
@@ -1426,56 +1552,265 @@ def build_company_drilldown_table(
     }
     missing = sorted(required_columns.difference(report_df.columns))
     if missing:
-        return "", None, f"Missing required columns for company list: {', '.join(missing)}"
+        return None, f"Missing required columns for company list: {', '.join(missing)}"
 
-    working = report_df.copy()
+    working = report_df[
+        [
+            "ticker",
+            "sector",
+            "industry",
+            "market_cap",
+            "fundamental_total_score",
+            "general_technical_score",
+        ]
+    ].copy()
+    working["ticker"] = working["ticker"].fillna("").astype(str).str.strip()
     working["sector"] = working["sector"].fillna("Unspecified")
     working["industry"] = working["industry"].fillna("Unspecified")
+    working["market_cap"] = pd.to_numeric(working["market_cap"], errors="coerce")
+    working["fundamental_total_score"] = pd.to_numeric(working["fundamental_total_score"], errors="coerce")
+    working["general_technical_score"] = pd.to_numeric(working["general_technical_score"], errors="coerce")
+    working["market_cap_bucket"] = working["market_cap"].apply(_market_cap_bucket_from_usd)
+    return working, None
 
+
+def build_company_drilldown_context(
+    report_df: pd.DataFrame,
+    *,
+    selected_sector: str,
+    selected_mode: str,
+    selected_key: str,
+) -> tuple[str, Optional[pd.DataFrame], list[str], list[str], Optional[str]]:
+    company_universe, error_message = _prepare_company_drilldown_universe(report_df)
+    if error_message:
+        return "", None, [], [], error_message
     if selected_mode == "sector":
-        filtered = working[working["sector"] == selected_key]
         title = f"Companies in Sector: {selected_key}"
+        default_sectors = [selected_key]
+        default_industries: list[str] = []
     else:
-        filtered = working[(working["sector"] == selected_sector) & (working["industry"] == selected_key)]
         title = f"Companies in {selected_sector} / {selected_key}"
+        default_sectors = [selected_sector]
+        default_industries = [selected_key]
+    return title, company_universe, default_sectors, default_industries, None
 
-    details = (
-        filtered[
-            [
-                "ticker",
-                "sector",
-                "industry",
-                "market_cap",
-                "fundamental_total_score",
-                "general_technical_score",
-            ]
-        ]
-        .rename(
-            columns={
-                "ticker": "Ticker",
-                "sector": "Sector",
-                "industry": "Industry",
-                "market_cap": "Market Cap",
-                "fundamental_total_score": "Fundamental Score",
-                "general_technical_score": "Technical Score",
-            }
-        )
-        .copy()
+
+def _sync_drilldown_filter_defaults(
+    prefix: str,
+    signature: tuple[str, ...],
+    *,
+    default_sectors: list[str],
+    default_industries: list[str],
+) -> None:
+    signature_key = f"{prefix}_drilldown_filter_signature"
+    if st.session_state.get(signature_key) == signature:
+        return
+    st.session_state[f"{prefix}_drilldown_filter_default_sector"] = list(default_sectors)
+    st.session_state[f"{prefix}_drilldown_filter_default_industry"] = list(default_industries)
+    st.session_state[f"{prefix}_drilldown_filter_sector"] = list(default_sectors)
+    st.session_state[f"{prefix}_drilldown_filter_industry"] = list(default_industries)
+    st.session_state[f"{prefix}_drilldown_filter_cap"] = []
+    st.session_state[f"{prefix}_drilldown_filter_fund_range"] = (0.0, 100.0)
+    st.session_state[f"{prefix}_drilldown_filter_tech_range"] = (0.0, 100.0)
+    st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
+    st.session_state[signature_key] = signature
+
+
+def _bind_ctrl_f_to_ticker_filter(input_label: str, scope_key: str) -> None:
+    html(
+        f"""
+<script>
+(function() {{
+  const scopeKey = {json.dumps(scope_key)};
+  const targetLabel = {json.dumps(input_label)};
+  try {{
+    const parentWindow = window.parent;
+    const parentDoc = parentWindow.document;
+    parentWindow.__equipilotCtrlFHandlers = parentWindow.__equipilotCtrlFHandlers || {{}};
+    if (parentWindow.__equipilotCtrlFHandlers[scopeKey]) {{
+      return;
+    }}
+    const isVisible = (el) => Boolean(el && el.offsetParent !== null);
+    const resolveTarget = () => {{
+      const allInputs = parentDoc.querySelectorAll("input[aria-label]");
+      for (const input of allInputs) {{
+        if ((input.getAttribute("aria-label") || "").trim() === targetLabel && isVisible(input)) {{
+          return input;
+        }}
+      }}
+      return null;
+    }};
+    const handler = (event) => {{
+      const key = String(event.key || "").toLowerCase();
+      if (!(event.ctrlKey || event.metaKey) || key !== "f") {{
+        return;
+      }}
+      const target = resolveTarget();
+      if (!target) {{
+        return;
+      }}
+      event.preventDefault();
+      target.focus();
+      target.select();
+    }};
+    parentDoc.addEventListener("keydown", handler, true);
+    parentWindow.__equipilotCtrlFHandlers[scopeKey] = handler;
+  }} catch (err) {{
+    // Manual focus still works if parent document access is restricted.
+  }}
+}})();
+</script>
+        """,
+        height=0,
     )
 
-    details["Fundamental Score"] = pd.to_numeric(details["Fundamental Score"], errors="coerce")
-    details["Technical Score"] = pd.to_numeric(details["Technical Score"], errors="coerce")
-    details["Market Cap"] = details["Market Cap"].map(_format_market_cap_display)
+
+def render_company_drilldown_filters(
+    company_df: pd.DataFrame,
+    *,
+    prefix: str,
+    ticker_label: str,
+) -> pd.DataFrame:
+    sector_key = f"{prefix}_drilldown_filter_sector"
+    industry_key = f"{prefix}_drilldown_filter_industry"
+    cap_key = f"{prefix}_drilldown_filter_cap"
+    fund_range_key = f"{prefix}_drilldown_filter_fund_range"
+    tech_range_key = f"{prefix}_drilldown_filter_tech_range"
+    ticker_key = f"{prefix}_drilldown_filter_ticker"
+    pending_reset_key = f"{prefix}_drilldown_filter_pending_reset"
+
+    # Streamlit forbids changing widget-bound session keys after widget instantiation.
+    # Apply reset defaults at the top of a rerun before creating widgets.
+    if st.session_state.pop(pending_reset_key, False):
+        st.session_state[sector_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
+        st.session_state[industry_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
+        st.session_state[cap_key] = []
+        st.session_state[fund_range_key] = (0.0, 100.0)
+        st.session_state[tech_range_key] = (0.0, 100.0)
+        st.session_state[ticker_key] = ""
+
+    st.markdown("**Company filters**")
+    with st.form(key=f"{prefix}_drilldown_filters_form", clear_on_submit=False):
+        filter_cols_top = st.columns(3)
+        with filter_cols_top[0]:
+            sector_options = sorted(company_df["sector"].dropna().unique().tolist())
+            selected_sectors = st.multiselect("Sector filter", options=sector_options, key=sector_key)
+        with filter_cols_top[1]:
+            if selected_sectors:
+                industry_source = company_df[company_df["sector"].isin(selected_sectors)]
+            else:
+                industry_source = company_df
+            industry_options = sorted(industry_source["industry"].dropna().unique().tolist())
+            selected_industries_state = st.session_state.get(industry_key, [])
+            selected_industries_state = [entry for entry in selected_industries_state if entry in industry_options]
+            if st.session_state.get(industry_key, []) != selected_industries_state:
+                st.session_state[industry_key] = selected_industries_state
+            selected_industries = st.multiselect("Industry filter", options=industry_options, key=industry_key)
+        with filter_cols_top[2]:
+            available_caps = set(company_df["market_cap_bucket"].dropna().tolist())
+            cap_options = [entry for entry in CAP_BUCKET_ORDER if entry in available_caps]
+            cap_options.extend(sorted(available_caps.difference(cap_options)))
+            selected_caps = st.multiselect("Market cap bucket", options=cap_options, key=cap_key)
+
+        filter_cols_bottom = st.columns([1, 1, 1.4])
+        with filter_cols_bottom[0]:
+            fundamental_range = st.slider(
+                "Fundamental score range",
+                min_value=0.0,
+                max_value=100.0,
+                value=(0.0, 100.0),
+                step=0.5,
+                key=fund_range_key,
+            )
+        with filter_cols_bottom[1]:
+            technical_range = st.slider(
+                "Technical score range",
+                min_value=0.0,
+                max_value=100.0,
+                value=(0.0, 100.0),
+                step=0.5,
+                key=tech_range_key,
+            )
+        with filter_cols_bottom[2]:
+            ticker_query = st.text_input(
+                ticker_label,
+                key=ticker_key,
+                placeholder="Type ticker symbol...",
+            ).strip()
+
+        action_cols = st.columns([1, 1, 3])
+        with action_cols[0]:
+            apply_clicked = st.form_submit_button("Apply filters", use_container_width=True)
+        with action_cols[1]:
+            reset_clicked = st.form_submit_button("Reset filters", use_container_width=True)
+        if not apply_clicked and not reset_clicked:
+            st.caption("Adjust filters, then click Apply filters.")
+
+    _bind_ctrl_f_to_ticker_filter(ticker_label, f"{prefix}_drilldown_ctrlf")
+
+    if reset_clicked:
+        st.session_state[pending_reset_key] = True
+        st.rerun()
+
+    filtered = company_df.copy()
+    if selected_sectors:
+        filtered = filtered[filtered["sector"].isin(selected_sectors)]
+    if selected_industries:
+        filtered = filtered[filtered["industry"].isin(selected_industries)]
+    if selected_caps:
+        filtered = filtered[filtered["market_cap_bucket"].isin(selected_caps)]
+
+    fund_min, fund_max = fundamental_range
+    tech_min, tech_max = technical_range
+    filtered = filtered[filtered["fundamental_total_score"].between(fund_min, fund_max, inclusive="both")]
+    filtered = filtered[filtered["general_technical_score"].between(tech_min, tech_max, inclusive="both")]
+
+    if ticker_query:
+        filtered = filtered[
+            filtered["ticker"].str.contains(ticker_query, case=False, na=False, regex=False)
+        ]
+    return filtered.copy()
+
+
+def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) -> pd.DataFrame:
+    if company_df.empty:
+        return pd.DataFrame(
+            columns=["Ticker", "Sector", "Industry", "Market Cap", "Fundamental Score", "Technical Score"]
+        )
+
     if sort_by == "fundamental":
-        sort_columns = ["Fundamental Score", "Technical Score"]
+        sort_columns = ["fundamental_total_score", "general_technical_score"]
     else:
-        sort_columns = ["Technical Score", "Fundamental Score"]
-    details = details.sort_values(
-        by=sort_columns,
-        ascending=[False, False],
-        na_position="last",
-    ).reset_index(drop=True)
-    return title, details, None
+        sort_columns = ["general_technical_score", "fundamental_total_score"]
+    sorted_df = company_df.sort_values(by=sort_columns, ascending=[False, False], na_position="last")
+
+    display_df = sorted_df[
+        [
+            "ticker",
+            "sector",
+            "industry",
+            "market_cap",
+            "fundamental_total_score",
+            "general_technical_score",
+        ]
+    ].rename(
+        columns={
+            "ticker": "Ticker",
+            "sector": "Sector",
+            "industry": "Industry",
+            "market_cap": "Market Cap",
+            "fundamental_total_score": "Fundamental Score",
+            "general_technical_score": "Technical Score",
+        }
+    )
+    display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
+    display_df["Fundamental Score"] = display_df["Fundamental Score"].map(
+        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+    )
+    display_df["Technical Score"] = display_df["Technical Score"].map(
+        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+    )
+    return display_df.reset_index(drop=True)
 
 
 def apply_trend_symbols_to_table(
@@ -1572,28 +1907,180 @@ def build_sector_pulse_display(df: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+@st.cache_data(show_spinner=False)
+def build_fundamental_tables_for_path(path_str: str) -> dict[str, pd.DataFrame]:
+    path = Path(path_str)
+    df = normalize_report_columns(load_report_select(path_str)).copy()
+    required = {
+        "sector",
+        "industry",
+        "fundamental_total_score",
+        "fundamental_value",
+        "fundamental_growth",
+        "fundamental_quality",
+        "fundamental_risk",
+        "fundamental_momentum",
+    }
+    ensure_required_columns(df, required, path)
+    df["sector"] = df["sector"].fillna("Unspecified")
+    df["industry"] = df.get("industry", pd.Series(index=df.index)).fillna("Unspecified")
+
+    tables: dict[str, pd.DataFrame] = {}
+    stats = compute_sector_overview_stats(df)
+    if stats.empty:
+        tables["All sectors"] = pd.DataFrame(columns=["Sector", "Total", "P1", "P2", "P3", "P4", "P5"])
+    else:
+        tables["All sectors"] = stats[
+            [
+                "sector",
+                "avg_total_score",
+                "avg_value",
+                "avg_growth",
+                "avg_quality",
+                "avg_risk",
+                "avg_momentum",
+            ]
+        ].rename(
+            columns={
+                "sector": "Sector",
+                "avg_total_score": "Total",
+                "avg_value": "P1",
+                "avg_growth": "P2",
+                "avg_quality": "P3",
+                "avg_risk": "P4",
+                "avg_momentum": "P5",
+            }
+        ).sort_values("Total", ascending=False, na_position="last").reset_index(drop=True)
+
+    for sector in sorted(df["sector"].dropna().unique().tolist()):
+        filtered = df[df["sector"] == sector]
+        grouped = (
+            filtered.groupby("industry", dropna=False)[
+                [
+                    "fundamental_total_score",
+                    "fundamental_value",
+                    "fundamental_growth",
+                    "fundamental_quality",
+                    "fundamental_risk",
+                    "fundamental_momentum",
+                ]
+            ]
+            .mean(numeric_only=True)
+            .reset_index()
+            .rename(
+                columns={
+                    "industry": "Industry",
+                    "fundamental_total_score": "Total",
+                    "fundamental_value": "P1",
+                    "fundamental_growth": "P2",
+                    "fundamental_quality": "P3",
+                    "fundamental_risk": "P4",
+                    "fundamental_momentum": "P5",
+                }
+            )
+            .sort_values("Total", ascending=False, na_position="last")
+            .reset_index(drop=True)
+        )
+        tables[str(sector)] = grouped
+    return tables
+
+
+@st.cache_data(show_spinner=False)
+def build_technical_tables_for_path(path_str: str) -> dict[str, pd.DataFrame]:
+    path = Path(path_str)
+    df = normalize_report_columns(load_report_select(path_str)).copy()
+    required = {
+        "sector",
+        "industry",
+        "general_technical_score",
+        "relative_performance",
+        "relative_volume",
+        "momentum",
+        "intermediate_trend",
+        "long_term_trend",
+    }
+    ensure_required_columns(df, required, path)
+    df["sector"] = df["sector"].fillna("Unspecified")
+    df["industry"] = df.get("industry", pd.Series(index=df.index)).fillna("Unspecified")
+    score_columns = [
+        "general_technical_score",
+        "relative_performance",
+        "relative_volume",
+        "momentum",
+        "intermediate_trend",
+        "long_term_trend",
+    ]
+
+    tables: dict[str, pd.DataFrame] = {}
+    tables["All sectors"] = (
+        df.groupby("sector", dropna=False)[score_columns]
+        .mean(numeric_only=True)
+        .reset_index()
+        .rename(
+            columns={
+                "sector": "Sector",
+                "general_technical_score": "Total",
+                "relative_performance": "Relative Performance",
+                "relative_volume": "Relative Volume",
+                "momentum": "Momentum",
+                "intermediate_trend": "Intermediate Trend",
+                "long_term_trend": "Long-term Trend",
+            }
+        )
+        .sort_values("Total", ascending=False, na_position="last")
+        .reset_index(drop=True)
+    )
+
+    for sector in sorted(df["sector"].dropna().unique().tolist()):
+        filtered = df[df["sector"] == sector]
+        grouped = (
+            filtered.groupby("industry", dropna=False)[score_columns]
+            .mean(numeric_only=True)
+            .reset_index()
+            .rename(
+                columns={
+                    "industry": "Industry",
+                    "general_technical_score": "Total",
+                    "relative_performance": "Relative Performance",
+                    "relative_volume": "Relative Volume",
+                    "momentum": "Momentum",
+                    "intermediate_trend": "Intermediate Trend",
+                    "long_term_trend": "Long-term Trend",
+                }
+            )
+            .sort_values("Total", ascending=False, na_position="last")
+            .reset_index(drop=True)
+        )
+        tables[str(sector)] = grouped
+    return tables
+
+
 def build_fundamental_table(df: pd.DataFrame, selected_sector: str) -> pd.DataFrame:
     if selected_sector == "All sectors":
         stats = compute_sector_overview_stats(df)
         if stats.empty:
             return pd.DataFrame(columns=["Sector", "Total", "P1", "P2", "P3", "P4", "P5"])
-        table = stats[[
-            "sector",
-            "avg_total_score",
-            "avg_value",
-            "avg_growth",
-            "avg_quality",
-            "avg_risk",
-            "avg_momentum",
-        ]].rename(columns={
-            "sector": "Sector",
-            "avg_total_score": "Total",
-            "avg_value": "P1",
-            "avg_growth": "P2",
-            "avg_quality": "P3",
-            "avg_risk": "P4",
-            "avg_momentum": "P5",
-        })
+        table = stats[
+            [
+                "sector",
+                "avg_total_score",
+                "avg_value",
+                "avg_growth",
+                "avg_quality",
+                "avg_risk",
+                "avg_momentum",
+            ]
+        ].rename(
+            columns={
+                "sector": "Sector",
+                "avg_total_score": "Total",
+                "avg_value": "P1",
+                "avg_growth": "P2",
+                "avg_quality": "P3",
+                "avg_risk": "P4",
+                "avg_momentum": "P5",
+            }
+        ).sort_values("Total", ascending=False, na_position="last")
         return table.reset_index(drop=True)
 
     filtered = df.copy()
@@ -1604,25 +2091,29 @@ def build_fundamental_table(df: pd.DataFrame, selected_sector: str) -> pd.DataFr
         return pd.DataFrame(columns=["Industry", "Total", "P1", "P2", "P3", "P4", "P5"])
 
     grouped = (
-        filtered.groupby("industry", dropna=False)[[
-            "fundamental_total_score",
-            "fundamental_value",
-            "fundamental_growth",
-            "fundamental_quality",
-            "fundamental_risk",
-            "fundamental_momentum",
-        ]]
+        filtered.groupby("industry", dropna=False)[
+            [
+                "fundamental_total_score",
+                "fundamental_value",
+                "fundamental_growth",
+                "fundamental_quality",
+                "fundamental_risk",
+                "fundamental_momentum",
+            ]
+        ]
         .mean(numeric_only=True)
         .reset_index()
-        .rename(columns={
-            "industry": "Industry",
-            "fundamental_total_score": "Total",
-            "fundamental_value": "P1",
-            "fundamental_growth": "P2",
-            "fundamental_quality": "P3",
-            "fundamental_risk": "P4",
-            "fundamental_momentum": "P5",
-        })
+        .rename(
+            columns={
+                "industry": "Industry",
+                "fundamental_total_score": "Total",
+                "fundamental_value": "P1",
+                "fundamental_growth": "P2",
+                "fundamental_quality": "P3",
+                "fundamental_risk": "P4",
+                "fundamental_momentum": "P5",
+            }
+        )
         .sort_values("Total", ascending=False, na_position="last")
         .reset_index(drop=True)
     )
@@ -1647,15 +2138,17 @@ def build_technical_table(df: pd.DataFrame, selected_sector: str) -> pd.DataFram
             work.groupby("sector", dropna=False)[score_columns]
             .mean(numeric_only=True)
             .reset_index()
-            .rename(columns={
-                "sector": "Sector",
-                "general_technical_score": "Total",
-                "relative_performance": "Relative Performance",
-                "relative_volume": "Relative Volume",
-                "momentum": "Momentum",
-                "intermediate_trend": "Intermediate Trend",
-                "long_term_trend": "Long-term Trend",
-            })
+            .rename(
+                columns={
+                    "sector": "Sector",
+                    "general_technical_score": "Total",
+                    "relative_performance": "Relative Performance",
+                    "relative_volume": "Relative Volume",
+                    "momentum": "Momentum",
+                    "intermediate_trend": "Intermediate Trend",
+                    "long_term_trend": "Long-term Trend",
+                }
+            )
             .sort_values("Total", ascending=False, na_position="last")
             .reset_index(drop=True)
         )
@@ -1663,32 +2156,105 @@ def build_technical_table(df: pd.DataFrame, selected_sector: str) -> pd.DataFram
 
     filtered = work[work["sector"] == selected_sector]
     if filtered.empty:
-        return pd.DataFrame(columns=[
-            "Industry",
+        return pd.DataFrame(
+            columns=[
+                "Industry",
+                "Total",
+                "Relative Performance",
+                "Relative Volume",
+                "Momentum",
+                "Intermediate Trend",
+                "Long-term Trend",
+            ]
+        )
+    grouped = (
+        filtered.groupby("industry", dropna=False)[score_columns]
+        .mean(numeric_only=True)
+        .reset_index()
+        .rename(
+            columns={
+                "industry": "Industry",
+                "general_technical_score": "Total",
+                "relative_performance": "Relative Performance",
+                "relative_volume": "Relative Volume",
+                "momentum": "Momentum",
+                "intermediate_trend": "Intermediate Trend",
+                "long_term_trend": "Long-term Trend",
+            }
+        )
+        .sort_values("Total", ascending=False, na_position="last")
+        .reset_index(drop=True)
+    )
+    return grouped
+
+
+def get_fundamental_table_for_sector(path_str: str, selected_sector: str) -> pd.DataFrame:
+    tables = build_fundamental_tables_for_path(path_str)
+    if selected_sector == "All sectors":
+        return tables.get("All sectors", pd.DataFrame(columns=["Sector", "Total", "P1", "P2", "P3", "P4", "P5"])).copy()
+    return tables.get(
+        selected_sector,
+        pd.DataFrame(columns=["Industry", "Total", "P1", "P2", "P3", "P4", "P5"]),
+    ).copy()
+
+
+def get_technical_table_for_sector(path_str: str, selected_sector: str) -> pd.DataFrame:
+    tables = build_technical_tables_for_path(path_str)
+    if selected_sector == "All sectors":
+        return tables.get(
+            "All sectors",
+            pd.DataFrame(
+                columns=[
+                    "Sector",
+                    "Total",
+                    "Relative Performance",
+                    "Relative Volume",
+                    "Momentum",
+                    "Intermediate Trend",
+                    "Long-term Trend",
+                ]
+            ),
+        ).copy()
+    return tables.get(
+        selected_sector,
+        pd.DataFrame(
+            columns=[
+                "Industry",
+                "Total",
+                "Relative Performance",
+                "Relative Volume",
+                "Momentum",
+                "Intermediate Trend",
+                "Long-term Trend",
+            ]
+        ),
+    ).copy()
+
+
+@st.cache_data(show_spinner=False)
+def build_trended_table_for_paths(
+    board_kind: str,
+    current_path_str: str,
+    previous_path_str: str,
+    selected_sector: str,
+    threshold: float,
+) -> pd.DataFrame:
+    if board_kind == "fundamental":
+        score_columns = ["Total", "P1", "P2", "P3", "P4", "P5"]
+        current_table = get_fundamental_table_for_sector(current_path_str, selected_sector)
+        previous_table = get_fundamental_table_for_sector(previous_path_str, selected_sector)
+    else:
+        score_columns = [
             "Total",
             "Relative Performance",
             "Relative Volume",
             "Momentum",
             "Intermediate Trend",
             "Long-term Trend",
-        ])
-    grouped = (
-        filtered.groupby("industry", dropna=False)[score_columns]
-        .mean(numeric_only=True)
-        .reset_index()
-        .rename(columns={
-            "industry": "Industry",
-            "general_technical_score": "Total",
-            "relative_performance": "Relative Performance",
-            "relative_volume": "Relative Volume",
-            "momentum": "Momentum",
-            "intermediate_trend": "Intermediate Trend",
-            "long_term_trend": "Long-term Trend",
-        })
-        .sort_values("Total", ascending=False, na_position="last")
-        .reset_index(drop=True)
-    )
-    return grouped
+        ]
+        current_table = get_technical_table_for_sector(current_path_str, selected_sector)
+        previous_table = get_technical_table_for_sector(previous_path_str, selected_sector)
+    return apply_trend_symbols_to_table(current_table, previous_table, score_columns, threshold=threshold)
 
 
 def render_sector_pulse_board(config: ReportConfig) -> None:
@@ -1756,34 +2322,57 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         value=get_default_previous_board_eod(selected_eod),
         key="fundamental_scoring_prev_eod",
     )
+    show_trend = st.checkbox(
+        "Show trend arrows vs previous EOD",
+        value=True,
+        key="fundamental_scoring_show_trends",
+    )
+    show_perf = st.checkbox(
+        "Show perf timings",
+        value=False,
+        key="fundamental_scoring_perf_toggle",
+    )
+    timings: list[tuple[str, float]] = []
+
+    t_start = time.perf_counter()
     with st.spinner("Loading fundamental scoring data..."):
         report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
+    _perf_mark(timings, "load current", t_start)
     if source_path is None:
         render_missing_report_select(selected_eod, candidates)
         return
     if load_error:
         st.error(f"Failed reading {source_path}: {load_error}")
         return
+
     previous_report_df: Optional[pd.DataFrame] = None
     previous_path: Optional[Path] = None
     previous_ready = False
-    previous_df, previous_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
-    if previous_path is None:
-        render_missing_report_select(previous_eod, previous_candidates)
-    elif previous_error:
-        st.error(f"Failed reading {previous_path}: {previous_error}")
-    else:
-        previous_report_df = previous_df
-        previous_ready = True
+    if show_trend:
+        t_start = time.perf_counter()
+        previous_df, previous_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
+        _perf_mark(timings, "load previous", t_start)
+        if previous_path is None:
+            render_missing_report_select(previous_eod, previous_candidates)
+        elif previous_error:
+            st.error(f"Failed reading {previous_path}: {previous_error}")
+        else:
+            previous_report_df = previous_df
+            previous_ready = True
 
     chips = [f"Current file: {source_path}", f"EOD: {selected_eod.isoformat()}"]
-    if previous_path is not None:
-        chips.append(f"Previous file: {previous_path}")
-    chips.append(f"EOD previous: {previous_eod.isoformat()}")
+    if show_trend:
+        if previous_path is not None:
+            chips.append(f"Previous file: {previous_path}")
+        chips.append(f"EOD previous: {previous_eod.isoformat()}")
+    else:
+        chips.append("Trend mode: Off")
     render_chip_row(chips)
+
     if not validate_required_columns(
         report_df,
         {
+            "ticker",
             "sector",
             "industry",
             "1m_close",
@@ -1793,6 +2382,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             "rs_monthly",
             "obvm_monthly",
             "fundamental_total_score",
+            "general_technical_score",
             "fundamental_value",
             "fundamental_growth",
             "fundamental_quality",
@@ -1803,10 +2393,11 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         "Fundamental Scoring",
     ):
         return
-    if previous_ready and previous_report_df is not None and previous_path is not None:
+    if show_trend and previous_ready and previous_report_df is not None and previous_path is not None:
         previous_ready = validate_required_columns(
             previous_report_df,
             {
+                "ticker",
                 "sector",
                 "industry",
                 "1m_close",
@@ -1816,6 +2407,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 "rs_monthly",
                 "obvm_monthly",
                 "fundamental_total_score",
+                "general_technical_score",
                 "fundamental_value",
                 "fundamental_growth",
                 "fundamental_quality",
@@ -1833,7 +2425,10 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         index=0,
         key="fundamental_scoring_sector_select",
     )
-    table_df = build_fundamental_table(report_df, selected_sector)
+    t_start = time.perf_counter()
+    table_df = get_fundamental_table_for_sector(str(source_path), selected_sector)
+    _perf_mark(timings, "build table", t_start)
+
     score_columns = ["Total", "P1", "P2", "P3", "P4", "P5"]
     render_df = table_df
     format_map = {
@@ -1844,26 +2439,39 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         "P4": "{:.1f}",
         "P5": "{:.1f}",
     }
-    if previous_ready and previous_report_df is not None:
-        previous_table_df = build_fundamental_table(previous_report_df, selected_sector)
-        render_df = apply_trend_symbols_to_table(table_df, previous_table_df, score_columns, threshold=5.0)
+    if show_trend and previous_ready and previous_path is not None:
+        t_start = time.perf_counter()
+        render_df = build_trended_table_for_paths(
+            "fundamental",
+            str(source_path),
+            str(previous_path),
+            selected_sector,
+            5.0,
+        )
+        _perf_mark(timings, "trend annotate", t_start)
         format_map = None
+    render_df = _sort_table_by_total_desc(render_df)
+
     drilldown_signature = (
         selected_eod.isoformat(),
         previous_eod.isoformat(),
         selected_sector,
+        "trend_on" if show_trend else "trend_off",
     )
     _sync_drilldown_signature("fundamental", drilldown_signature)
     drilldown_nonce_key = "fundamental_drilldown_nonce"
     drilldown_nonce = st.session_state.setdefault(drilldown_nonce_key, 0)
     table_widget_key = (
         f"fundamental_scoring_select_{selected_eod.isoformat()}_"
-        f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_{drilldown_nonce}"
+        f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_"
+        f"{'trend' if show_trend else 'notrend'}_{drilldown_nonce}_sortv2"
     )
     if selected_sector == "All sectors":
         render_board_title_band("Cross-Sector Fundamental Scoring")
     else:
         render_board_title_band(f"{selected_sector} - Industry Fundamental Scoring")
+
+    t_start = time.perf_counter()
     selected_row_index = render_pdf_like_table(
         render_df,
         center_all_except_first=True,
@@ -1880,6 +2488,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         selectable=True,
         selection_key=table_widget_key,
     )
+    _perf_mark(timings, "render table", t_start)
     if selected_row_index is not None:
         selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
         selected_mode = "sector" if selected_sector == "All sectors" else "industry"
@@ -1889,32 +2498,47 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
     selected_key = st.session_state.get("fundamental_selected_key")
     selected_mode = st.session_state.get("fundamental_selected_mode")
     if selected_key and selected_mode:
-        details_title, details_df, details_error = build_company_drilldown_table(
+        details_title, company_universe, default_sectors, default_industries, details_error = build_company_drilldown_context(
             report_df,
             selected_sector=selected_sector,
             selected_mode=selected_mode,
             selected_key=selected_key,
-            sort_by="fundamental",
         )
         if details_error:
             st.warning(details_error)
-        elif details_df is not None:
+        elif company_universe is not None:
+            filter_signature = (
+                selected_eod.isoformat(),
+                previous_eod.isoformat(),
+                selected_sector,
+                selected_mode,
+                selected_key,
+            )
+            _sync_drilldown_filter_defaults(
+                "fundamental",
+                filter_signature,
+                default_sectors=default_sectors,
+                default_industries=default_industries,
+            )
             st.markdown("---")
             st.caption(details_title)
-            if details_df.empty:
+            filtered_companies = render_company_drilldown_filters(
+                company_universe,
+                prefix="fundamental",
+                ticker_label="Ticker filter (Fundamental drilldown)",
+            )
+            st.caption(f"Companies after filters: {len(filtered_companies)}")
+            details_display = format_company_drilldown_display(filtered_companies, sort_by="fundamental")
+            if details_display.empty:
                 st.info("No companies found for the selected row.")
             else:
-                details_display = details_df.copy()
-                for score_col in ["Fundamental Score", "Technical Score"]:
-                    details_display[score_col] = details_display[score_col].map(
-                        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-                    )
                 details_height = max(220, 72 + len(details_display) * 34)
                 st.dataframe(details_display, use_container_width=True, height=details_height, hide_index=True)
             if st.button("Hide company list", key="fundamental_hide_company_list"):
                 _clear_drilldown_selection("fundamental")
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
                 st.rerun()
+    _render_perf_timings(show_perf, timings)
 
 
 def render_technical_scoring_board(config: ReportConfig) -> None:
@@ -1930,30 +2554,51 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         value=get_default_previous_board_eod(selected_eod),
         key="technical_scoring_prev_eod",
     )
+    show_trend = st.checkbox(
+        "Show trend arrows vs previous EOD",
+        value=True,
+        key="technical_scoring_show_trends",
+    )
+    show_perf = st.checkbox(
+        "Show perf timings",
+        value=False,
+        key="technical_scoring_perf_toggle",
+    )
+    timings: list[tuple[str, float]] = []
+
+    t_start = time.perf_counter()
     with st.spinner("Loading technical scoring data..."):
         report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
+    _perf_mark(timings, "load current", t_start)
     if source_path is None:
         render_missing_report_select(selected_eod, candidates)
         return
     if load_error:
         st.error(f"Failed reading {source_path}: {load_error}")
         return
+
     previous_report_df: Optional[pd.DataFrame] = None
     previous_path: Optional[Path] = None
     previous_ready = False
-    previous_df, previous_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
-    if previous_path is None:
-        render_missing_report_select(previous_eod, previous_candidates)
-    elif previous_error:
-        st.error(f"Failed reading {previous_path}: {previous_error}")
-    else:
-        previous_report_df = previous_df
-        previous_ready = True
+    if show_trend:
+        t_start = time.perf_counter()
+        previous_df, previous_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
+        _perf_mark(timings, "load previous", t_start)
+        if previous_path is None:
+            render_missing_report_select(previous_eod, previous_candidates)
+        elif previous_error:
+            st.error(f"Failed reading {previous_path}: {previous_error}")
+        else:
+            previous_report_df = previous_df
+            previous_ready = True
 
     chips = [f"Current file: {source_path}", f"EOD: {selected_eod.isoformat()}"]
-    if previous_path is not None:
-        chips.append(f"Previous file: {previous_path}")
-    chips.append(f"EOD previous: {previous_eod.isoformat()}")
+    if show_trend:
+        if previous_path is not None:
+            chips.append(f"Previous file: {previous_path}")
+        chips.append(f"EOD previous: {previous_eod.isoformat()}")
+    else:
+        chips.append("Trend mode: Off")
     render_chip_row(chips)
 
     if not validate_required_columns(
@@ -1972,7 +2617,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         "Technical Scoring",
     ):
         return
-    if previous_ready and previous_report_df is not None and previous_path is not None:
+    if show_trend and previous_ready and previous_report_df is not None and previous_path is not None:
         previous_ready = validate_required_columns(
             previous_report_df,
             {
@@ -1996,7 +2641,10 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         index=0,
         key="technical_scoring_sector_select",
     )
-    table_df = build_technical_table(report_df, selected_sector)
+    t_start = time.perf_counter()
+    table_df = get_technical_table_for_sector(str(source_path), selected_sector)
+    _perf_mark(timings, "build table", t_start)
+
     if selected_sector == "All sectors":
         render_board_title_band("Cross-Sector Technical Scoring")
     else:
@@ -2011,22 +2659,34 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     ]
     render_df = table_df
     format_map = {column: "{:.1f}" for column in score_columns}
-    if previous_ready and previous_report_df is not None:
-        previous_table_df = build_technical_table(previous_report_df, selected_sector)
-        render_df = apply_trend_symbols_to_table(table_df, previous_table_df, score_columns, threshold=5.0)
+    if show_trend and previous_ready and previous_path is not None:
+        t_start = time.perf_counter()
+        render_df = build_trended_table_for_paths(
+            "technical",
+            str(source_path),
+            str(previous_path),
+            selected_sector,
+            5.0,
+        )
+        _perf_mark(timings, "trend annotate", t_start)
         format_map = None
+
     drilldown_signature = (
         selected_eod.isoformat(),
         previous_eod.isoformat(),
         selected_sector,
+        "trend_on" if show_trend else "trend_off",
     )
     _sync_drilldown_signature("technical", drilldown_signature)
     drilldown_nonce_key = "technical_drilldown_nonce"
     drilldown_nonce = st.session_state.setdefault(drilldown_nonce_key, 0)
     table_widget_key = (
         f"technical_scoring_select_{selected_eod.isoformat()}_"
-        f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_{drilldown_nonce}"
+        f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_"
+        f"{'trend' if show_trend else 'notrend'}_{drilldown_nonce}"
     )
+
+    t_start = time.perf_counter()
     selected_row_index = render_pdf_like_table(
         render_df,
         center_all_except_first=True,
@@ -2036,6 +2696,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         selectable=True,
         selection_key=table_widget_key,
     )
+    _perf_mark(timings, "render table", t_start)
     if selected_row_index is not None:
         selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
         selected_mode = "sector" if selected_sector == "All sectors" else "industry"
@@ -2045,32 +2706,47 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     selected_key = st.session_state.get("technical_selected_key")
     selected_mode = st.session_state.get("technical_selected_mode")
     if selected_key and selected_mode:
-        details_title, details_df, details_error = build_company_drilldown_table(
+        details_title, company_universe, default_sectors, default_industries, details_error = build_company_drilldown_context(
             report_df,
             selected_sector=selected_sector,
             selected_mode=selected_mode,
             selected_key=selected_key,
-            sort_by="technical",
         )
         if details_error:
             st.warning(details_error)
-        elif details_df is not None:
+        elif company_universe is not None:
+            filter_signature = (
+                selected_eod.isoformat(),
+                previous_eod.isoformat(),
+                selected_sector,
+                selected_mode,
+                selected_key,
+            )
+            _sync_drilldown_filter_defaults(
+                "technical",
+                filter_signature,
+                default_sectors=default_sectors,
+                default_industries=default_industries,
+            )
             st.markdown("---")
             st.caption(details_title)
-            if details_df.empty:
+            filtered_companies = render_company_drilldown_filters(
+                company_universe,
+                prefix="technical",
+                ticker_label="Ticker filter (Technical drilldown)",
+            )
+            st.caption(f"Companies after filters: {len(filtered_companies)}")
+            details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
+            if details_display.empty:
                 st.info("No companies found for the selected row.")
             else:
-                details_display = details_df.copy()
-                for score_col in ["Fundamental Score", "Technical Score"]:
-                    details_display[score_col] = details_display[score_col].map(
-                        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-                    )
                 details_height = max(220, 72 + len(details_display) * 34)
                 st.dataframe(details_display, use_container_width=True, height=details_height, hide_index=True)
             if st.button("Hide company list", key="technical_hide_company_list"):
                 _clear_drilldown_selection("technical")
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
                 st.rerun()
+    _render_perf_timings(show_perf, timings)
 
 
 def _run_trade_idea_filter(strategy_name: str, report_df: pd.DataFrame) -> pd.DataFrame:
@@ -2110,20 +2786,14 @@ def _trade_idea_display_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _render_trade_idea_strategy(
-    config: ReportConfig,
     *,
+    selected_eod: date,
     strategy_name: str,
     board_title: str,
     strategy_subtitle: str,
     required_columns: set[str],
-    eod_key: str,
 ) -> None:
     st.caption(strategy_subtitle)
-    selected_eod = st.date_input(
-        "EOD date",
-        value=get_default_board_eod(config),
-        key=eod_key,
-    )
     with st.spinner(f"Loading {strategy_name} candidates..."):
         report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
     if source_path is None:
@@ -2157,7 +2827,7 @@ def _render_trade_idea_strategy(
             file_name=f"{strategy_name}_{selected_eod.isoformat()}.csv",
             mime="text/csv",
             use_container_width=True,
-            key=f"{strategy_name}_{eod_key}_download_csv",
+            key=f"{strategy_name}_trade_ideas_download_csv",
         )
     with export_cols[1]:
         st.download_button(
@@ -2166,7 +2836,7 @@ def _render_trade_idea_strategy(
             file_name=f"{strategy_name}_{selected_eod.isoformat()}.json",
             mime="application/json",
             use_container_width=True,
-            key=f"{strategy_name}_{eod_key}_download_json",
+            key=f"{strategy_name}_trade_ideas_download_json",
         )
 
     estimated_height = max(260, 72 + len(display_df) * 38)
@@ -2185,6 +2855,11 @@ def render_trade_ideas(config: ReportConfig) -> None:
             "Data source: report_select_<EOD> file",
         ]
     )
+    selected_eod = st.date_input(
+        "EOD date",
+        value=get_default_board_eod(config),
+        key="trade_ideas_eod",
+    )
     extreme_up_tab, weak_up_tab, extreme_down_tab, weak_down_tab = st.tabs(
         ["extreme_accel_up", "accel_up_weak", "extreme_accel_down", "accel_down_weak"]
     )
@@ -2192,7 +2867,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
     with extreme_up_tab:
         render_board_title_band("Trade Ideas - extreme_accel_up")
         _render_trade_idea_strategy(
-            config,
+            selected_eod=selected_eod,
             strategy_name="extreme_accel_up",
             board_title="Trade Ideas / extreme_accel_up",
             strategy_subtitle="Highest-conviction bullish acceleration setup with strict technical and thrust constraints.",
@@ -2208,13 +2883,12 @@ def render_trade_ideas(config: ReportConfig) -> None:
                 "obvm_daily",
                 "obvm_sma20",
             },
-            eod_key="trade_ideas_extreme_up_eod",
         )
 
     with weak_up_tab:
         render_board_title_band("Trade Ideas - accel_up_weak")
         _render_trade_idea_strategy(
-            config,
+            selected_eod=selected_eod,
             strategy_name="accel_up_weak",
             board_title="Trade Ideas / accel_up_weak",
             strategy_subtitle="Moderate bullish acceleration profile with constructive but cooling momentum behavior.",
@@ -2226,13 +2900,12 @@ def render_trade_ideas(config: ReportConfig) -> None:
                 "intermediate_trend",
                 "long_term_trend",
             },
-            eod_key="trade_ideas_up_weak_eod",
         )
 
     with extreme_down_tab:
         render_board_title_band("Trade Ideas - extreme_accel_down")
         _render_trade_idea_strategy(
-            config,
+            selected_eod=selected_eod,
             strategy_name="extreme_accel_down",
             board_title="Trade Ideas / extreme_accel_down",
             strategy_subtitle="Highest-conviction bearish acceleration setup with strict downside momentum and trend constraints.",
@@ -2248,13 +2921,12 @@ def render_trade_ideas(config: ReportConfig) -> None:
                 "obvm_daily",
                 "obvm_sma20",
             },
-            eod_key="trade_ideas_extreme_down_eod",
         )
 
     with weak_down_tab:
         render_board_title_band("Trade Ideas - accel_down_weak")
         _render_trade_idea_strategy(
-            config,
+            selected_eod=selected_eod,
             strategy_name="accel_down_weak",
             board_title="Trade Ideas / accel_down_weak",
             strategy_subtitle="Moderate bearish acceleration profile with early downside follow-through behavior.",
@@ -2266,7 +2938,6 @@ def render_trade_ideas(config: ReportConfig) -> None:
                 "intermediate_trend",
                 "long_term_trend",
             },
-            eod_key="trade_ideas_down_weak_eod",
         )
 
 
@@ -2673,12 +3344,13 @@ def render_quadrants(default_anchor: date) -> None:
     if curr_mc_var_all_negative:
         st.warning("All sectors show negative 1-month market cap variation (absolute weakness).")
     st.markdown(
-        """
+        f"""
 **How to read the quadrants**
 - A (High T + High P): confirmed leadership (dT > 0 accelerating, dT < 0 fading)
 - B (High T + Low P): narrow/fragile (dT > 0 strengthening but fragile; dT < 0 breakdown risk)
 - C (Low T + High P): early rotation (dT > 0 emerging; dT < 0 wait)
 - D (Low T + Low P): weak (dT > 0 bottoming attempt; dT < 0 breakdown)
+- Border color: green when dT > {QUADRANT_BORDER_D_T_THRESHOLD:.0f}, red when dT < -{QUADRANT_BORDER_D_T_THRESHOLD:.0f}, no border otherwise
         """
     )
 
