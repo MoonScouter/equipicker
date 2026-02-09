@@ -1689,6 +1689,17 @@ def render_company_drilldown_filters(
         st.session_state[tech_range_key] = (0.0, 100.0)
         st.session_state[ticker_key] = ""
 
+    st.session_state.setdefault(
+        sector_key, list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
+    )
+    st.session_state.setdefault(
+        industry_key, list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
+    )
+    st.session_state.setdefault(cap_key, [])
+    st.session_state.setdefault(fund_range_key, (0.0, 100.0))
+    st.session_state.setdefault(tech_range_key, (0.0, 100.0))
+    st.session_state.setdefault(ticker_key, "")
+
     st.markdown("**Company filters**")
     with st.form(key=f"{prefix}_drilldown_filters_form", clear_on_submit=False):
         filter_cols_top = st.columns(3)
@@ -1718,7 +1729,6 @@ def render_company_drilldown_filters(
                 "Fundamental score range",
                 min_value=0.0,
                 max_value=100.0,
-                value=(0.0, 100.0),
                 step=0.5,
                 key=fund_range_key,
             )
@@ -1727,7 +1737,6 @@ def render_company_drilldown_filters(
                 "Technical score range",
                 min_value=0.0,
                 max_value=100.0,
-                value=(0.0, 100.0),
                 step=0.5,
                 key=tech_range_key,
             )
