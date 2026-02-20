@@ -31,6 +31,13 @@ from equipicker_filters import (
     extreme_accel_down,
     extreme_accel_up,
 )
+from indices_service import (
+    INDEX_TICKER_TO_NAME,
+    INDEX_TICKERS,
+    fetch_indices_ohlc_since,
+    indices_cache_path,
+    save_indices_cache,
+)
 from report_select_service import generate_report_select_cache
 from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
@@ -140,6 +147,55 @@ def load_report_select(path_str: str) -> pd.DataFrame:
     if path.suffix == ".csv":
         return pd.read_csv(path)
     return pd.read_excel(path)
+
+
+@st.cache_data(show_spinner=False)
+def load_indices_cache_file(path_str: str) -> pd.DataFrame:
+    return pd.read_excel(path_str)
+
+
+def normalize_indices_cache_for_comparison(cache_df: pd.DataFrame) -> pd.DataFrame:
+    required_columns = {"ticker", "date", "adjusted_close"}
+    missing_columns = sorted(required_columns.difference(cache_df.columns))
+    if missing_columns:
+        raise ValueError(
+            "Indices cache missing required columns: "
+            f"{', '.join(missing_columns)}"
+        )
+
+    working_df = cache_df[["ticker", "date", "adjusted_close"]].copy()
+    working_df["ticker"] = working_df["ticker"].fillna("").astype(str).str.strip()
+    working_df = working_df[working_df["ticker"].isin(INDEX_TICKERS)]
+    working_df["date"] = pd.to_datetime(working_df["date"], errors="coerce").dt.date
+    working_df["adjusted_close"] = pd.to_numeric(working_df["adjusted_close"], errors="coerce")
+    working_df = working_df.dropna(subset=["date"]).drop_duplicates(
+        subset=["ticker", "date"], keep="first"
+    )
+    return working_df
+
+
+def build_indices_comparison_table(
+    normalized_cache_df: pd.DataFrame,
+    date_1: date,
+    date_2: date,
+) -> pd.DataFrame:
+    lookup = normalized_cache_df.set_index(["ticker", "date"])["adjusted_close"]
+    rows: list[dict[str, object]] = []
+    for ticker in INDEX_TICKERS:
+        close_date_1 = lookup.get((ticker, date_1), np.nan)
+        close_date_2 = lookup.get((ticker, date_2), np.nan)
+        variation_pct = np.nan
+        if pd.notna(close_date_1) and pd.notna(close_date_2) and float(close_date_1) != 0.0:
+            variation_pct = round(((float(close_date_2) - float(close_date_1)) / float(close_date_1)) * 100.0, 2)
+        rows.append(
+            {
+                "Index": INDEX_TICKER_TO_NAME[ticker],
+                "Close Date 1": close_date_1,
+                "Close Date 2": close_date_2,
+                "Variation %": variation_pct,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(show_spinner=False)
@@ -2950,6 +3006,119 @@ def render_trade_ideas(config: ReportConfig) -> None:
         )
 
 
+def render_indices_tab() -> None:
+    render_page_intro(
+        "Indices",
+        "Update yearly index prices cache and compare close across two dates.",
+        "Equipilot / Indices",
+    )
+    today_local = date.today()
+    cache_year = today_local.year
+    default_cutoff_date = date(cache_year - 1, 12, 31)
+    cutoff_date = st.date_input(
+        "SQL start date (exclusive)",
+        value=default_cutoff_date,
+        key="indices_cutoff_date",
+        help="Query uses date > selected day at 00:00:00.",
+    )
+    cache_file = indices_cache_path(cache_year)
+    render_chip_row(
+        [
+            f"Tickers in scope: {len(INDEX_TICKERS)}",
+            f"Yearly cache file: {cache_file.name}",
+            f"Cache year: {cache_year}",
+        ]
+    )
+    if st.button("Update indices cache", use_container_width=True, key="indices_update_cache"):
+        with st.spinner("Fetching indices OHLC data from database..."):
+            try:
+                fetched_df = fetch_indices_ohlc_since(cutoff_date)
+                saved_path = save_indices_cache(fetched_df, cache_year)
+                load_indices_cache_file.clear()
+            except Exception as exc:  # pragma: no cover - UI feedback
+                st.error(f"Indices cache update failed: {exc}")
+            else:
+                st.success(f"Indices cache updated: {saved_path} ({len(fetched_df)} rows)")
+
+    st.caption(f"Cache path: {cache_file}")
+    st.caption(f"Last updated: {_format_ts(cache_file)}")
+    if not cache_file.exists():
+        st.warning("No indices cache found for current year. Click `Update indices cache`.")
+        return
+
+    try:
+        cache_df = load_indices_cache_file(str(cache_file))
+    except Exception as exc:  # pragma: no cover - UI feedback
+        st.error(f"Failed reading indices cache: {exc}")
+        return
+
+    if cache_df.empty:
+        st.warning("Indices cache is empty. Click `Update indices cache` to refresh it.")
+        return
+
+    try:
+        normalized_cache_df = normalize_indices_cache_for_comparison(cache_df)
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+
+    if normalized_cache_df.empty:
+        st.warning("No matching index rows found in cache after ticker/date normalization.")
+        return
+
+    available_dates = sorted(normalized_cache_df["date"].dropna().unique().tolist())
+    if not available_dates:
+        st.warning("No valid dates available in cache.")
+        return
+
+    st.caption(
+        "Available date range: "
+        f"{available_dates[0].isoformat()} -> {available_dates[-1].isoformat()} "
+        f"({len(available_dates)} dates)"
+    )
+    date_col_1, date_col_2 = st.columns(2)
+    with date_col_1:
+        selected_date_1 = st.date_input(
+            "Date 1",
+            value=available_dates[0],
+            key="indices_date_1",
+        )
+    with date_col_2:
+        selected_date_2 = st.date_input(
+            "Date 2",
+            value=available_dates[-1],
+            key="indices_date_2",
+        )
+
+    if selected_date_1 > selected_date_2:
+        st.warning("Date 1 is after Date 2. Variation will be computed with selected order.")
+
+    comparison_df = build_indices_comparison_table(
+        normalized_cache_df,
+        selected_date_1,
+        selected_date_2,
+    )
+    date_1_col = f"{selected_date_1.isoformat()} Close"
+    date_2_col = f"{selected_date_2.isoformat()} Close"
+    comparison_df = comparison_df.rename(
+        columns={
+            "Close Date 1": date_1_col,
+            "Close Date 2": date_2_col,
+        }
+    )
+    st.caption("N/A means the selected date is not available for that index.")
+    render_pdf_like_table(
+        comparison_df,
+        center_cols=[date_1_col, date_2_col, "Variation %"],
+        value_color_rules={"Variation %": _variation_color_css},
+        format_map={
+            date_1_col: "{:.2f}",
+            date_2_col: "{:.2f}",
+            "Variation %": "{:.2f}%",
+        },
+    )
+
+
 def render_home(config: ReportConfig) -> None:
     render_page_intro(
         "Home Cockpit",
@@ -3378,9 +3547,10 @@ def main() -> None:
 
     render_header()
 
-    home_tab, monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab, trade_ideas_tab, quadrants_tab = st.tabs(
+    home_tab, indices_tab, monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab, trade_ideas_tab, quadrants_tab = st.tabs(
         [
             "Home",
+            "Indices",
             "Monthly Scoring Board",
             "Sector Pulse",
             "Fundamental Scoring",
@@ -3391,6 +3561,8 @@ def main() -> None:
     )
     with home_tab:
         render_home(config)
+    with indices_tab:
+        render_indices_tab()
     with monthly_tab:
         render_monthly_board(config)
     with sector_pulse_tab:
