@@ -109,6 +109,23 @@ monthly_last AS (
   WHERE rn = 1
 ),
 
+weekly_hist AS (
+  SELECT ew.ticker, ew.date, ew.obvm,
+         ROW_NUMBER() OVER (PARTITION BY ew.ticker ORDER BY ew.date DESC) AS rn
+  FROM eod_weekly ew
+  JOIN anchor a
+    ON a.ticker = ew.ticker
+   AND ew.date <= a.anchor_date
+),
+
+weekly_last AS (
+  SELECT
+    ticker,
+    obvm AS obvm_weekly
+  FROM weekly_hist
+  WHERE rn = 1
+),
+
 monthly_agg AS (
   SELECT
     ticker,
@@ -159,6 +176,9 @@ SELECT
   s.general_technical_score,
   COALESCE(ea.eod_as_of_date_used, ic.eod_price_date) AS eod_price_date,
   COALESCE(ea.eod_as_of_close, ic.eod_price_used) AS eod_price_used,
+  ic.sma_daily_20,
+  ic.sma_daily_50,
+  ic.sma_daily_200,
   lr.rs_daily,
   lr.rs_sma20,
   lr.obvm_daily,
@@ -202,6 +222,7 @@ SELECT
   pd.peg_ratio_score,
   ml.rs_monthly,
   ml.obvm_monthly,
+  wl.obvm_weekly,
   ic.eod_price_date AS ic_eod_price_date,
   ic.eod_price_used AS ic_eod_price_used
 FROM technical_scoring AS s
@@ -217,6 +238,8 @@ LEFT JOIN monthly_agg AS ma
   ON ma.ticker = s.ticker
 LEFT JOIN monthly_last AS ml
   ON ml.ticker = s.ticker
+LEFT JOIN weekly_last AS wl
+  ON wl.ticker = s.ticker
 LEFT JOIN pillar_scores AS ps
   ON ps.ticker = s.ticker 
 LEFT JOIN fiveago f5

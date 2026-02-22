@@ -14,6 +14,28 @@ def _format_market_cap_series(series: pd.Series) -> pd.Series:
     )
 
 
+def _require_columns(df: pd.DataFrame, required: set[str], filter_name: str) -> None:
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise KeyError(f"{filter_name}: missing required columns: {', '.join(missing)}")
+
+
+def _sort_by_available(
+    df: pd.DataFrame,
+    sort_columns: list[str],
+    ascending: list[bool],
+) -> pd.DataFrame:
+    available_cols: list[str] = []
+    available_ascending: list[bool] = []
+    for col, asc in zip(sort_columns, ascending):
+        if col in df.columns:
+            available_cols.append(col)
+            available_ascending.append(asc)
+    if not available_cols:
+        return df
+    return df.sort_values(by=available_cols, ascending=available_ascending)
+
+
 def extreme_accel_up(
     df: pd.DataFrame,
     cache_dir: Path,
@@ -21,48 +43,59 @@ def extreme_accel_up(
     save_output: bool = True,
     output_date: date | None = None,
 ) -> pd.DataFrame:
-    """Full-blown extreme acceleration filter + save results to Excel."""
+    """Bullish high-conviction acceleration using RS/OBVM/RSI/MA rule stack."""
+    _require_columns(
+        df,
+        {
+            'rs_daily',
+            'rs_sma20',
+            'rs_monthly',
+            'obvm_daily',
+            'obvm_sma20',
+            'obvm_monthly',
+            'obvm_weekly',
+            'rsi_weekly',
+            'rsi_daily',
+            'eod_price_used',
+            'sma_daily_20',
+            'sma_daily_50',
+            'sma_daily_200',
+        },
+        "extreme_accel_up",
+    )
     m = pd.Series(True, index=df.index)
 
-    # Scores pinned
-    m &= df['general_technical_score'] >= 99.9
+    # Relative performance
+    m &= df['rs_daily'] > df['rs_sma20']
+    m &= df['rs_monthly'] > 0
 
-    m &= df['relative_performance']    >= 99.9
-    if 'rs_monthly' in df.columns:
-        m &= df['rs_monthly'] >= 2.0
+    # Relative volume
+    m &= df['obvm_daily'] > df['obvm_sma20']
+    m &= df['obvm_monthly'] > 0
+    m &= df['obvm_weekly'] > 0
 
-    m &= df['relative_volume']         >= 99.9
-    if {'obvm_weekly','obvm_monthly'}.issubset(df.columns):
-        m &= df['obvm_weekly']  > 0
-        m &= df['obvm_monthly'] > 0
+    # Momentum
+    m &= df['rsi_weekly'] > 60
+    m &= df['rsi_daily'] > 70
 
-    m &= df['momentum']                >= 99.9
-    if {'rsi_weekly','rsi_daily'}.issubset(df.columns):
-        m &= (df['rsi_weekly'] >= 70) & (df['rsi_daily'] >= 80)
+    # Intermediate trend
+    m &= df['eod_price_used'] > df['sma_daily_20']
+    m &= df['eod_price_used'] > df['sma_daily_50']
+    m &= df['sma_daily_20'] > 1.02 * df['sma_daily_50']
+    m &= df['eod_price_used'] > 1.03 * df['sma_daily_20']
 
-    m &= df['intermediate_trend']      >= 99.9
-
-    m &= df['long_term_trend']         >= 99.9
-
-    if {'sma_daily_20','sma_daily_50','sma_daily_200','eod_price_used'}.issubset(df.columns):
-        m &= df['sma_daily_20'] >= 1.02 * df['sma_daily_50']
-        m &= df['sma_daily_50'] >= 1.02 * df['sma_daily_200']
-        m &= df['eod_price_used'] >= 1.03 * df['sma_daily_20']
-
-    # RS/OBVM thrust
-    m &= df['rs_daily']   > df['rs_sma20']
-    m &= df['obvm_daily'] > 1.5 * df['obvm_sma20']
+    # Long trend
+    m &= df['eod_price_used'] > df['sma_daily_50']
+    m &= df['eod_price_used'] > df['sma_daily_200']
+    m &= df['sma_daily_50'] > 1.02 * df['sma_daily_200']
 
     out = df.loc[m].copy()
 
-    # Ranking
-    if 'fundamental_total_score' in out.columns:
-        out = out.sort_values(
-            by=['fundamental_total_score', 'general_technical_score'],
-            ascending=[False, False]
-        )
-    else:
-        out = out.sort_values(by='general_technical_score', ascending=False)
+    out = _sort_by_available(
+        out,
+        ['fundamental_total_score', 'general_technical_score', 'ticker'],
+        [False, False, True],
+    )
 
     # Market cap display: ≥$1B in B, else in M
     if 'market_cap' in out.columns:
@@ -151,45 +184,52 @@ def accel_up_weak(
     Acceleration (weak up). Early-to-moderate upside strength, not extreme.
     Saves accel_up_weak_{YYYY-MM-DD}.xlsx in out_dir.
     """
+    _require_columns(
+        df,
+        {
+            'rs_daily',
+            'rs_sma20',
+            'rs_monthly',
+            'obvm_daily',
+            'obvm_sma20',
+            'obvm_monthly',
+            'obvm_weekly',
+            'rsi_weekly',
+            'rsi_daily',
+            'eod_price_used',
+            'sma_daily_50',
+            'sma_daily_200',
+        },
+        "accel_up_weak",
+    )
     m = pd.Series(True, index=df.index)
 
-    # Core scores
-    m &= df['general_technical_score'] >= 72
+    # Relative performance
+    m &= df['rs_daily'] < df['rs_sma20']
+    m &= df['rs_monthly'] > -1
 
-    m &= df['relative_volume']         >= 75 # Same as saying that only df['obvm_monthly'] > 0
-    # Volume trend
-    if {'obvm_weekly','obvm_monthly'}.issubset(df.columns):
-        m &= (df['obvm_monthly'] > 0)
+    # Relative volume
+    m &= df['obvm_monthly'] > 0
+    m &= (df['obvm_weekly'] < 0) | (df['obvm_daily'] < df['obvm_sma20'])
 
-    m &= df['relative_performance']    >= 65 # Same as saying that df['rs_monthly'] >= 0.6
-    # Optional tighten
-    if tighten and ('rs_monthly' in df.columns):
-        m &= df['rs_monthly'] >= 0
+    # Momentum
+    m &= df['rsi_weekly'] > 60
+    m &= df['rsi_daily'] < 70
 
-    m &= df['momentum']                >= 72 #Same as below filter for RSI
-    # RSI confirms (cooling but still constructive)
-    if {'rsi_weekly','rsi_daily'}.issubset(df.columns):
-        m &= df['rsi_weekly'].between(60, 75)
-        m &= df['rsi_daily'].between(60, 70)
-        m &= df['rsi_daily'] <= df['rsi_weekly']
+    # Intermediate trend
+    m &= df['eod_price_used'] > df['sma_daily_50']
 
-    m &= df['intermediate_trend']      >= 80 # Positive crossover & (price above MA50 OR price in between MA20-MA50, but at least at @60% of the gap)
-
-    m &= df['long_term_trend']         >= 70 # Positive crossover & (price above MA50 OR price in between MA50-MA200, but at least at @40% of the gap)
-
-    # RS / OBVM thrust
-    if {'rs_daily','rs_sma20'}.issubset(df.columns):
-        m &= df['rs_daily'] < df['rs_sma20']
-    if {'obvm_daily','obvm_sma20'}.issubset(df.columns):
-        m &= df['obvm_daily'] < df['obvm_sma20'] # Exclude extreme accel & normal accel stocks
+    # Long trend
+    m &= df['eod_price_used'] > df['sma_daily_50']
+    m &= df['eod_price_used'] > df['sma_daily_200']
 
     out = df.loc[m].copy()
 
-    # Ranking: technical then fundamental
-    if 'fundamental_total_score' in out.columns:
-        out = out.sort_values(['general_technical_score','fundamental_total_score'], ascending=[False, False])
-    else:
-        out = out.sort_values('general_technical_score', ascending=False)
+    out = _sort_by_available(
+        out,
+        ['general_technical_score', 'fundamental_total_score', 'ticker'],
+        [False, False, True],
+    )
 
     # Market cap display
     if 'market_cap' in out.columns:
@@ -209,44 +249,59 @@ def extreme_accel_down(
     save_output: bool = True,
     output_date: date | None = None,
 ) -> pd.DataFrame:
-    """Full-blown downside acceleration filter + optional save to Excel."""
+    """Bearish high-conviction acceleration; mirror of extreme_accel_up rules."""
+    _require_columns(
+        df,
+        {
+            'rs_daily',
+            'rs_sma20',
+            'rs_monthly',
+            'obvm_daily',
+            'obvm_sma20',
+            'obvm_monthly',
+            'obvm_weekly',
+            'rsi_weekly',
+            'rsi_daily',
+            'eod_price_used',
+            'sma_daily_20',
+            'sma_daily_50',
+            'sma_daily_200',
+        },
+        "extreme_accel_down",
+    )
     m = pd.Series(True, index=df.index)
 
-    m &= df['general_technical_score'] <= 0.1
-
-    m &= df['relative_performance'] <= 0.1
-    if 'rs_monthly' in df.columns:
-        m &= df['rs_monthly'] <= -2.0
-
-    m &= df['relative_volume'] <= 0.1
-    if {'obvm_weekly', 'obvm_monthly'}.issubset(df.columns):
-        m &= df['obvm_weekly'] < 0
-        m &= df['obvm_monthly'] < 0
-
-    m &= df['momentum'] <= 0.1
-    if {'rsi_weekly', 'rsi_daily'}.issubset(df.columns):
-        m &= (df['rsi_weekly'] <= 30) & (df['rsi_daily'] <= 20)
-
-    m &= df['intermediate_trend'] <= 0.1
-    m &= df['long_term_trend'] <= 0.1
-
-    if {'sma_daily_20', 'sma_daily_50', 'sma_daily_200', 'eod_price_used'}.issubset(df.columns):
-        m &= df['sma_daily_20'] <= 0.98 * df['sma_daily_50']
-        m &= df['sma_daily_50'] <= 0.98 * df['sma_daily_200']
-        m &= df['eod_price_used'] <= 0.97 * df['sma_daily_20']
-
+    # Relative performance
     m &= df['rs_daily'] < df['rs_sma20']
-    m &= df['obvm_daily'] < (df['obvm_sma20'] / 1.5)
+    m &= df['rs_monthly'] < 0
+
+    # Relative volume
+    m &= df['obvm_daily'] < df['obvm_sma20']
+    m &= df['obvm_monthly'] < 0
+    m &= df['obvm_weekly'] < 0
+
+    # Momentum
+    m &= df['rsi_weekly'] < 40
+    m &= df['rsi_daily'] < 30
+
+    # Intermediate trend
+    m &= df['eod_price_used'] < df['sma_daily_20']
+    m &= df['eod_price_used'] < df['sma_daily_50']
+    m &= df['sma_daily_20'] < 0.98 * df['sma_daily_50']
+    m &= df['eod_price_used'] < 0.97 * df['sma_daily_20']
+
+    # Long trend
+    m &= df['eod_price_used'] < df['sma_daily_50']
+    m &= df['eod_price_used'] < df['sma_daily_200']
+    m &= df['sma_daily_50'] < 0.98 * df['sma_daily_200']
 
     out = df.loc[m].copy()
 
-    if 'fundamental_total_score' in out.columns:
-        out = out.sort_values(
-            by=['general_technical_score', 'fundamental_total_score'],
-            ascending=[True, True],
-        )
-    else:
-        out = out.sort_values(by='general_technical_score', ascending=True)
+    out = _sort_by_available(
+        out,
+        ['general_technical_score', 'fundamental_total_score', 'ticker'],
+        [True, True, True],
+    )
 
     if 'market_cap' in out.columns:
         out['market_cap'] = _format_market_cap_series(out['market_cap'])
@@ -270,41 +325,52 @@ def accel_down_weak(
     Acceleration (weak down). Early-to-moderate downside strength, not extreme.
     Saves accel_down_weak_{YYYY-MM-DD}.xlsx in out_dir.
     """
+    _require_columns(
+        df,
+        {
+            'rs_daily',
+            'rs_sma20',
+            'rs_monthly',
+            'obvm_daily',
+            'obvm_sma20',
+            'obvm_monthly',
+            'obvm_weekly',
+            'rsi_weekly',
+            'rsi_daily',
+            'eod_price_used',
+            'sma_daily_50',
+            'sma_daily_200',
+        },
+        "accel_down_weak",
+    )
     m = pd.Series(True, index=df.index)
 
-    m &= df['general_technical_score'] <= 28
+    # Relative performance
+    m &= df['rs_daily'] > df['rs_sma20']
+    m &= df['rs_monthly'] < 1
 
-    m &= df['relative_volume'] <= 25
-    if {'obvm_weekly', 'obvm_monthly'}.issubset(df.columns):
-        m &= df['obvm_monthly'] < 0
+    # Relative volume
+    m &= df['obvm_monthly'] < 0
+    m &= (df['obvm_weekly'] > 0) | (df['obvm_daily'] > df['obvm_sma20'])
 
-    m &= df['relative_performance'] <= 35
-    if tighten and ('rs_monthly' in df.columns):
-        m &= df['rs_monthly'] <= 0
+    # Momentum
+    m &= df['rsi_weekly'] < 40
+    m &= df['rsi_daily'] > 30
 
-    m &= df['momentum'] <= 28
-    if {'rsi_weekly', 'rsi_daily'}.issubset(df.columns):
-        m &= df['rsi_weekly'].between(25, 40)
-        m &= df['rsi_daily'].between(30, 40)
-        m &= df['rsi_daily'] >= df['rsi_weekly']
+    # Intermediate trend
+    m &= df['eod_price_used'] < df['sma_daily_50']
 
-    m &= df['intermediate_trend'] <= 20
-    m &= df['long_term_trend'] <= 30
-
-    if {'rs_daily', 'rs_sma20'}.issubset(df.columns):
-        m &= df['rs_daily'] > df['rs_sma20']
-    if {'obvm_daily', 'obvm_sma20'}.issubset(df.columns):
-        m &= df['obvm_daily'] > df['obvm_sma20']
+    # Long trend
+    m &= df['eod_price_used'] < df['sma_daily_50']
+    m &= df['eod_price_used'] < df['sma_daily_200']
 
     out = df.loc[m].copy()
 
-    if 'fundamental_total_score' in out.columns:
-        out = out.sort_values(
-            by=['general_technical_score', 'fundamental_total_score'],
-            ascending=[True, True],
-        )
-    else:
-        out = out.sort_values(by='general_technical_score', ascending=True)
+    out = _sort_by_available(
+        out,
+        ['general_technical_score', 'fundamental_total_score', 'ticker'],
+        [True, True, True],
+    )
 
     if 'market_cap' in out.columns:
         out['market_cap'] = _format_market_cap_series(out['market_cap'])
