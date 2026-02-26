@@ -164,6 +164,7 @@ pegdata AS (
 )
 SELECT
   s.ticker,
+  tk.name AS company,
   tk.market_cap,
   tk.sector,
   tk.industry,

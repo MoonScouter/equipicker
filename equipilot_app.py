@@ -1610,17 +1610,24 @@ def _prepare_company_drilldown_universe(
     if missing:
         return None, f"Missing required columns for company list: {', '.join(missing)}"
 
-    working = report_df[
-        [
-            "ticker",
-            "sector",
-            "industry",
-            "market_cap",
-            "fundamental_total_score",
-            "general_technical_score",
-        ]
-    ].copy()
+    selected_columns = [
+        "ticker",
+        "sector",
+        "industry",
+        "market_cap",
+        "fundamental_total_score",
+        "general_technical_score",
+    ]
+    if "company" in report_df.columns:
+        selected_columns.insert(1, "company")
+
+    working = report_df[selected_columns].copy()
     working["ticker"] = working["ticker"].fillna("").astype(str).str.strip()
+    if "company" in working.columns:
+        working["company"] = working["company"].fillna("").astype(str).str.strip()
+    else:
+        working["company"] = ""
+    working["company"] = working["company"].where(working["company"].str.len() > 0, working["ticker"])
     working["sector"] = working["sector"].fillna("Unspecified")
     working["industry"] = working["industry"].fillna("Unspecified")
     working["market_cap"] = pd.to_numeric(working["market_cap"], errors="coerce")
@@ -1839,6 +1846,18 @@ def render_company_drilldown_filters(
 
 def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) -> pd.DataFrame:
     if company_df.empty:
+        if sort_by == "technical":
+            return pd.DataFrame(
+                columns=[
+                    "Ticker",
+                    "Company",
+                    "Sector",
+                    "Industry",
+                    "Market Cap",
+                    "Fundamental Score",
+                    "Technical Score",
+                ]
+            )
         return pd.DataFrame(
             columns=["Ticker", "Sector", "Industry", "Market Cap", "Fundamental Score", "Technical Score"]
         )
@@ -1847,27 +1866,34 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sort_columns = ["fundamental_total_score", "general_technical_score"]
     else:
         sort_columns = ["general_technical_score", "fundamental_total_score"]
-    sorted_df = company_df.sort_values(by=sort_columns, ascending=[False, False], na_position="last")
+    sorted_df = company_df.sort_values(by=sort_columns, ascending=[False, False], na_position="last").copy()
+    if "company" in sorted_df.columns:
+        sorted_df["company"] = sorted_df["company"].fillna("").astype(str).str.strip()
+        sorted_df["company"] = sorted_df["company"].where(sorted_df["company"].str.len() > 0, sorted_df["ticker"])
+    else:
+        sorted_df["company"] = sorted_df["ticker"]
 
-    display_df = sorted_df[
-        [
-            "ticker",
-            "sector",
-            "industry",
-            "market_cap",
-            "fundamental_total_score",
-            "general_technical_score",
-        ]
-    ].rename(
-        columns={
-            "ticker": "Ticker",
-            "sector": "Sector",
-            "industry": "Industry",
-            "market_cap": "Market Cap",
-            "fundamental_total_score": "Fundamental Score",
-            "general_technical_score": "Technical Score",
-        }
-    )
+    display_columns = [
+        "ticker",
+        "sector",
+        "industry",
+        "market_cap",
+        "fundamental_total_score",
+        "general_technical_score",
+    ]
+    rename_map = {
+        "ticker": "Ticker",
+        "sector": "Sector",
+        "industry": "Industry",
+        "market_cap": "Market Cap",
+        "fundamental_total_score": "Fundamental Score",
+        "general_technical_score": "Technical Score",
+    }
+    if sort_by == "technical":
+        display_columns.insert(1, "company")
+        rename_map["company"] = "Company"
+
+    display_df = sorted_df[display_columns].rename(columns=rename_map)
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Fundamental Score"] = display_df["Fundamental Score"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
