@@ -19,6 +19,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "industry": "Software",
                     "market_cap": 12_000_000_000,
                     "fundamental_total_score": 84.0,
+                    "fundamental_momentum": 77.0,
                     "general_technical_score": 88.0,
                 },
                 {
@@ -28,6 +29,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "industry": "Software",
                     "market_cap": 2_000_000_000,
                     "fundamental_total_score": 70.0,
+                    "fundamental_momentum": 55.0,
                     "general_technical_score": 60.0,
                 },
             ]
@@ -38,6 +40,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertIsNone(error)
         assert prepared is not None
         self.assertEqual(prepared["company"].tolist(), ["Alpha Inc", "BBB.US"])
+        self.assertEqual(prepared["fundamental_momentum"].tolist(), [77.0, 55.0])
 
     def test_prepare_company_universe_backfills_missing_company_column(self) -> None:
         report_df = pd.DataFrame(
@@ -59,6 +62,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         assert prepared is not None
         self.assertIn("company", prepared.columns)
         self.assertEqual(prepared.iloc[0]["company"], "AAA.US")
+        self.assertIn("fundamental_momentum", prepared.columns)
+        self.assertTrue(pd.isna(prepared.iloc[0]["fundamental_momentum"]))
 
     def test_technical_display_includes_company_column_and_preserves_sort(self) -> None:
         company_df = pd.DataFrame(
@@ -70,6 +75,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "industry": "Software",
                     "market_cap": 1_000_000_000,
                     "fundamental_total_score": 95.0,
+                    "fundamental_momentum": 60.0,
                     "general_technical_score": 80.0,
                 },
                 {
@@ -79,6 +85,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "industry": "Hardware",
                     "market_cap": 1_000_000_000,
                     "fundamental_total_score": 70.0,
+                    "fundamental_momentum": 72.0,
                     "general_technical_score": 90.0,
                 },
             ]
@@ -95,11 +102,13 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Industry",
                 "Market Cap",
                 "Fundamental Score",
+                "Fundamental Momentum",
                 "Technical Score",
             ],
         )
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertEqual(rendered.iloc[0]["Company"], "High Tech")
+        self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "72.0")
 
 
 if __name__ == "__main__":

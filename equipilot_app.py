@@ -1620,6 +1620,8 @@ def _prepare_company_drilldown_universe(
     ]
     if "company" in report_df.columns:
         selected_columns.insert(1, "company")
+    if "fundamental_momentum" in report_df.columns:
+        selected_columns.append("fundamental_momentum")
 
     working = report_df[selected_columns].copy()
     working["ticker"] = working["ticker"].fillna("").astype(str).str.strip()
@@ -1633,6 +1635,10 @@ def _prepare_company_drilldown_universe(
     working["market_cap"] = pd.to_numeric(working["market_cap"], errors="coerce")
     working["fundamental_total_score"] = pd.to_numeric(working["fundamental_total_score"], errors="coerce")
     working["general_technical_score"] = pd.to_numeric(working["general_technical_score"], errors="coerce")
+    if "fundamental_momentum" in working.columns:
+        working["fundamental_momentum"] = pd.to_numeric(working["fundamental_momentum"], errors="coerce")
+    else:
+        working["fundamental_momentum"] = np.nan
     working["market_cap_bucket"] = working["market_cap"].apply(_market_cap_bucket_from_usd)
     return working, None
 
@@ -1855,6 +1861,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                     "Industry",
                     "Market Cap",
                     "Fundamental Score",
+                    "Fundamental Momentum",
                     "Technical Score",
                 ]
             )
@@ -1872,6 +1879,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["company"] = sorted_df["company"].where(sorted_df["company"].str.len() > 0, sorted_df["ticker"])
     else:
         sorted_df["company"] = sorted_df["ticker"]
+    if "fundamental_momentum" not in sorted_df.columns:
+        sorted_df["fundamental_momentum"] = np.nan
 
     display_columns = [
         "ticker",
@@ -1891,7 +1900,9 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     }
     if sort_by == "technical":
         display_columns.insert(1, "company")
+        display_columns.insert(-1, "fundamental_momentum")
         rename_map["company"] = "Company"
+        rename_map["fundamental_momentum"] = "Fundamental Momentum"
 
     display_df = sorted_df[display_columns].rename(columns=rename_map)
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
@@ -1901,6 +1912,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     display_df["Technical Score"] = display_df["Technical Score"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
     )
+    if "Fundamental Momentum" in display_df.columns:
+        display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(
+            lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+        )
     return display_df.reset_index(drop=True)
 
 
