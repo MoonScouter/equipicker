@@ -1528,12 +1528,16 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "signature",
         "default_sector",
         "default_industry",
+        "default_fund_range",
+        "default_tech_range",
+        "default_fund_momentum_range",
         "pending_reset",
         "sector",
         "industry",
         "cap",
         "fund_range",
         "tech_range",
+        "fund_momentum_range",
         "ticker",
     ):
         st.session_state.pop(f"{prefix}_drilldown_filter_{suffix}", None)
@@ -1670,17 +1674,24 @@ def _sync_drilldown_filter_defaults(
     *,
     default_sectors: list[str],
     default_industries: list[str],
+    default_fund_range: tuple[float, float] = (0.0, 100.0),
+    default_tech_range: tuple[float, float] = (0.0, 100.0),
+    default_fund_momentum_range: tuple[float, float] = (0.0, 100.0),
 ) -> None:
     signature_key = f"{prefix}_drilldown_filter_signature"
     if st.session_state.get(signature_key) == signature:
         return
     st.session_state[f"{prefix}_drilldown_filter_default_sector"] = list(default_sectors)
     st.session_state[f"{prefix}_drilldown_filter_default_industry"] = list(default_industries)
+    st.session_state[f"{prefix}_drilldown_filter_default_fund_range"] = tuple(default_fund_range)
+    st.session_state[f"{prefix}_drilldown_filter_default_tech_range"] = tuple(default_tech_range)
+    st.session_state[f"{prefix}_drilldown_filter_default_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_sector"] = list(default_sectors)
     st.session_state[f"{prefix}_drilldown_filter_industry"] = list(default_industries)
     st.session_state[f"{prefix}_drilldown_filter_cap"] = []
-    st.session_state[f"{prefix}_drilldown_filter_fund_range"] = (0.0, 100.0)
-    st.session_state[f"{prefix}_drilldown_filter_tech_range"] = (0.0, 100.0)
+    st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(default_fund_range)
+    st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(default_tech_range)
+    st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
     st.session_state[signature_key] = signature
 
@@ -1739,14 +1750,19 @@ def render_company_drilldown_filters(
     *,
     prefix: str,
     ticker_label: str,
+    include_fundamental_momentum_filter: bool = False,
 ) -> pd.DataFrame:
     sector_key = f"{prefix}_drilldown_filter_sector"
     industry_key = f"{prefix}_drilldown_filter_industry"
     cap_key = f"{prefix}_drilldown_filter_cap"
     fund_range_key = f"{prefix}_drilldown_filter_fund_range"
     tech_range_key = f"{prefix}_drilldown_filter_tech_range"
+    fund_momentum_range_key = f"{prefix}_drilldown_filter_fund_momentum_range"
     ticker_key = f"{prefix}_drilldown_filter_ticker"
     pending_reset_key = f"{prefix}_drilldown_filter_pending_reset"
+    default_fund_range_key = f"{prefix}_drilldown_filter_default_fund_range"
+    default_tech_range_key = f"{prefix}_drilldown_filter_default_tech_range"
+    default_fund_momentum_range_key = f"{prefix}_drilldown_filter_default_fund_momentum_range"
 
     # Streamlit forbids changing widget-bound session keys after widget instantiation.
     # Apply reset defaults at the top of a rerun before creating widgets.
@@ -1754,8 +1770,11 @@ def render_company_drilldown_filters(
         st.session_state[sector_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
         st.session_state[industry_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
         st.session_state[cap_key] = []
-        st.session_state[fund_range_key] = (0.0, 100.0)
-        st.session_state[tech_range_key] = (0.0, 100.0)
+        st.session_state[fund_range_key] = tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0)))
+        st.session_state[tech_range_key] = tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0)))
+        st.session_state[fund_momentum_range_key] = tuple(
+            st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))
+        )
         st.session_state[ticker_key] = ""
 
     st.session_state.setdefault(
@@ -1765,8 +1784,12 @@ def render_company_drilldown_filters(
         industry_key, list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
     )
     st.session_state.setdefault(cap_key, [])
-    st.session_state.setdefault(fund_range_key, (0.0, 100.0))
-    st.session_state.setdefault(tech_range_key, (0.0, 100.0))
+    st.session_state.setdefault(fund_range_key, tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0))))
+    st.session_state.setdefault(tech_range_key, tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0))))
+    st.session_state.setdefault(
+        fund_momentum_range_key,
+        tuple(st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))),
+    )
     st.session_state.setdefault(ticker_key, "")
 
     st.markdown("**Company filters**")
@@ -1792,7 +1815,8 @@ def render_company_drilldown_filters(
             cap_options.extend(sorted(available_caps.difference(cap_options)))
             selected_caps = st.multiselect("Market cap bucket", options=cap_options, key=cap_key)
 
-        filter_cols_bottom = st.columns([1, 1, 1.4])
+        bottom_layout = [1, 1, 1, 1.4] if include_fundamental_momentum_filter else [1, 1, 1.4]
+        filter_cols_bottom = st.columns(bottom_layout)
         with filter_cols_bottom[0]:
             fundamental_range = st.slider(
                 "Fundamental score range",
@@ -1809,7 +1833,20 @@ def render_company_drilldown_filters(
                 step=0.5,
                 key=tech_range_key,
             )
-        with filter_cols_bottom[2]:
+        if include_fundamental_momentum_filter:
+            with filter_cols_bottom[2]:
+                fundamental_momentum_range = st.slider(
+                    "Fundamental momentum range",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    key=fund_momentum_range_key,
+                )
+            ticker_col_index = 3
+        else:
+            fundamental_momentum_range = (0.0, 100.0)
+            ticker_col_index = 2
+        with filter_cols_bottom[ticker_col_index]:
             ticker_query = st.text_input(
                 ticker_label,
                 key=ticker_key,
@@ -1842,6 +1879,12 @@ def render_company_drilldown_filters(
     tech_min, tech_max = technical_range
     filtered = filtered[filtered["fundamental_total_score"].between(fund_min, fund_max, inclusive="both")]
     filtered = filtered[filtered["general_technical_score"].between(tech_min, tech_max, inclusive="both")]
+    if include_fundamental_momentum_filter and "fundamental_momentum" in filtered.columns:
+        if filtered["fundamental_momentum"].notna().any():
+            momentum_min, momentum_max = fundamental_momentum_range
+            filtered = filtered[
+                filtered["fundamental_momentum"].between(momentum_min, momentum_max, inclusive="both")
+            ]
 
     if ticker_query:
         filtered = filtered[
@@ -2833,6 +2876,9 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 filter_signature,
                 default_sectors=default_sectors,
                 default_industries=default_industries,
+                default_fund_range=(60.0, 100.0),
+                default_tech_range=(50.0, 100.0),
+                default_fund_momentum_range=(60.0, 100.0),
             )
             st.markdown("---")
             st.caption(details_title)
@@ -2840,6 +2886,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 company_universe,
                 prefix="technical",
                 ticker_label="Ticker filter (Technical drilldown)",
+                include_fundamental_momentum_filter=True,
             )
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
