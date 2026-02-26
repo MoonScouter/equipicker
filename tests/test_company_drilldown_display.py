@@ -3,6 +3,7 @@ import unittest
 import pandas as pd
 
 from equipilot_app import (
+    _annotate_company_technical_trend,
     _prepare_company_drilldown_universe,
     format_company_drilldown_display,
 )
@@ -109,6 +110,67 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertEqual(rendered.iloc[0]["Company"], "High Tech")
         self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "72.0")
+
+    def test_annotate_company_technical_trend_builds_symbol_and_direction(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "UP.US", "general_technical_score": 80.0},
+                {"ticker": "DOWN.US", "general_technical_score": 70.0},
+                {"ticker": "FLAT.US", "general_technical_score": 65.0},
+                {"ticker": "MISS.US", "general_technical_score": 90.0},
+            ]
+        )
+        previous_df = pd.DataFrame(
+            [
+                {"ticker": "UP.US", "general_technical_score": 70.0},
+                {"ticker": "DOWN.US", "general_technical_score": 80.0},
+                {"ticker": "FLAT.US", "general_technical_score": 63.0},
+            ]
+        )
+
+        annotated = _annotate_company_technical_trend(company_df, previous_df, threshold=5.0)
+
+        by_ticker = annotated.set_index("ticker")
+        self.assertEqual(by_ticker.loc["UP.US", "technical_trend_symbol"], "📈")
+        self.assertEqual(by_ticker.loc["UP.US", "technical_trend_direction"], "up")
+        self.assertEqual(by_ticker.loc["DOWN.US", "technical_trend_symbol"], "📉")
+        self.assertEqual(by_ticker.loc["DOWN.US", "technical_trend_direction"], "down")
+        self.assertEqual(by_ticker.loc["FLAT.US", "technical_trend_symbol"], "")
+        self.assertEqual(by_ticker.loc["FLAT.US", "technical_trend_direction"], "flat")
+        self.assertEqual(by_ticker.loc["MISS.US", "technical_trend_direction"], "none")
+
+    def test_technical_display_appends_trend_symbol_to_technical_score(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "HIGH.US",
+                    "company": "High Tech",
+                    "sector": "Technology",
+                    "industry": "Hardware",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 70.0,
+                    "fundamental_momentum": 72.0,
+                    "general_technical_score": 90.0,
+                    "technical_trend_symbol": "📈",
+                },
+                {
+                    "ticker": "LOW.US",
+                    "company": "Low Tech",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 95.0,
+                    "fundamental_momentum": 60.0,
+                    "general_technical_score": 80.0,
+                    "technical_trend_symbol": "",
+                },
+            ]
+        )
+
+        rendered = format_company_drilldown_display(company_df, sort_by="technical")
+
+        self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
+        self.assertEqual(rendered.iloc[0]["Technical Score"], "90.0 📈")
 
 
 if __name__ == "__main__":

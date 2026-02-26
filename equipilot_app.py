@@ -1531,6 +1531,7 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "default_fund_range",
         "default_tech_range",
         "default_fund_momentum_range",
+        "default_tech_trend_dir",
         "pending_reset",
         "sector",
         "industry",
@@ -1538,6 +1539,7 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "fund_range",
         "tech_range",
         "fund_momentum_range",
+        "tech_trend_dir",
         "ticker",
     ):
         st.session_state.pop(f"{prefix}_drilldown_filter_{suffix}", None)
@@ -1668,6 +1670,50 @@ def build_company_drilldown_context(
     return title, company_universe, default_sectors, default_industries, None
 
 
+def _annotate_company_technical_trend(
+    company_df: pd.DataFrame,
+    previous_report_df: pd.DataFrame,
+    *,
+    threshold: float = 5.0,
+) -> pd.DataFrame:
+    annotated = company_df.copy()
+    annotated["technical_trend_delta"] = np.nan
+    annotated["technical_trend_symbol"] = ""
+    annotated["technical_trend_direction"] = "none"
+    if annotated.empty:
+        return annotated
+    if (
+        "ticker" not in previous_report_df.columns
+        or "general_technical_score" not in previous_report_df.columns
+    ):
+        return annotated
+
+    previous_scores = previous_report_df[["ticker", "general_technical_score"]].copy()
+    previous_scores["ticker"] = previous_scores["ticker"].fillna("").astype(str).str.strip()
+    previous_scores["general_technical_score_prev"] = pd.to_numeric(
+        previous_scores["general_technical_score"], errors="coerce"
+    )
+    previous_scores = previous_scores.drop(columns=["general_technical_score"]).drop_duplicates(
+        subset=["ticker"], keep="first"
+    )
+
+    merged = annotated.merge(previous_scores, on="ticker", how="left")
+    delta = merged["general_technical_score"] - merged["general_technical_score_prev"]
+    merged["technical_trend_delta"] = delta
+    merged["technical_trend_symbol"] = np.where(
+        delta > threshold,
+        "📈",
+        np.where(delta < -threshold, "📉", ""),
+    )
+    merged["technical_trend_direction"] = np.where(
+        delta > threshold,
+        "up",
+        np.where(delta < -threshold, "down", "flat"),
+    )
+    merged.loc[delta.isna(), "technical_trend_direction"] = "none"
+    return merged.drop(columns=["general_technical_score_prev"])
+
+
 def _sync_drilldown_filter_defaults(
     prefix: str,
     signature: tuple[str, ...],
@@ -1677,6 +1723,7 @@ def _sync_drilldown_filter_defaults(
     default_fund_range: tuple[float, float] = (0.0, 100.0),
     default_tech_range: tuple[float, float] = (0.0, 100.0),
     default_fund_momentum_range: tuple[float, float] = (0.0, 100.0),
+    default_tech_trend_dir: str = "All",
 ) -> None:
     signature_key = f"{prefix}_drilldown_filter_signature"
     if st.session_state.get(signature_key) == signature:
@@ -1686,12 +1733,14 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_default_fund_range"] = tuple(default_fund_range)
     st.session_state[f"{prefix}_drilldown_filter_default_tech_range"] = tuple(default_tech_range)
     st.session_state[f"{prefix}_drilldown_filter_default_fund_momentum_range"] = tuple(default_fund_momentum_range)
+    st.session_state[f"{prefix}_drilldown_filter_default_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_sector"] = list(default_sectors)
     st.session_state[f"{prefix}_drilldown_filter_industry"] = list(default_industries)
     st.session_state[f"{prefix}_drilldown_filter_cap"] = []
     st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(default_fund_range)
     st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(default_tech_range)
     st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(default_fund_momentum_range)
+    st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
     st.session_state[signature_key] = signature
 
@@ -1751,6 +1800,7 @@ def render_company_drilldown_filters(
     prefix: str,
     ticker_label: str,
     include_fundamental_momentum_filter: bool = False,
+    include_technical_trend_filter: bool = False,
 ) -> pd.DataFrame:
     sector_key = f"{prefix}_drilldown_filter_sector"
     industry_key = f"{prefix}_drilldown_filter_industry"
@@ -1758,11 +1808,13 @@ def render_company_drilldown_filters(
     fund_range_key = f"{prefix}_drilldown_filter_fund_range"
     tech_range_key = f"{prefix}_drilldown_filter_tech_range"
     fund_momentum_range_key = f"{prefix}_drilldown_filter_fund_momentum_range"
+    tech_trend_dir_key = f"{prefix}_drilldown_filter_tech_trend_dir"
     ticker_key = f"{prefix}_drilldown_filter_ticker"
     pending_reset_key = f"{prefix}_drilldown_filter_pending_reset"
     default_fund_range_key = f"{prefix}_drilldown_filter_default_fund_range"
     default_tech_range_key = f"{prefix}_drilldown_filter_default_tech_range"
     default_fund_momentum_range_key = f"{prefix}_drilldown_filter_default_fund_momentum_range"
+    default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
 
     # Streamlit forbids changing widget-bound session keys after widget instantiation.
     # Apply reset defaults at the top of a rerun before creating widgets.
@@ -1775,6 +1827,7 @@ def render_company_drilldown_filters(
         st.session_state[fund_momentum_range_key] = tuple(
             st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))
         )
+        st.session_state[tech_trend_dir_key] = st.session_state.get(default_tech_trend_dir_key, "All")
         st.session_state[ticker_key] = ""
 
     st.session_state.setdefault(
@@ -1789,6 +1842,10 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(
         fund_momentum_range_key,
         tuple(st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))),
+    )
+    st.session_state.setdefault(
+        tech_trend_dir_key,
+        st.session_state.get(default_tech_trend_dir_key, "All"),
     )
     st.session_state.setdefault(ticker_key, "")
 
@@ -1815,8 +1872,15 @@ def render_company_drilldown_filters(
             cap_options.extend(sorted(available_caps.difference(cap_options)))
             selected_caps = st.multiselect("Market cap bucket", options=cap_options, key=cap_key)
 
-        bottom_layout = [1, 1, 1, 1.4] if include_fundamental_momentum_filter else [1, 1, 1.4]
+        bottom_layout = [1, 1]
+        if include_fundamental_momentum_filter:
+            bottom_layout.append(1)
+        if include_technical_trend_filter:
+            bottom_layout.append(1)
+        bottom_layout.append(1.4)
         filter_cols_bottom = st.columns(bottom_layout)
+        next_bottom_col = 0
+        trend_filter_value = "All"
         with filter_cols_bottom[0]:
             fundamental_range = st.slider(
                 "Fundamental score range",
@@ -1825,7 +1889,8 @@ def render_company_drilldown_filters(
                 step=0.5,
                 key=fund_range_key,
             )
-        with filter_cols_bottom[1]:
+        next_bottom_col += 1
+        with filter_cols_bottom[next_bottom_col]:
             technical_range = st.slider(
                 "Technical score range",
                 min_value=0.0,
@@ -1833,8 +1898,9 @@ def render_company_drilldown_filters(
                 step=0.5,
                 key=tech_range_key,
             )
+        next_bottom_col += 1
         if include_fundamental_momentum_filter:
-            with filter_cols_bottom[2]:
+            with filter_cols_bottom[next_bottom_col]:
                 fundamental_momentum_range = st.slider(
                     "Fundamental momentum range",
                     min_value=0.0,
@@ -1842,11 +1908,18 @@ def render_company_drilldown_filters(
                     step=0.5,
                     key=fund_momentum_range_key,
                 )
-            ticker_col_index = 3
+            next_bottom_col += 1
         else:
             fundamental_momentum_range = (0.0, 100.0)
-            ticker_col_index = 2
-        with filter_cols_bottom[ticker_col_index]:
+        if include_technical_trend_filter:
+            with filter_cols_bottom[next_bottom_col]:
+                trend_filter_value = st.selectbox(
+                    "Technical trend filter",
+                    options=["All", "Up (📈)", "Down (📉)"],
+                    key=tech_trend_dir_key,
+                )
+            next_bottom_col += 1
+        with filter_cols_bottom[next_bottom_col]:
             ticker_query = st.text_input(
                 ticker_label,
                 key=ticker_key,
@@ -1885,6 +1958,11 @@ def render_company_drilldown_filters(
             filtered = filtered[
                 filtered["fundamental_momentum"].between(momentum_min, momentum_max, inclusive="both")
             ]
+    if include_technical_trend_filter and "technical_trend_direction" in filtered.columns:
+        if trend_filter_value == "Up (📈)":
+            filtered = filtered[filtered["technical_trend_direction"] == "up"]
+        elif trend_filter_value == "Down (📉)":
+            filtered = filtered[filtered["technical_trend_direction"] == "down"]
 
     if ticker_query:
         filtered = filtered[
@@ -1952,9 +2030,20 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     display_df["Fundamental Score"] = display_df["Fundamental Score"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
     )
-    display_df["Technical Score"] = display_df["Technical Score"].map(
-        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-    )
+    if sort_by == "technical" and "technical_trend_symbol" in sorted_df.columns:
+        trend_symbols = sorted_df["technical_trend_symbol"].fillna("").astype(str)
+        rendered_scores: list[str] = []
+        for numeric_value, trend_symbol in zip(display_df["Technical Score"], trend_symbols):
+            if pd.isna(numeric_value):
+                rendered_scores.append("N/A")
+                continue
+            suffix = f" {trend_symbol}" if trend_symbol else ""
+            rendered_scores.append(f"{float(numeric_value):.1f}{suffix}")
+        display_df["Technical Score"] = rendered_scores
+    else:
+        display_df["Technical Score"] = display_df["Technical Score"].map(
+            lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+        )
     if "Fundamental Momentum" in display_df.columns:
         display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(
             lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
@@ -2855,6 +2944,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     selected_key = st.session_state.get("technical_selected_key")
     selected_mode = st.session_state.get("technical_selected_mode")
     if selected_key and selected_mode:
+        company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
         details_title, company_universe, default_sectors, default_industries, details_error = build_company_drilldown_context(
             report_df,
             selected_sector=selected_sector,
@@ -2864,6 +2954,12 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         if details_error:
             st.warning(details_error)
         elif company_universe is not None:
+            if company_trend_enabled and previous_report_df is not None:
+                company_universe = _annotate_company_technical_trend(
+                    company_universe,
+                    previous_report_df,
+                    threshold=5.0,
+                )
             filter_signature = (
                 selected_eod.isoformat(),
                 previous_eod.isoformat(),
@@ -2879,6 +2975,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),
+                default_tech_trend_dir="All",
             )
             st.markdown("---")
             st.caption(details_title)
@@ -2887,6 +2984,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 prefix="technical",
                 ticker_label="Ticker filter (Technical drilldown)",
                 include_fundamental_momentum_filter=True,
+                include_technical_trend_filter=company_trend_enabled,
             )
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
