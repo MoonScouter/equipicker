@@ -2876,8 +2876,8 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 filter_signature,
                 default_sectors=default_sectors,
                 default_industries=default_industries,
-                default_fund_range=(60.0, 100.0),
-                default_tech_range=(50.0, 100.0),
+                default_fund_range=(50.0, 100.0),
+                default_tech_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),
             )
             st.markdown("---")
