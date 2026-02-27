@@ -1532,6 +1532,7 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "default_tech_range",
         "default_fund_momentum_range",
         "default_tech_trend_dir",
+        "active_preset",
         "pending_reset",
         "sector",
         "industry",
@@ -1714,6 +1715,80 @@ def _annotate_company_technical_trend(
     return merged.drop(columns=["general_technical_score_prev"])
 
 
+def _company_filter_presets() -> dict[str, dict[str, object]]:
+    return {
+        "Strong and Up": {
+            "fund_range": (50.0, 100.0),
+            "tech_range": (60.0, 100.0),
+            "fund_momentum_range": (60.0, 100.0),
+            "trend_dir": "Up (📈)",
+        },
+        "Strong and Stable": {
+            "fund_range": (50.0, 100.0),
+            "tech_range": (60.0, 100.0),
+            "fund_momentum_range": (60.0, 100.0),
+            "trend_dir": "No trend",
+        },
+        "Strong and Down": {
+            "fund_range": (50.0, 100.0),
+            "tech_range": (60.0, 100.0),
+            "fund_momentum_range": (60.0, 100.0),
+            "trend_dir": "Down (📉)",
+        },
+        "Weak and Up": {
+            "fund_range": (50.0, 100.0),
+            "tech_range": (0.0, 60.0),
+            "fund_momentum_range": (60.0, 100.0),
+            "trend_dir": "Up (📈)",
+        },
+        "Weak and Stable": {
+            "fund_range": (50.0, 100.0),
+            "tech_range": (0.0, 60.0),
+            "fund_momentum_range": (60.0, 100.0),
+            "trend_dir": "No trend",
+        },
+        "Weak and Down": {
+            "fund_range": (50.0, 100.0),
+            "tech_range": (0.0, 60.0),
+            "fund_momentum_range": (60.0, 100.0),
+            "trend_dir": "Down (📉)",
+        },
+    }
+
+
+def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
+    preset = _company_filter_presets().get(preset_name)
+    if not preset:
+        return
+    st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(preset["fund_range"])  # type: ignore[arg-type]
+    st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(preset["tech_range"])  # type: ignore[arg-type]
+    st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(  # type: ignore[arg-type]
+        preset["fund_momentum_range"]
+    )
+    st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = str(preset["trend_dir"])
+    # Presets are intended to be one-click snapshots of thresholds, not text/cap filters.
+    st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
+    st.session_state[f"{prefix}_drilldown_filter_cap"] = []
+    st.session_state[f"{prefix}_drilldown_filter_active_preset"] = preset_name
+
+
+def _resolve_company_filter_preset(
+    fund_range: tuple[float, float],
+    tech_range: tuple[float, float],
+    fund_momentum_range: tuple[float, float],
+    trend_dir: str,
+) -> str:
+    for preset_name, preset in _company_filter_presets().items():
+        if (
+            tuple(preset["fund_range"]) == tuple(fund_range)
+            and tuple(preset["tech_range"]) == tuple(tech_range)
+            and tuple(preset["fund_momentum_range"]) == tuple(fund_momentum_range)
+            and str(preset["trend_dir"]) == trend_dir
+        ):
+            return preset_name
+    return ""
+
+
 def _sync_drilldown_filter_defaults(
     prefix: str,
     signature: tuple[str, ...],
@@ -1815,6 +1890,7 @@ def render_company_drilldown_filters(
     default_tech_range_key = f"{prefix}_drilldown_filter_default_tech_range"
     default_fund_momentum_range_key = f"{prefix}_drilldown_filter_default_fund_momentum_range"
     default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
+    active_preset_key = f"{prefix}_drilldown_filter_active_preset"
 
     # Streamlit forbids changing widget-bound session keys after widget instantiation.
     # Apply reset defaults at the top of a rerun before creating widgets.
@@ -1848,8 +1924,70 @@ def render_company_drilldown_filters(
         st.session_state.get(default_tech_trend_dir_key, "All"),
     )
     st.session_state.setdefault(ticker_key, "")
+    st.session_state.setdefault(active_preset_key, "")
 
-    st.markdown("**Company filters**")
+    show_presets = bool(include_fundamental_momentum_filter and include_technical_trend_filter)
+    if show_presets:
+        active_preset = str(st.session_state.get(active_preset_key, "") or "")
+        preset_button_styles = {
+            "Strong and Up": ("#16A34A", "#FFFFFF", "#15803D"),
+            "Strong and Stable": ("#86EFAC", "#14532D", "#4ADE80"),
+            "Strong and Down": ("#BBF7D0", "#14532D", "#4ADE80"),
+            "Weak and Up": ("#FECACA", "#7F1D1D", "#FCA5A5"),
+            "Weak and Stable": ("#FCA5A5", "#7F1D1D", "#EF4444"),
+            "Weak and Down": ("#DC2626", "#FFFFFF", "#B91C1C"),
+        }
+        css_rules: list[str] = []
+        for label, (bg_color, text_color, border_color) in preset_button_styles.items():
+            btn_key = f"{prefix}_preset_{label.lower().replace(' ', '_')}"
+            css_rules.append(
+                f"""
+div.st-key-{btn_key} button {{
+  background-color: {bg_color} !important;
+  color: {text_color} !important;
+  border: 1px solid {border_color} !important;
+  min-height: 32px !important;
+  padding: 0.1rem 0.35rem !important;
+}}
+div.st-key-{btn_key} button p {{
+  color: {text_color} !important;
+  font-size: 0.84rem !important;
+  font-weight: 600 !important;
+}}
+div.st-key-{btn_key} button:hover {{
+  filter: brightness(0.96);
+}}
+                """
+            )
+            if label == active_preset:
+                css_rules.append(
+                    f"""
+div.st-key-{btn_key} button {{
+  border-bottom: 4px solid #FACC15 !important;
+  box-shadow: 0 4px 0 0 #FDE047 !important;
+}}
+                    """
+                )
+        st.markdown(
+            f"""
+<style>
+{''.join(css_rules)}
+</style>
+            """,
+            unsafe_allow_html=True,
+        )
+        preset_labels = list(preset_button_styles.keys())
+        preset_cols = st.columns([1.25] + [0.82] * len(preset_labels))
+        with preset_cols[0]:
+            st.markdown("**Company filters**")
+        for idx, label in enumerate(preset_labels, start=1):
+            with preset_cols[idx]:
+                if st.button(label, key=f"{prefix}_preset_{label.lower().replace(' ', '_')}", use_container_width=True):
+                    _apply_company_filter_preset(prefix, label)
+                    st.rerun()
+    else:
+        st.markdown("**Company filters**")
+
     with st.form(key=f"{prefix}_drilldown_filters_form", clear_on_submit=False):
         filter_cols_top = st.columns(3)
         with filter_cols_top[0]:
@@ -1915,7 +2053,7 @@ def render_company_drilldown_filters(
             with filter_cols_bottom[next_bottom_col]:
                 trend_filter_value = st.selectbox(
                     "Technical trend filter",
-                    options=["All", "Up (📈)", "Down (📉)"],
+                    options=["All", "Up (📈)", "No trend", "Down (📉)"],
                     key=tech_trend_dir_key,
                 )
             next_bottom_col += 1
@@ -1936,7 +2074,19 @@ def render_company_drilldown_filters(
 
     _bind_ctrl_f_to_ticker_filter(ticker_label, f"{prefix}_drilldown_ctrlf")
 
+    if apply_clicked:
+        if show_presets:
+            st.session_state[active_preset_key] = _resolve_company_filter_preset(
+                tuple(fundamental_range),
+                tuple(technical_range),
+                tuple(fundamental_momentum_range),
+                str(trend_filter_value),
+            )
+        else:
+            st.session_state[active_preset_key] = ""
+
     if reset_clicked:
+        st.session_state[active_preset_key] = ""
         st.session_state[pending_reset_key] = True
         st.rerun()
 
@@ -1961,6 +2111,8 @@ def render_company_drilldown_filters(
     if include_technical_trend_filter and "technical_trend_direction" in filtered.columns:
         if trend_filter_value == "Up (📈)":
             filtered = filtered[filtered["technical_trend_direction"] == "up"]
+        elif trend_filter_value == "No trend":
+            filtered = filtered[filtered["technical_trend_direction"] == "flat"]
         elif trend_filter_value == "Down (📉)":
             filtered = filtered[filtered["technical_trend_direction"] == "down"]
 
@@ -3074,8 +3226,57 @@ def _render_trade_idea_strategy(
         st.info("No stocks matched this filter for the selected EOD.")
         return
 
+    ticker_filter_query = st.text_input(
+        "Ticker filter (Trade ideas)",
+        key=f"{strategy_name}_trade_ideas_ticker_filter",
+        placeholder="Type ticker symbol...",
+    ).strip()
+    grid_df = display_df.copy()
+    if ticker_filter_query and "ticker" in grid_df.columns:
+        ticker_mask = grid_df["ticker"].fillna("").astype(str).str.contains(
+            ticker_filter_query,
+            case=False,
+            na=False,
+            regex=False,
+        )
+        grid_df = grid_df[ticker_mask].copy()
+
+    if grid_df.empty:
+        st.info("No stocks matched this filter/ticker selection for the selected EOD.")
+        return
+
+    if "sector" in grid_df.columns:
+        sector_counts = (
+            grid_df["sector"]
+            .fillna("Unspecified")
+            .astype(str)
+            .str.strip()
+            .replace("", "Unspecified")
+            .value_counts()
+        )
+        if not sector_counts.empty:
+            sector_pie = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=sector_counts.index.tolist(),
+                        values=sector_counts.values.tolist(),
+                        textinfo="label+percent",
+                        hole=0.35,
+                    )
+                ]
+            )
+            sector_pie.update_layout(
+                margin=dict(l=10, r=10, t=10, b=10),
+                height=320,
+            )
+            st.plotly_chart(
+                sector_pie,
+                use_container_width=True,
+                key=f"{strategy_name}_trade_ideas_sector_pie",
+            )
+
     export_cols = st.columns([1, 1, 4])
-    csv_data = display_df.to_csv(index=False).encode("utf-8")
+    csv_data = grid_df.to_csv(index=False).encode("utf-8")
     with export_cols[0]:
         st.download_button(
             "Download CSV",
@@ -3088,15 +3289,15 @@ def _render_trade_idea_strategy(
     with export_cols[1]:
         st.download_button(
             "Download JSON",
-            data=display_df.to_json(orient="records", force_ascii=False, indent=2),
+            data=grid_df.to_json(orient="records", force_ascii=False, indent=2),
             file_name=f"{strategy_name}_{selected_eod.isoformat()}.json",
             mime="application/json",
             use_container_width=True,
             key=f"{strategy_name}_trade_ideas_download_json",
         )
 
-    estimated_height = max(260, 72 + len(display_df) * 38)
-    st.dataframe(display_df, use_container_width=True, height=estimated_height, hide_index=True)
+    estimated_height = max(260, 72 + len(grid_df) * 38)
+    st.dataframe(grid_df, use_container_width=True, height=estimated_height, hide_index=True)
 
 
 def render_trade_ideas(config: ReportConfig) -> None:
@@ -3107,7 +3308,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
     )
     render_chip_row(
         [
-            "Strategies currently active: extreme_accel_up, accel_up_weak, extreme_accel_down, accel_down_weak",
+            "Strategies currently active: extreme_accel_up, accel_up_weak, accel_down_weak, extreme_accel_down",
             "Data source: report_select_<EOD> file",
         ]
     )
@@ -3116,103 +3317,145 @@ def render_trade_ideas(config: ReportConfig) -> None:
         value=get_default_board_eod(config),
         key="trade_ideas_eod",
     )
-    extreme_up_tab, weak_up_tab, extreme_down_tab, weak_down_tab = st.tabs(
-        ["extreme_accel_up", "accel_up_weak", "extreme_accel_down", "accel_down_weak"]
+    strategy_specs = [
+        {
+            "name": "extreme_accel_up",
+            "subtitle": "Highest-conviction bullish acceleration setup with strict technical and thrust constraints.",
+            "required_columns": {
+                "rs_daily",
+                "rs_sma20",
+                "rs_monthly",
+                "obvm_daily",
+                "obvm_sma20",
+                "obvm_monthly",
+                "obvm_weekly",
+                "rsi_weekly",
+                "rsi_daily",
+                "eod_price_used",
+                "sma_daily_20",
+                "sma_daily_50",
+                "sma_daily_200",
+            },
+            "style": ("#16A34A", "#FFFFFF", "#15803D"),
+        },
+        {
+            "name": "accel_up_weak",
+            "subtitle": "Moderate bullish acceleration profile with constructive but cooling momentum behavior.",
+            "required_columns": {
+                "rs_daily",
+                "rs_sma20",
+                "rs_monthly",
+                "obvm_daily",
+                "obvm_sma20",
+                "obvm_monthly",
+                "obvm_weekly",
+                "rsi_weekly",
+                "rsi_daily",
+                "eod_price_used",
+                "sma_daily_50",
+                "sma_daily_200",
+            },
+            "style": ("#BBF7D0", "#14532D", "#4ADE80"),
+        },
+        {
+            "name": "accel_down_weak",
+            "subtitle": "Moderate bearish acceleration profile with early downside follow-through behavior.",
+            "required_columns": {
+                "rs_daily",
+                "rs_sma20",
+                "rs_monthly",
+                "obvm_daily",
+                "obvm_sma20",
+                "obvm_monthly",
+                "obvm_weekly",
+                "rsi_weekly",
+                "rsi_daily",
+                "eod_price_used",
+                "sma_daily_50",
+                "sma_daily_200",
+            },
+            "style": ("#FECACA", "#7F1D1D", "#FCA5A5"),
+        },
+        {
+            "name": "extreme_accel_down",
+            "subtitle": "Highest-conviction bearish acceleration setup with strict downside momentum and trend constraints.",
+            "required_columns": {
+                "rs_daily",
+                "rs_sma20",
+                "rs_monthly",
+                "obvm_daily",
+                "obvm_sma20",
+                "obvm_monthly",
+                "obvm_weekly",
+                "rsi_weekly",
+                "rsi_daily",
+                "eod_price_used",
+                "sma_daily_20",
+                "sma_daily_50",
+                "sma_daily_200",
+            },
+            "style": ("#DC2626", "#FFFFFF", "#B91C1C"),
+        },
+    ]
+    strategy_names = [entry["name"] for entry in strategy_specs]
+    selected_strategy_key = "trade_ideas_selected_strategy"
+    if st.session_state.get(selected_strategy_key) not in strategy_names:
+        st.session_state[selected_strategy_key] = "extreme_accel_up"
+    selected_strategy = str(st.session_state.get(selected_strategy_key))
+
+    strategy_css_rules: list[str] = []
+    for spec in strategy_specs:
+        bg_color, text_color, border_color = spec["style"]
+        button_key = f"trade_ideas_btn_{spec['name']}"
+        strategy_css_rules.append(
+            f"""
+div.st-key-{button_key} button {{
+  background-color: {bg_color} !important;
+  color: {text_color} !important;
+  border: 1px solid {border_color} !important;
+}}
+div.st-key-{button_key} button p {{
+  color: {text_color} !important;
+}}
+div.st-key-{button_key} button:hover {{
+  filter: brightness(0.96);
+}}
+            """
+        )
+        if spec["name"] == selected_strategy:
+            strategy_css_rules.append(
+                f"""
+div.st-key-{button_key} button {{
+  border-width: 3px !important;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.22) !important;
+}}
+                """
+            )
+    st.markdown(
+        f"""
+<style>
+{''.join(strategy_css_rules)}
+</style>
+        """,
+        unsafe_allow_html=True,
     )
 
-    with extreme_up_tab:
-        render_board_title_band("Trade Ideas - extreme_accel_up")
-        _render_trade_idea_strategy(
-            selected_eod=selected_eod,
-            strategy_name="extreme_accel_up",
-            board_title="Trade Ideas / extreme_accel_up",
-            strategy_subtitle="Highest-conviction bullish acceleration setup with strict technical and thrust constraints.",
-            required_columns={
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_20",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-        )
+    selector_cols = st.columns(4)
+    for idx, spec in enumerate(strategy_specs):
+        with selector_cols[idx]:
+            if st.button(spec["name"], key=f"trade_ideas_btn_{spec['name']}", use_container_width=True):
+                st.session_state[selected_strategy_key] = spec["name"]
+                st.rerun()
 
-    with weak_up_tab:
-        render_board_title_band("Trade Ideas - accel_up_weak")
-        _render_trade_idea_strategy(
-            selected_eod=selected_eod,
-            strategy_name="accel_up_weak",
-            board_title="Trade Ideas / accel_up_weak",
-            strategy_subtitle="Moderate bullish acceleration profile with constructive but cooling momentum behavior.",
-            required_columns={
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-        )
-
-    with extreme_down_tab:
-        render_board_title_band("Trade Ideas - extreme_accel_down")
-        _render_trade_idea_strategy(
-            selected_eod=selected_eod,
-            strategy_name="extreme_accel_down",
-            board_title="Trade Ideas / extreme_accel_down",
-            strategy_subtitle="Highest-conviction bearish acceleration setup with strict downside momentum and trend constraints.",
-            required_columns={
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_20",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-        )
-
-    with weak_down_tab:
-        render_board_title_band("Trade Ideas - accel_down_weak")
-        _render_trade_idea_strategy(
-            selected_eod=selected_eod,
-            strategy_name="accel_down_weak",
-            board_title="Trade Ideas / accel_down_weak",
-            strategy_subtitle="Moderate bearish acceleration profile with early downside follow-through behavior.",
-            required_columns={
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-        )
+    selected_spec = next(entry for entry in strategy_specs if entry["name"] == selected_strategy)
+    render_board_title_band(f"Trade Ideas - {selected_spec['name']}")
+    _render_trade_idea_strategy(
+        selected_eod=selected_eod,
+        strategy_name=selected_spec["name"],
+        board_title=f"Trade Ideas / {selected_spec['name']}",
+        strategy_subtitle=str(selected_spec["subtitle"]),
+        required_columns=set(selected_spec["required_columns"]),
+    )
 
 
 def render_indices_tab() -> None:
