@@ -198,6 +198,42 @@ def build_indices_comparison_table(
     return pd.DataFrame(rows)
 
 
+def _compute_variation_pct(close_date_1: object, close_date_2: object) -> float:
+    close_1 = pd.to_numeric(close_date_1, errors="coerce")
+    close_2 = pd.to_numeric(close_date_2, errors="coerce")
+    if pd.isna(close_1) or pd.isna(close_2) or float(close_1) == 0.0:
+        return np.nan
+    return round(((float(close_2) - float(close_1)) / float(close_1)) * 100.0, 2)
+
+
+def _upsert_indices_close(
+    cache_df: pd.DataFrame,
+    *,
+    ticker: str,
+    target_date: date,
+    adjusted_close: float,
+) -> pd.DataFrame:
+    updated = cache_df.copy()
+    if "ticker" not in updated.columns or "date" not in updated.columns:
+        raise ValueError("Indices cache missing required columns: ticker/date")
+    if "adjusted_close" not in updated.columns:
+        updated["adjusted_close"] = np.nan
+
+    ticker_series = updated["ticker"].fillna("").astype(str).str.strip()
+    date_series = pd.to_datetime(updated["date"], errors="coerce").dt.date
+    mask = (ticker_series == ticker) & (date_series == target_date)
+
+    if mask.any():
+        updated.loc[mask, "adjusted_close"] = float(adjusted_close)
+        return updated
+
+    new_row = {col: pd.NA for col in updated.columns}
+    new_row["ticker"] = ticker
+    new_row["date"] = pd.Timestamp(target_date)
+    new_row["adjusted_close"] = float(adjusted_close)
+    return pd.concat([updated, pd.DataFrame([new_row])], ignore_index=True)
+
+
 @st.cache_data(show_spinner=False)
 def compute_sector_T(
     path_str: str,
@@ -3558,17 +3594,88 @@ def render_indices_tab() -> None:
             "Close Date 2": date_2_col,
         }
     )
+    comparison_df[date_1_col] = pd.to_numeric(comparison_df[date_1_col], errors="coerce")
+    comparison_df[date_2_col] = pd.to_numeric(comparison_df[date_2_col], errors="coerce")
+    editor_key = (
+        f"indices_editor_{selected_date_1.isoformat()}_{selected_date_2.isoformat()}"
+    )
+    working_df = comparison_df.copy()
+
+    working_df["Variation %"] = working_df.apply(
+        lambda row: _compute_variation_pct(row.get(date_1_col), row.get(date_2_col)),
+        axis=1,
+    )
+
     st.caption("N/A means the selected date is not available for that index.")
-    render_pdf_like_table(
-        comparison_df,
-        center_cols=[date_1_col, date_2_col, "Variation %"],
-        value_color_rules={"Variation %": _variation_color_css},
-        format_map={
-            date_1_col: "{:.2f}",
-            date_2_col: "{:.2f}",
-            "Variation %": "{:.2f}%",
+    st.caption("You can edit close prices below; Variation % is recalculated automatically.")
+
+    estimated_height = max(260, 72 + len(working_df) * 38)
+    edited_df = st.data_editor(
+        working_df,
+        hide_index=True,
+        use_container_width=True,
+        height=estimated_height,
+        key=editor_key,
+        num_rows="fixed",
+        disabled=["Index", "Variation %"],
+        column_config={
+            "Index": st.column_config.TextColumn("Index"),
+            date_1_col: st.column_config.NumberColumn(date_1_col, format="%.2f"),
+            date_2_col: st.column_config.NumberColumn(date_2_col, format="%.2f"),
+            "Variation %": st.column_config.NumberColumn("Variation %", format="%.2f"),
         },
     )
+
+    edited_df = edited_df.copy()
+    edited_df[date_1_col] = pd.to_numeric(edited_df[date_1_col], errors="coerce")
+    edited_df[date_2_col] = pd.to_numeric(edited_df[date_2_col], errors="coerce")
+    edited_df["Variation %"] = edited_df.apply(
+        lambda row: _compute_variation_pct(row.get(date_1_col), row.get(date_2_col)),
+        axis=1,
+    )
+
+    edited_close_df = edited_df[["Index", date_1_col, date_2_col]].copy()
+    current_close_df = working_df[["Index", date_1_col, date_2_col]].copy()
+    edits_changed = not edited_close_df["Index"].equals(current_close_df["Index"])
+    for close_col in (date_1_col, date_2_col):
+        edited_series = pd.to_numeric(edited_close_df[close_col], errors="coerce")
+        current_series = pd.to_numeric(current_close_df[close_col], errors="coerce")
+        same_missing = edited_series.isna().equals(current_series.isna())
+        same_values = np.allclose(
+            edited_series.fillna(0.0).to_numpy(dtype=float),
+            current_series.fillna(0.0).to_numpy(dtype=float),
+        )
+        if not (same_missing and same_values):
+            edits_changed = True
+            break
+
+    if edits_changed:
+        index_name_to_ticker = {name: ticker for ticker, name in INDEX_TICKER_TO_NAME.items()}
+        updated_cache_df = cache_df.copy()
+        for _, row in edited_df.iterrows():
+            index_name = str(row.get("Index", "")).strip()
+            ticker = index_name_to_ticker.get(index_name)
+            if not ticker:
+                continue
+            close_1 = pd.to_numeric(row.get(date_1_col), errors="coerce")
+            close_2 = pd.to_numeric(row.get(date_2_col), errors="coerce")
+            if pd.notna(close_1):
+                updated_cache_df = _upsert_indices_close(
+                    updated_cache_df,
+                    ticker=ticker,
+                    target_date=selected_date_1,
+                    adjusted_close=float(close_1),
+                )
+            if pd.notna(close_2):
+                updated_cache_df = _upsert_indices_close(
+                    updated_cache_df,
+                    ticker=ticker,
+                    target_date=selected_date_2,
+                    adjusted_close=float(close_2),
+                )
+        save_indices_cache(updated_cache_df, cache_year)
+        load_indices_cache_file.clear()
+        st.rerun()
 
 
 def render_home(config: ReportConfig) -> None:
