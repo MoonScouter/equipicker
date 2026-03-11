@@ -780,7 +780,7 @@ def summary_counts(summary_text: str) -> str:
     try:
         parsed = json.loads(summary_text)
     except json.JSONDecodeError:
-        return "JSON invalid – cannot compute counts."
+        return "JSON invalid ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ cannot compute counts."
     counts = {
         key: len(value) if isinstance(value, list) else 0
         for key, value in parsed.items()
@@ -1055,7 +1055,26 @@ button[role="tab"][aria-selected="true"] {
     color: #3A567B;
     background: rgba(255, 255, 255, 0.84);
 }
-</style>
+.ep-subtab-shell {
+    border: 1px solid #D9E7F1;
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(247,251,255,0.92) 100%);
+    padding: 0.8rem 0.95rem;
+    margin: 0.15rem 0 0.8rem 0;
+    box-shadow: 0 8px 22px rgba(15, 39, 71, 0.05);
+}
+.ep-subtab-title {
+    font-size: 0.82rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #496685;
+}
+.ep-subtab-note {
+    margin-top: 0.2rem;
+    color: #4D627F;
+    font-size: 0.9rem;
+}</style>
         """,
         unsafe_allow_html=True,
     )
@@ -1146,6 +1165,18 @@ def render_chip_row(chips: list[str]) -> None:
     payload = "".join(f'<span class="ep-chip">{html_escape(chip)}</span>' for chip in chips)
     st.markdown(f'<div class="ep-chip-row">{payload}</div>', unsafe_allow_html=True)
 
+
+
+def render_subtab_group_intro(title: str, subtitle: str) -> None:
+    st.markdown(
+        f"""
+<div class="ep-subtab-shell">
+  <div class="ep-subtab-title">{html_escape(title)}</div>
+  <div class="ep-subtab-note">{html_escape(subtitle)}</div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def render_log_timeline(log_text: str, empty_message: str = "No log events yet.") -> None:
     lines = [line.strip() for line in log_text.splitlines() if line.strip()]
@@ -1310,7 +1341,7 @@ def render_missing_report_select(eod_date: date, candidates: Tuple[Path, Path]) 
         f"Missing report_select file for {eod_date.isoformat()}. "
         f"Expected {candidates[0]} (or {candidates[1]})."
     )
-    st.caption("Generate it from Home tab using `Generate report_select Excel`.")
+    st.caption("Generate it from Home > Report Excel Import using `Generate report_select Excel`.")
 
 
 def render_board_title_band(title: str) -> None:
@@ -1739,8 +1770,8 @@ def _annotate_company_technical_trend(
     merged["technical_trend_delta"] = delta
     merged["technical_trend_symbol"] = np.where(
         delta > threshold,
-        "📈",
-        np.where(delta < -threshold, "📉", ""),
+        "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â ",
+        np.where(delta < -threshold, "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°", ""),
     )
     merged["technical_trend_direction"] = np.where(
         delta > threshold,
@@ -1757,7 +1788,7 @@ def _company_filter_presets() -> dict[str, dict[str, object]]:
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Up (📈)",
+            "trend_dir": "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )",
         },
         "Strong and Stable": {
             "fund_range": (50.0, 100.0),
@@ -1769,13 +1800,13 @@ def _company_filter_presets() -> dict[str, dict[str, object]]:
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Down (📉)",
+            "trend_dir": "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)",
         },
         "Weak and Up": {
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Up (📈)",
+            "trend_dir": "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )",
         },
         "Weak and Stable": {
             "fund_range": (50.0, 100.0),
@@ -1787,7 +1818,7 @@ def _company_filter_presets() -> dict[str, dict[str, object]]:
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Down (📉)",
+            "trend_dir": "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)",
         },
     }
 
@@ -2089,7 +2120,7 @@ div.st-key-{btn_key} button {{
             with filter_cols_bottom[next_bottom_col]:
                 trend_filter_value = st.selectbox(
                     "Technical trend filter",
-                    options=["All", "Up (📈)", "No trend", "Down (📉)"],
+                    options=["All", "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )", "No trend", "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)"],
                     key=tech_trend_dir_key,
                 )
             next_bottom_col += 1
@@ -2145,11 +2176,11 @@ div.st-key-{btn_key} button {{
                 filtered["fundamental_momentum"].between(momentum_min, momentum_max, inclusive="both")
             ]
     if include_technical_trend_filter and "technical_trend_direction" in filtered.columns:
-        if trend_filter_value == "Up (📈)":
+        if trend_filter_value == "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )":
             filtered = filtered[filtered["technical_trend_direction"] == "up"]
         elif trend_filter_value == "No trend":
             filtered = filtered[filtered["technical_trend_direction"] == "flat"]
-        elif trend_filter_value == "Down (📉)":
+        elif trend_filter_value == "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)":
             filtered = filtered[filtered["technical_trend_direction"] == "down"]
 
     if ticker_query:
@@ -2281,9 +2312,9 @@ def apply_trend_symbols_to_table(
             symbol = ""
             if delta_value is not None:
                 if delta_value > threshold:
-                    symbol = " 📈"
+                    symbol = " ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â "
                 elif delta_value < -threshold:
-                    symbol = " 📉"
+                    symbol = " ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°"
             rendered_values.append(f"{curr_value:.1f}{symbol}")
         annotated[col] = rendered_values
     return annotated
@@ -3494,11 +3525,288 @@ div.st-key-{button_key} button {{
     )
 
 
-def render_indices_tab() -> None:
-    render_page_intro(
-        "Indices",
-        "Update yearly index prices cache and compare close across two dates.",
-        "Equipilot / Indices",
+def list_indices_cache_paths() -> list[Path]:
+    return sorted(DATA_DIR.glob("indices-prices-*.xlsx"))
+
+
+def get_latest_indices_cache_date(cache_paths: Optional[list[Path]] = None) -> Tuple[Optional[date], list[str]]:
+    latest_date: Optional[date] = None
+    errors: list[str] = []
+    paths = cache_paths if cache_paths is not None else list_indices_cache_paths()
+    for path in paths:
+        try:
+            cache_df = load_indices_cache_file(str(path))
+        except Exception as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        if cache_df.empty:
+            continue
+        try:
+            normalized_cache_df = normalize_indices_cache_for_comparison(cache_df)
+        except ValueError as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        if normalized_cache_df.empty:
+            continue
+        available_dates = normalized_cache_df["date"].dropna().tolist()
+        if not available_dates:
+            continue
+        path_latest_date = max(available_dates)
+        if latest_date is None or path_latest_date > latest_date:
+            latest_date = path_latest_date
+    return latest_date, errors
+
+
+def get_report_select_import_state(selected_date: date) -> Dict[str, object]:
+    resolved_report_path, expected_candidates = resolve_report_select_path(selected_date)
+    return {
+        "selected_date": selected_date,
+        "report_select_exists": resolved_report_path is not None,
+        "report_select_path": resolved_report_path,
+        "report_select_candidates": expected_candidates,
+    }
+
+def evaluate_home_import_checks(
+    selected_date: date,
+    cache_paths: Optional[list[Path]] = None,
+) -> Dict[str, object]:
+    report_select_state = get_report_select_import_state(selected_date)
+    active_cache_paths = cache_paths if cache_paths is not None else list_indices_cache_paths()
+    latest_indices_date, indices_cache_errors = get_latest_indices_cache_date(active_cache_paths)
+    return {
+        **report_select_state,
+        "latest_indices_date": latest_indices_date,
+        "indices_check_passed": latest_indices_date is not None and latest_indices_date > selected_date,
+        "indices_cache_paths": active_cache_paths,
+        "indices_cache_errors": indices_cache_errors,
+    }
+
+
+def load_indices_cache_state(cache_year: Optional[int] = None) -> Dict[str, object]:
+    resolved_year = cache_year or date.today().year
+    cache_file = indices_cache_path(resolved_year)
+    state: Dict[str, object] = {
+        "cache_year": resolved_year,
+        "cache_file": cache_file,
+        "cache_df": None,
+        "normalized_cache_df": None,
+        "available_dates": [],
+        "warning_message": None,
+        "error_message": None,
+    }
+    if not cache_file.exists():
+        state["warning_message"] = "No indices cache found for current year. Use Home > Indices Import to create it."
+        return state
+
+    try:
+        cache_df = load_indices_cache_file(str(cache_file))
+    except Exception as exc:  # pragma: no cover - UI feedback
+        state["error_message"] = f"Failed reading indices cache: {exc}"
+        return state
+
+    state["cache_df"] = cache_df
+    if cache_df.empty:
+        state["warning_message"] = "Indices cache is empty. Refresh it from Home > Indices Import."
+        return state
+
+    try:
+        normalized_cache_df = normalize_indices_cache_for_comparison(cache_df)
+    except ValueError as exc:
+        state["error_message"] = str(exc)
+        return state
+
+    state["normalized_cache_df"] = normalized_cache_df
+    if normalized_cache_df.empty:
+        state["warning_message"] = "No matching index rows found in cache after ticker/date normalization."
+        return state
+
+    available_dates = sorted(normalized_cache_df["date"].dropna().unique().tolist())
+    state["available_dates"] = available_dates
+    if not available_dates:
+        state["warning_message"] = "No valid dates available in cache."
+    return state
+
+
+def render_indices_cache_state_feedback(cache_state: Dict[str, object], *, hint: Optional[str] = None) -> bool:
+    error_message = cache_state.get("error_message")
+    if error_message:
+        st.error(str(error_message))
+        if hint:
+            st.caption(hint)
+        return False
+
+    warning_message = cache_state.get("warning_message")
+    if warning_message:
+        st.warning(str(warning_message))
+        if hint:
+            st.caption(hint)
+        return False
+    return True
+
+
+def render_home_check_subtab(config: ReportConfig) -> None:
+    render_subtab_group_intro(
+        "Check",
+        "Select a date and validate whether the main import files are already prepared.",
+    )
+    selected_date = st.date_input(
+        "Check date",
+        value=get_default_board_eod(config),
+        key="home_check_date",
+    )
+    check_state = evaluate_home_import_checks(selected_date)
+    report_select_path = check_state.get("report_select_path")
+    report_candidates = check_state.get("report_select_candidates", (None, None))
+    latest_indices_date = check_state.get("latest_indices_date")
+    indices_check_passed = bool(check_state.get("indices_check_passed"))
+    overall_ready = bool(check_state.get("report_select_exists")) and indices_check_passed
+
+    report_note = (
+        report_select_path.name
+        if isinstance(report_select_path, Path)
+        else f"Expected {report_candidates[0].name} or {report_candidates[1].name}"
+    )
+    indices_note = (
+        f"Latest cached date: {latest_indices_date.isoformat()}"
+        if isinstance(latest_indices_date, date)
+        else "No valid indices cache date found"
+    )
+
+    status_cols = st.columns(3)
+    with status_cols[0]:
+        render_kpi_card(
+            "Report Excel imported",
+            "PASS" if check_state.get("report_select_exists") else "MISSING",
+            report_note,
+            "positive" if check_state.get("report_select_exists") else "warn",
+        )
+    with status_cols[1]:
+        render_kpi_card(
+            "Indices cache > check date",
+            "PASS" if indices_check_passed else "CHECK",
+            indices_note,
+            "positive" if indices_check_passed else "warn",
+        )
+    with status_cols[2]:
+        render_kpi_card(
+            "Overall import readiness",
+            "READY" if overall_ready else "INCOMPLETE",
+            selected_date.isoformat(),
+            "positive" if overall_ready else "warn",
+        )
+
+    details_df = pd.DataFrame(
+        [
+            {
+                "Check": "Report Excel imported",
+                "Status": "PASS" if check_state.get("report_select_exists") else "MISSING",
+                "Details": report_note,
+            },
+            {
+                "Check": "Indices latest cache date > selected date",
+                "Status": "PASS" if indices_check_passed else "STALE / MISSING",
+                "Details": indices_note,
+            },
+        ]
+    )
+    st.dataframe(details_df, use_container_width=True, hide_index=True)
+
+    cache_paths = check_state.get("indices_cache_paths", [])
+    if cache_paths:
+        render_chip_row([
+            f"Indices cache files scanned: {len(cache_paths)}",
+            f"Selected date: {selected_date.isoformat()}",
+        ])
+    else:
+        st.caption("No yearly indices cache files found yet.")
+
+    cache_errors = check_state.get("indices_cache_errors", [])
+    if cache_errors:
+        st.warning("Some indices cache files could not be used for the check.")
+        st.code("\\n".join(str(entry) for entry in cache_errors))
+
+    st.info("Additional checks for thematic price imports can be added here later.")
+
+
+def render_home_report_excel_import(config: ReportConfig) -> None:
+    render_subtab_group_intro(
+        "Report Excel Import",
+        "Generate report_select Excel only and review the current EOD cache status.",
+    )
+    default_anchor = config.eod_as_of_date or date.fromisoformat(bucharest_today_str())
+    controls_col, toggles_col = st.columns([1.15, 1])
+    with controls_col:
+        home_anchor_date = st.date_input(
+            "Report-select date (EOD anchor)",
+            value=default_anchor,
+            key="home_report_select_date",
+        )
+    with toggles_col:
+        run_sql_home = st.checkbox(
+            "Run SQL (force overwrite for selected date)",
+            value=False,
+            key="home_run_sql_toggle",
+        )
+    available_dates = list_report_select_dates()
+    latest_date = available_dates[-1] if available_dates else None
+    latest_source, _ = resolve_report_select_path(latest_date) if latest_date else (None, (None, None))
+    latest_rows = "n/a"
+    if latest_source:
+        try:
+            latest_rows = str(len(load_report_select(str(latest_source))))
+        except Exception:
+            latest_rows = "Unavailable"
+
+    selected_source, _ = resolve_report_select_path(home_anchor_date)
+    selected_status = "ready" if selected_source else "missing"
+
+    kpi_cols = st.columns(3)
+    with kpi_cols[0]:
+        render_kpi_card(
+            "Latest report_select",
+            latest_date.isoformat() if latest_date else "None",
+            "Most recent EOD cache available",
+            "neutral" if latest_date else "warn",
+        )
+    with kpi_cols[1]:
+        render_kpi_card(
+            "Rows in latest file",
+            latest_rows,
+            latest_source.name if latest_source else "No report_select file yet",
+            "positive" if latest_source else "warn",
+        )
+    with kpi_cols[2]:
+        render_kpi_card(
+            "Selected EOD status",
+            selected_status.upper(),
+            home_anchor_date.isoformat(),
+            "positive" if selected_source else "warn",
+        )
+
+    render_chip_row([
+        f"Output target: {report_cache_path(cache_date=home_anchor_date).name}",
+    ])
+    st.caption(f"Output: {report_cache_path(cache_date=home_anchor_date)}")
+    with st.expander("Home logs", expanded=True):
+        home_placeholder = st.empty()
+        st.session_state["home_log_placeholder"] = home_placeholder
+        home_placeholder.code(st.session_state.get("home_logs", "") or "(no logs yet)")
+        if st.button("Clear home logs", key="home_clear_logs"):
+            st.session_state["home_logs"] = ""
+            home_placeholder.code("(no logs yet)")
+        render_log_timeline(
+            st.session_state.get("home_logs", ""),
+            "No runtime events yet. Trigger generation to populate logs.",
+        )
+    if st.button("Generate report_select Excel", use_container_width=True, key="home_generate_report_select"):
+        with st.spinner("Generating report_select..."):
+            run_report_select_export(home_anchor_date, run_sql_home)
+
+
+def render_home_indices_import_subtab() -> None:
+    render_subtab_group_intro(
+        "Indices Import",
+        "Refresh the yearly indices cache used by the comparison tab and by the Home checks.",
     )
     today_local = date.today()
     cache_year = today_local.year
@@ -3506,7 +3814,7 @@ def render_indices_tab() -> None:
     cutoff_date = st.date_input(
         "SQL start date (exclusive)",
         value=default_cutoff_date,
-        key="indices_cutoff_date",
+        key="home_indices_cutoff_date",
         help="Query uses date > selected day at 00:00:00.",
     )
     cache_file = indices_cache_path(cache_year)
@@ -3517,7 +3825,7 @@ def render_indices_tab() -> None:
             f"Cache year: {cache_year}",
         ]
     )
-    if st.button("Update indices cache", use_container_width=True, key="indices_update_cache"):
+    if st.button("Update indices cache", use_container_width=True, key="home_indices_update_cache"):
         with st.spinner("Fetching indices OHLC data from database..."):
             try:
                 fetched_df = fetch_indices_ohlc_since(cutoff_date)
@@ -3528,42 +3836,46 @@ def render_indices_tab() -> None:
             else:
                 st.success(f"Indices cache updated: {saved_path} ({len(fetched_df)} rows)")
 
+    cache_state = load_indices_cache_state(cache_year)
     st.caption(f"Cache path: {cache_file}")
     st.caption(f"Last updated: {_format_ts(cache_file)}")
-    if not cache_file.exists():
-        st.warning("No indices cache found for current year. Click `Update indices cache`.")
+    if not render_indices_cache_state_feedback(
+        cache_state,
+        hint="Open the Indices tab after the cache is ready to compare and edit closing prices.",
+    ):
         return
 
-    try:
-        cache_df = load_indices_cache_file(str(cache_file))
-    except Exception as exc:  # pragma: no cover - UI feedback
-        st.error(f"Failed reading indices cache: {exc}")
-        return
+    available_dates = cache_state.get("available_dates", [])
+    if available_dates:
+        st.caption(
+            "Available date range: "
+            f"{available_dates[0].isoformat()} -> {available_dates[-1].isoformat()} "
+            f"({len(available_dates)} dates)"
+        )
 
-    if cache_df.empty:
-        st.warning("Indices cache is empty. Click `Update indices cache` to refresh it.")
-        return
 
-    try:
-        normalized_cache_df = normalize_indices_cache_for_comparison(cache_df)
-    except ValueError as exc:
-        st.error(str(exc))
-        return
-
-    if normalized_cache_df.empty:
-        st.warning("No matching index rows found in cache after ticker/date normalization.")
-        return
-
-    available_dates = sorted(normalized_cache_df["date"].dropna().unique().tolist())
-    if not available_dates:
-        st.warning("No valid dates available in cache.")
-        return
-
-    st.caption(
-        "Available date range: "
-        f"{available_dates[0].isoformat()} -> {available_dates[-1].isoformat()} "
-        f"({len(available_dates)} dates)"
+def render_indices_tab() -> None:
+    render_page_intro(
+        "Indices",
+        "Compare close values across two dates and manually adjust cached closes when needed.",
+        "Equipilot / Indices",
     )
+    cache_state = load_indices_cache_state()
+    if not render_indices_cache_state_feedback(
+        cache_state,
+        hint="Populate or refresh the cache from Home > Indices Import.",
+    ):
+        return
+
+    cache_df = cache_state.get("cache_df")
+    normalized_cache_df = cache_state.get("normalized_cache_df")
+    available_dates = cache_state.get("available_dates", [])
+    cache_year = cache_state.get("cache_year")
+    if cache_df is None or normalized_cache_df is None or not available_dates or cache_year is None:
+        st.warning("Indices cache is not ready for comparison yet.")
+        st.caption("Populate or refresh the cache from Home > Indices Import.")
+        return
+
     date_col_1, date_col_2 = st.columns(2)
     with date_col_1:
         selected_date_1 = st.date_input(
@@ -3673,94 +3985,36 @@ def render_indices_tab() -> None:
                     target_date=selected_date_2,
                     adjusted_close=float(close_2),
                 )
-        save_indices_cache(updated_cache_df, cache_year)
+        save_indices_cache(updated_cache_df, int(cache_year))
         load_indices_cache_file.clear()
         st.rerun()
 
 
 def render_home(config: ReportConfig) -> None:
     render_page_intro(
-        "Home Cockpit",
-        "Generate report_select Excel only (no PDF) and manage EOD report cache.",
+        "Home",
+        "Database imports and readiness checks for report Excel and indices data.",
         "Equipilot / Home",
     )
-    default_anchor = config.eod_as_of_date or date.fromisoformat(bucharest_today_str())
-    controls_col, toggles_col = st.columns([1.15, 1])
-    with controls_col:
-        home_anchor_date = st.date_input(
-            "Report-select date (EOD anchor)",
-            value=default_anchor,
-            key="home_report_select_date",
-        )
-    with toggles_col:
-        run_sql_home = st.checkbox(
-            "Run SQL (force overwrite for selected date)",
-            value=False,
-            key="home_run_sql_toggle",
-        )
-    available_dates = list_report_select_dates()
-    latest_date = available_dates[-1] if available_dates else None
-    latest_source, _ = resolve_report_select_path(latest_date) if latest_date else (None, (None, None))
-    latest_rows = "n/a"
-    if latest_source:
-        try:
-            latest_rows = str(len(load_report_select(str(latest_source))))
-        except Exception:
-            latest_rows = "Unavailable"
-
-    selected_source, _ = resolve_report_select_path(home_anchor_date)
-    selected_status = "ready" if selected_source else "missing"
-
-    kpi_cols = st.columns(3)
-    with kpi_cols[0]:
-        render_kpi_card(
-            "Latest report_select",
-            latest_date.isoformat() if latest_date else "None",
-            "Most recent EOD cache available",
-            "neutral" if latest_date else "warn",
-        )
-    with kpi_cols[1]:
-        render_kpi_card(
-            "Rows in latest file",
-            latest_rows,
-            latest_source.name if latest_source else "No report_select file yet",
-            "positive" if latest_source else "warn",
-        )
-    with kpi_cols[2]:
-        render_kpi_card(
-            "Selected EOD status",
-            selected_status.upper(),
-            home_anchor_date.isoformat(),
-            "positive" if selected_source else "warn",
-        )
-
-    render_chip_row(
-        [
-            f"Output target: {report_cache_path(cache_date=home_anchor_date).name}",
-        ]
+    render_subtab_group_intro(
+        "Home sections",
+        "Use the sub-tabs below to validate imports, generate report Excel files, and refresh index data.",
     )
-    st.caption(f"Output: {report_cache_path(cache_date=home_anchor_date)}")
-    with st.expander("Home logs", expanded=True):
-        home_placeholder = st.empty()
-        st.session_state["home_log_placeholder"] = home_placeholder
-        home_placeholder.code(st.session_state.get("home_logs", "") or "(no logs yet)")
-        if st.button("Clear home logs", key="home_clear_logs"):
-            st.session_state["home_logs"] = ""
-            home_placeholder.code("(no logs yet)")
-        render_log_timeline(
-            st.session_state.get("home_logs", ""),
-            "No runtime events yet. Trigger generation to populate logs.",
-        )
-    if st.button("Generate report_select Excel", use_container_width=True, key="home_generate_report_select"):
-        with st.spinner("Generating report_select..."):
-            run_report_select_export(home_anchor_date, run_sql_home)
-
+    check_tab, report_tab, indices_import_tab = st.tabs(
+        ["Check", "Report Excel Import", "Indices Import"]
+    )
+    with check_tab:
+        render_home_check_subtab(config)
+    with report_tab:
+        render_home_report_excel_import(config)
+    with indices_import_tab:
+        render_home_indices_import_subtab()
 
 def render_monthly_board(config: ReportConfig) -> None:
     render_page_intro(
-        "Monthly Scoring Board",
+        "Monthly Sector Report",
         "Configure report dates, run generation, and manage prompt/source files.",
-        "Equipilot / Monthly Scoring Board",
+        "Equipilot / Sector / Monthly Sector Report",
     )
     report_date_value = st.date_input("Report date", value=config.report_date, key="monthly_report_date")
     eod_as_of_value = st.date_input(
@@ -3901,6 +4155,31 @@ def render_monthly_board(config: ReportConfig) -> None:
         )
         copy_button(final_prompt, "monthly_final_prompt_copy")
 
+def render_sector_tab(config: ReportConfig) -> None:
+    render_subtab_group_intro(
+        "Sector sections",
+        "Switch between the monthly sector report, sector pulse, and sector scoring boards.",
+    )
+    monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab = st.tabs(
+        ["Monthly Sector Report", "Sector Pulse", "Fundamental Scoring", "Technical Scoring"]
+    )
+    with monthly_tab:
+        render_monthly_board(config)
+    with sector_pulse_tab:
+        render_sector_pulse_board(config)
+    with fundamental_tab:
+        render_fundamental_scoring_board(config)
+    with technical_tab:
+        render_technical_scoring_board(config)
+
+
+def render_thematics_tab() -> None:
+    render_page_intro(
+        "Thematics",
+        "Thematic views and checks will land here as the next workspace is built.",
+        "Equipilot / Thematics",
+    )
+    st.info("Thematics is intentionally blank for now.")
 
 def render_quadrants(default_anchor: date) -> None:
     render_page_intro(
@@ -3971,10 +4250,10 @@ def render_quadrants(default_anchor: date) -> None:
             p_mult_weak_pos = st.number_input("Multiplier > weak +%", value=0.90, step=0.05)
         with c3:
             p_mult_weak_neg = st.number_input("Multiplier > weak -%", value=0.80, step=0.05)
-            p_mult_strong_neg = st.number_input("Multiplier ≤ weak -%", value=0.70, step=0.05)
+            p_mult_strong_neg = st.number_input("Multiplier ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ weak -%", value=0.70, step=0.05)
 
         st.markdown("**Technical (T) adjustment**")
-        t_max_tilt = st.number_input("Max tilt (±)", value=0.10, step=0.01, format="%.2f")
+        t_max_tilt = st.number_input("Max tilt (ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±)", value=0.10, step=0.01, format="%.2f")
         t_extreme_target = st.number_input(
             "Extreme coverage target",
             value=0.15,
@@ -4106,14 +4385,12 @@ def main() -> None:
 
     render_header()
 
-    home_tab, indices_tab, monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab, trade_ideas_tab, quadrants_tab = st.tabs(
+    home_tab, indices_tab, sector_tab, thematics_tab, trade_ideas_tab, quadrants_tab = st.tabs(
         [
             "Home",
             "Indices",
-            "Monthly Scoring Board",
-            "Sector Pulse",
-            "Fundamental Scoring",
-            "Technical Scoring",
+            "Sector",
+            "Thematics",
             "Trade Ideas",
             "Quadrants",
         ]
@@ -4122,14 +4399,10 @@ def main() -> None:
         render_home(config)
     with indices_tab:
         render_indices_tab()
-    with monthly_tab:
-        render_monthly_board(config)
-    with sector_pulse_tab:
-        render_sector_pulse_board(config)
-    with fundamental_tab:
-        render_fundamental_scoring_board(config)
-    with technical_tab:
-        render_technical_scoring_board(config)
+    with sector_tab:
+        render_sector_tab(config)
+    with thematics_tab:
+        render_thematics_tab()
     with trade_ideas_tab:
         render_trade_ideas(config)
     with quadrants_tab:

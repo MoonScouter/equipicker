@@ -39,7 +39,7 @@ Report cache files:
 
 ## Scheduled report_select generation
 
-You can run the same report-select generation flow used in Home tab on an automatic schedule.
+You can run the same report-select generation flow used in Home > Report Excel Import on an automatic schedule.
 
 ### CLI runner
 
@@ -168,3 +168,4 @@ Bearish moderate acceleration (mirror of weak up):
 
 All four filters format `market_cap` for display as `x.xxB` or `x.xxM`.
 Naming note: strategy docs that say `rs_ma20` / `obvm_ma20` map to existing data columns `rs_sma20` / `obvm_sma20`.
+
