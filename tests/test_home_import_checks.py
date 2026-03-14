@@ -67,7 +67,7 @@ class HomeImportCheckTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("missing required columns", errors[0].lower())
 
-    def test_evaluate_home_import_checks_uses_strictly_newer_indices_rule(self) -> None:
+    def test_evaluate_home_import_checks_accepts_equal_or_newer_indices_date(self) -> None:
         selected_date = date(2026, 3, 6)
         with TemporaryDirectory() as tmp_dir:
             equal_path = Path(tmp_dir) / "indices-prices-2026.xlsx"
@@ -84,7 +84,7 @@ class HomeImportCheckTests(unittest.TestCase):
             equal_state = evaluate_home_import_checks(selected_date, cache_paths=[equal_path])
             newer_state = evaluate_home_import_checks(selected_date, cache_paths=[equal_path, newer_path])
 
-        self.assertFalse(equal_state["indices_check_passed"])
+        self.assertTrue(equal_state["indices_check_passed"])
         self.assertTrue(newer_state["indices_check_passed"])
 
 

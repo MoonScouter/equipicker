@@ -63,7 +63,34 @@ BANNER_SIDE_CANDIDATES = [
 ]
 CAP_BUCKET_ORDER = ["Nano", "Micro", "Small", "Mid", "Large", "Mega", "Unknown"]
 QUADRANT_BORDER_D_T_THRESHOLD = 5.0
+TREND_SYMBOL_UP = "📈"
+TREND_SYMBOL_DOWN = "📉"
+TREND_FILTER_LABELS = {
+    "up": f"Up ({TREND_SYMBOL_UP})",
+    "flat": "No trend",
+    "down": f"Down ({TREND_SYMBOL_DOWN})",
+}
+TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["flat"], TREND_FILTER_LABELS["down"]]
 
+
+def _trend_symbol_for_delta(delta_value: Optional[float], threshold: float) -> str:
+    if delta_value is None or pd.isna(delta_value):
+        return ""
+    if delta_value > threshold:
+        return TREND_SYMBOL_UP
+    if delta_value < -threshold:
+        return TREND_SYMBOL_DOWN
+    return ""
+
+
+def _trend_direction_for_delta(delta_value: Optional[float], threshold: float) -> str:
+    if delta_value is None or pd.isna(delta_value):
+        return "none"
+    if delta_value > threshold:
+        return "up"
+    if delta_value < -threshold:
+        return "down"
+    return "flat"
 
 def _format_ts(path: Optional[Path]) -> str:
     if not path or not path.exists():
@@ -1768,19 +1795,13 @@ def _annotate_company_technical_trend(
     merged = annotated.merge(previous_scores, on="ticker", how="left")
     delta = merged["general_technical_score"] - merged["general_technical_score_prev"]
     merged["technical_trend_delta"] = delta
-    merged["technical_trend_symbol"] = np.where(
-        delta > threshold,
-        "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â ",
-        np.where(delta < -threshold, "ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°", ""),
-    )
-    merged["technical_trend_direction"] = np.where(
-        delta > threshold,
-        "up",
-        np.where(delta < -threshold, "down", "flat"),
-    )
-    merged.loc[delta.isna(), "technical_trend_direction"] = "none"
+    merged["technical_trend_symbol"] = [
+        _trend_symbol_for_delta(delta_value, threshold) for delta_value in delta.tolist()
+    ]
+    merged["technical_trend_direction"] = [
+        _trend_direction_for_delta(delta_value, threshold) for delta_value in delta.tolist()
+    ]
     return merged.drop(columns=["general_technical_score_prev"])
-
 
 def _company_filter_presets() -> dict[str, dict[str, object]]:
     return {
@@ -1788,40 +1809,39 @@ def _company_filter_presets() -> dict[str, dict[str, object]]:
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )",
+            "trend_dir": TREND_FILTER_LABELS["up"],
         },
         "Strong and Stable": {
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "No trend",
+            "trend_dir": TREND_FILTER_LABELS["flat"],
         },
         "Strong and Down": {
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)",
+            "trend_dir": TREND_FILTER_LABELS["down"],
         },
         "Weak and Up": {
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )",
+            "trend_dir": TREND_FILTER_LABELS["up"],
         },
         "Weak and Stable": {
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "No trend",
+            "trend_dir": TREND_FILTER_LABELS["flat"],
         },
         "Weak and Down": {
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
             "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)",
+            "trend_dir": TREND_FILTER_LABELS["down"],
         },
     }
-
 
 def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
     preset = _company_filter_presets().get(preset_name)
@@ -2120,7 +2140,7 @@ div.st-key-{btn_key} button {{
             with filter_cols_bottom[next_bottom_col]:
                 trend_filter_value = st.selectbox(
                     "Technical trend filter",
-                    options=["All", "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )", "No trend", "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)"],
+                    options=TREND_FILTER_OPTIONS,
                     key=tech_trend_dir_key,
                 )
             next_bottom_col += 1
@@ -2176,11 +2196,11 @@ div.st-key-{btn_key} button {{
                 filtered["fundamental_momentum"].between(momentum_min, momentum_max, inclusive="both")
             ]
     if include_technical_trend_filter and "technical_trend_direction" in filtered.columns:
-        if trend_filter_value == "Up (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â )":
+        if trend_filter_value == TREND_FILTER_LABELS["up"]:
             filtered = filtered[filtered["technical_trend_direction"] == "up"]
-        elif trend_filter_value == "No trend":
+        elif trend_filter_value == TREND_FILTER_LABELS["flat"]:
             filtered = filtered[filtered["technical_trend_direction"] == "flat"]
-        elif trend_filter_value == "Down (ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°)":
+        elif trend_filter_value == TREND_FILTER_LABELS["down"]:
             filtered = filtered[filtered["technical_trend_direction"] == "down"]
 
     if ticker_query:
@@ -2309,13 +2329,9 @@ def apply_trend_symbols_to_table(
             if curr_value is None:
                 rendered_values.append("N/A")
                 continue
-            symbol = ""
-            if delta_value is not None:
-                if delta_value > threshold:
-                    symbol = " ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒâ€¹Ã¢â‚¬Â "
-                elif delta_value < -threshold:
-                    symbol = " ÃƒÆ’Ã‚Â°Ãƒâ€¦Ã‚Â¸ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°"
-            rendered_values.append(f"{curr_value:.1f}{symbol}")
+            trend_symbol = _trend_symbol_for_delta(delta_value, threshold)
+            suffix = f" {trend_symbol}" if trend_symbol else ""
+            rendered_values.append(f"{curr_value:.1f}{suffix}")
         annotated[col] = rendered_values
     return annotated
 
@@ -2695,7 +2711,9 @@ def build_trended_table_for_paths(
     previous_path_str: str,
     selected_sector: str,
     threshold: float,
+    cache_revision: str = "2026-03-15-trend-symbol-fix-v2",
 ) -> pd.DataFrame:
+    _ = cache_revision  # Cache-buster so old trended tables do not survive rendering logic changes.
     if board_kind == "fundamental":
         score_columns = ["Total", "P1", "P2", "P3", "P4", "P5"]
         current_table = get_fundamental_table_for_sector(current_path_str, selected_sector)
@@ -3576,7 +3594,7 @@ def evaluate_home_import_checks(
     return {
         **report_select_state,
         "latest_indices_date": latest_indices_date,
-        "indices_check_passed": latest_indices_date is not None and latest_indices_date > selected_date,
+        "indices_check_passed": latest_indices_date is not None and latest_indices_date >= selected_date,
         "indices_cache_paths": active_cache_paths,
         "indices_cache_errors": indices_cache_errors,
     }
@@ -3682,7 +3700,7 @@ def render_home_check_subtab(config: ReportConfig) -> None:
         )
     with status_cols[1]:
         render_kpi_card(
-            "Indices cache > check date",
+            "Indices cache >= check date",
             "PASS" if indices_check_passed else "CHECK",
             indices_note,
             "positive" if indices_check_passed else "warn",
@@ -3703,7 +3721,7 @@ def render_home_check_subtab(config: ReportConfig) -> None:
                 "Details": report_note,
             },
             {
-                "Check": "Indices latest cache date > selected date",
+                "Check": "Indices latest cache date >= selected date",
                 "Status": "PASS" if indices_check_passed else "STALE / MISSING",
                 "Details": indices_note,
             },
