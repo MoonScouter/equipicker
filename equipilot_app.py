@@ -3678,11 +3678,13 @@ def evaluate_home_import_checks(
     latest_weekly_prices_date, weekly_prices_cache_errors = get_latest_prices_cache_date(
         "weekly",
         active_weekly_price_cache_paths,
-        on_or_before=selected_date,
     )
-    indices_check_passed = latest_indices_date is not None and latest_indices_date > selected_date
-    daily_prices_check_passed = latest_daily_prices_date is not None and latest_daily_prices_date > selected_date
-    weekly_prices_check_passed = latest_weekly_prices_date is not None
+    indices_check_passed = latest_indices_date is not None and latest_indices_date >= selected_date
+    daily_prices_check_passed = latest_daily_prices_date is not None and latest_daily_prices_date >= selected_date
+    weekly_prices_check_passed = (
+        latest_weekly_prices_date is not None
+        and latest_weekly_prices_date + timedelta(days=4) >= selected_date
+    )
     overall_ready = bool(report_select_state["report_select_exists"]) and all(
         [indices_check_passed, daily_prices_check_passed, weekly_prices_check_passed]
     )
@@ -3859,9 +3861,9 @@ def render_home_check_subtab(config: ReportConfig) -> None:
         else "No valid daily prices cache date found"
     )
     weekly_prices_note = (
-        f"Latest cached weekly date on/before check date: {latest_weekly_prices_date.isoformat()}"
+        f"Latest cached date: {latest_weekly_prices_date.isoformat()} (covers through {(latest_weekly_prices_date + timedelta(days=4)).isoformat()})"
         if isinstance(latest_weekly_prices_date, date)
-        else "No valid weekly prices cache date found on/before selected date"
+        else "No valid weekly prices cache date found"
     )
 
     status_cols = st.columns(5)
@@ -3874,21 +3876,21 @@ def render_home_check_subtab(config: ReportConfig) -> None:
         )
     with status_cols[1]:
         render_kpi_card(
-            "Indices cache > check date",
+            "Indices cache >= check date",
             "PASS" if indices_check_passed else "CHECK",
             indices_note,
             "positive" if indices_check_passed else "warn",
         )
     with status_cols[2]:
         render_kpi_card(
-            "Daily prices > check date",
+            "Daily prices >= check date",
             "PASS" if daily_prices_check_passed else "CHECK",
             daily_prices_note,
             "positive" if daily_prices_check_passed else "warn",
         )
     with status_cols[3]:
         render_kpi_card(
-            "Weekly prices ready",
+            "Weekly date + 4d >= check date",
             "PASS" if weekly_prices_check_passed else "CHECK",
             weekly_prices_note,
             "positive" if weekly_prices_check_passed else "warn",
@@ -3909,17 +3911,17 @@ def render_home_check_subtab(config: ReportConfig) -> None:
                 "Details": report_note,
             },
             {
-                "Check": "Indices latest cache date > selected date",
+                "Check": "Indices latest cache date >= selected date",
                 "Status": "PASS" if indices_check_passed else "STALE / MISSING",
                 "Details": indices_note,
             },
             {
-                "Check": "Daily prices latest cache date > selected date",
+                "Check": "Daily prices latest cache date >= selected date",
                 "Status": "PASS" if daily_prices_check_passed else "STALE / MISSING",
                 "Details": daily_prices_note,
             },
             {
-                "Check": "Weekly prices latest cache date <= selected date",
+                "Check": "Weekly prices latest cache date + 4 days >= selected date",
                 "Status": "PASS" if weekly_prices_check_passed else "STALE / MISSING",
                 "Details": weekly_prices_note,
             },
@@ -4761,4 +4763,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
 

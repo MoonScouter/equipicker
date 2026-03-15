@@ -105,7 +105,7 @@ class HomeImportCheckTests(unittest.TestCase):
         self.assertEqual(latest_date, date(2026, 1, 5))
         self.assertEqual(errors, [])
 
-    def test_latest_prices_cache_date_applies_weekly_on_or_before_filter(self) -> None:
+    def test_latest_prices_cache_date_uses_latest_weekly_date_without_filter(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             weekly_path = Path(tmp_dir) / "prices_weekly_2026.jsonl"
             self._write_prices_cache(
@@ -135,10 +135,9 @@ class HomeImportCheckTests(unittest.TestCase):
             latest_date, errors = get_latest_prices_cache_date(
                 "weekly",
                 [weekly_path],
-                on_or_before=date(2026, 3, 10),
             )
 
-        self.assertEqual(latest_date, date(2026, 3, 6))
+        self.assertEqual(latest_date, date(2026, 3, 13))
         self.assertEqual(errors, [])
 
     def test_latest_prices_cache_date_collects_invalid_file_errors(self) -> None:
@@ -168,7 +167,7 @@ class HomeImportCheckTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("missing required columns", errors[0].lower())
 
-    def test_evaluate_home_import_checks_requires_fresh_daily_and_indices_plus_weekly_on_or_before(self) -> None:
+    def test_evaluate_home_import_checks_accepts_equal_or_newer_dates_for_indices_and_prices(self) -> None:
         selected_date = date(2026, 3, 6)
         with TemporaryDirectory() as tmp_dir:
             indices_path = Path(tmp_dir) / "indices-prices-2026.xlsx"
@@ -215,7 +214,7 @@ class HomeImportCheckTests(unittest.TestCase):
         self.assertTrue(state["weekly_prices_check_passed"])
         self.assertTrue(state["overall_ready"])
 
-    def test_evaluate_home_import_checks_fails_when_weekly_cache_is_only_after_selected_date(self) -> None:
+    def test_evaluate_home_import_checks_passes_when_weekly_cache_is_after_selected_date(self) -> None:
         selected_date = date(2026, 3, 6)
         with TemporaryDirectory() as tmp_dir:
             indices_path = Path(tmp_dir) / "indices-prices-2026.xlsx"
@@ -257,10 +256,100 @@ class HomeImportCheckTests(unittest.TestCase):
                 weekly_price_cache_paths=[weekly_path],
             )
 
+        self.assertTrue(state["weekly_prices_check_passed"])
+        self.assertTrue(state["overall_ready"])
+
+    def test_evaluate_home_import_checks_passes_when_weekly_date_plus_four_days_covers_selected_date(self) -> None:
+        selected_date = date(2026, 3, 10)
+        with TemporaryDirectory() as tmp_dir:
+            indices_path = Path(tmp_dir) / "indices-prices-2026.xlsx"
+            daily_path = Path(tmp_dir) / "prices_daily_2026.jsonl"
+            weekly_path = Path(tmp_dir) / "prices_weekly_2026.jsonl"
+            self._write_indices_cache(
+                indices_path,
+                [{"ticker": "GSPC.INDX", "date": pd.Timestamp("2026-03-10"), "adjusted_close": 100.0}],
+            )
+            self._write_prices_cache(
+                daily_path,
+                [{
+                    "ticker": "AAPL.US",
+                    "date": "2026-03-10",
+                    "adjusted_close": 100.0,
+                    "adjusted_high": 101.0,
+                    "adjusted_low": 99.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }],
+            )
+            self._write_prices_cache(
+                weekly_path,
+                [{
+                    "ticker": "AAPL.US",
+                    "date": "2026-03-06",
+                    "adjusted_close": 100.0,
+                    "adjusted_high": 101.0,
+                    "adjusted_low": 99.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }],
+            )
+
+            state = evaluate_home_import_checks(
+                selected_date,
+                cache_paths=[indices_path],
+                daily_price_cache_paths=[daily_path],
+                weekly_price_cache_paths=[weekly_path],
+            )
+
+        self.assertTrue(state["weekly_prices_check_passed"])
+        self.assertTrue(state["overall_ready"])
+
+    def test_evaluate_home_import_checks_fails_when_weekly_date_plus_four_days_is_still_before_selected_date(self) -> None:
+        selected_date = date(2026, 3, 11)
+        with TemporaryDirectory() as tmp_dir:
+            indices_path = Path(tmp_dir) / "indices-prices-2026.xlsx"
+            daily_path = Path(tmp_dir) / "prices_daily_2026.jsonl"
+            weekly_path = Path(tmp_dir) / "prices_weekly_2026.jsonl"
+            self._write_indices_cache(
+                indices_path,
+                [{"ticker": "GSPC.INDX", "date": pd.Timestamp("2026-03-11"), "adjusted_close": 100.0}],
+            )
+            self._write_prices_cache(
+                daily_path,
+                [{
+                    "ticker": "AAPL.US",
+                    "date": "2026-03-11",
+                    "adjusted_close": 100.0,
+                    "adjusted_high": 101.0,
+                    "adjusted_low": 99.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }],
+            )
+            self._write_prices_cache(
+                weekly_path,
+                [{
+                    "ticker": "AAPL.US",
+                    "date": "2026-03-06",
+                    "adjusted_close": 100.0,
+                    "adjusted_high": 101.0,
+                    "adjusted_low": 99.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }],
+            )
+
+            state = evaluate_home_import_checks(
+                selected_date,
+                cache_paths=[indices_path],
+                daily_price_cache_paths=[daily_path],
+                weekly_price_cache_paths=[weekly_path],
+            )
+
         self.assertFalse(state["weekly_prices_check_passed"])
         self.assertFalse(state["overall_ready"])
 
-    def test_evaluate_home_import_checks_fails_for_equal_daily_or_indices_dates(self) -> None:
+    def test_evaluate_home_import_checks_passes_for_equal_daily_indices_and_weekly_dates(self) -> None:
         selected_date = date(2026, 3, 6)
         with TemporaryDirectory() as tmp_dir:
             indices_path = Path(tmp_dir) / "indices-prices-2026.xlsx"
@@ -302,11 +391,14 @@ class HomeImportCheckTests(unittest.TestCase):
                 weekly_price_cache_paths=[weekly_path],
             )
 
-        self.assertFalse(state["indices_check_passed"])
-        self.assertFalse(state["daily_prices_check_passed"])
+        self.assertTrue(state["indices_check_passed"])
+        self.assertTrue(state["daily_prices_check_passed"])
         self.assertTrue(state["weekly_prices_check_passed"])
-        self.assertFalse(state["overall_ready"])
+        self.assertTrue(state["overall_ready"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
