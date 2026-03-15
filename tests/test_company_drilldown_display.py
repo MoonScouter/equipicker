@@ -3,8 +3,13 @@ import unittest
 import pandas as pd
 
 from equipilot_app import (
+    TREND_FILTER_LABELS,
+    TREND_SYMBOL_DOWN,
+    TREND_SYMBOL_UP,
     _annotate_company_technical_trend,
+    _company_filter_presets,
     _prepare_company_drilldown_universe,
+    apply_trend_symbols_to_table,
     format_company_drilldown_display,
 )
 
@@ -131,9 +136,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         annotated = _annotate_company_technical_trend(company_df, previous_df, threshold=5.0)
 
         by_ticker = annotated.set_index("ticker")
-        self.assertEqual(by_ticker.loc["UP.US", "technical_trend_symbol"], "📈")
+        self.assertEqual(by_ticker.loc["UP.US", "technical_trend_symbol"], TREND_SYMBOL_UP)
         self.assertEqual(by_ticker.loc["UP.US", "technical_trend_direction"], "up")
-        self.assertEqual(by_ticker.loc["DOWN.US", "technical_trend_symbol"], "📉")
+        self.assertEqual(by_ticker.loc["DOWN.US", "technical_trend_symbol"], TREND_SYMBOL_DOWN)
         self.assertEqual(by_ticker.loc["DOWN.US", "technical_trend_direction"], "down")
         self.assertEqual(by_ticker.loc["FLAT.US", "technical_trend_symbol"], "")
         self.assertEqual(by_ticker.loc["FLAT.US", "technical_trend_direction"], "flat")
@@ -151,7 +156,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 70.0,
                     "fundamental_momentum": 72.0,
                     "general_technical_score": 90.0,
-                    "technical_trend_symbol": "📈",
+                    "technical_trend_symbol": TREND_SYMBOL_UP,
                 },
                 {
                     "ticker": "LOW.US",
@@ -170,8 +175,45 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         rendered = format_company_drilldown_display(company_df, sort_by="technical")
 
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
-        self.assertEqual(rendered.iloc[0]["Technical Score"], "90.0 📈")
+        self.assertEqual(rendered.iloc[0]["Technical Score"], f"90.0 {TREND_SYMBOL_UP}")
 
 
+    def test_apply_trend_symbols_to_table_formats_threshold_crossings_and_missing_previous(self) -> None:
+        current_table = pd.DataFrame(
+            [
+                {"Sector": "Up", "Total": 20.0},
+                {"Sector": "Down", "Total": 10.0},
+                {"Sector": "Flat", "Total": 15.0},
+                {"Sector": "Missing", "Total": 18.0},
+            ]
+        )
+        previous_table = pd.DataFrame(
+            [
+                {"Sector": "Up", "Total": 10.0},
+                {"Sector": "Down", "Total": 20.0},
+                {"Sector": "Flat", "Total": 12.0},
+            ]
+        )
+
+        rendered = apply_trend_symbols_to_table(current_table, previous_table, ["Total"], threshold=5.0)
+
+        by_sector = rendered.set_index("Sector")
+        self.assertEqual(by_sector.loc["Up", "Total"], f"20.0 {TREND_SYMBOL_UP}")
+        self.assertEqual(by_sector.loc["Down", "Total"], f"10.0 {TREND_SYMBOL_DOWN}")
+        self.assertEqual(by_sector.loc["Flat", "Total"], "15.0")
+        self.assertEqual(by_sector.loc["Missing", "Total"], "18.0")
+
+    def test_company_filter_presets_use_shared_trend_labels(self) -> None:
+        presets = _company_filter_presets()
+        trend_labels = {str(preset["trend_dir"]) for preset in presets.values()}
+
+        self.assertEqual(
+            trend_labels,
+            {
+                TREND_FILTER_LABELS["up"],
+                TREND_FILTER_LABELS["flat"],
+                TREND_FILTER_LABELS["down"],
+            },
+        )
 if __name__ == "__main__":
     unittest.main()
