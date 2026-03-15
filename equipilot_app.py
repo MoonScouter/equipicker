@@ -38,6 +38,15 @@ from indices_service import (
     indices_cache_path,
     save_indices_cache,
 )
+from prices_service import (
+    PRICE_CACHE_COLUMNS,
+    PRICE_CACHE_REQUIRED_COLUMNS,
+    import_prices_cache,
+    list_prices_cache_paths,
+    load_prices_cache,
+    parse_manual_price_tickers,
+    prices_cache_path,
+)
 from report_select_service import generate_report_select_cache
 from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
@@ -181,6 +190,11 @@ def load_indices_cache_file(path_str: str) -> pd.DataFrame:
     return pd.read_excel(path_str)
 
 
+@st.cache_data(show_spinner=False)
+def load_prices_cache_file(path_str: str) -> pd.DataFrame:
+    return load_prices_cache(Path(path_str))
+
+
 def normalize_indices_cache_for_comparison(cache_df: pd.DataFrame) -> pd.DataFrame:
     required_columns = {"ticker", "date", "adjusted_close"}
     missing_columns = sorted(required_columns.difference(cache_df.columns))
@@ -197,6 +211,26 @@ def normalize_indices_cache_for_comparison(cache_df: pd.DataFrame) -> pd.DataFra
     working_df["adjusted_close"] = pd.to_numeric(working_df["adjusted_close"], errors="coerce")
     working_df = working_df.dropna(subset=["date"]).drop_duplicates(
         subset=["ticker", "date"], keep="first"
+    )
+    return working_df
+
+
+def normalize_prices_cache_for_check(cache_df: pd.DataFrame) -> pd.DataFrame:
+    missing_columns = sorted(PRICE_CACHE_REQUIRED_COLUMNS.difference(cache_df.columns))
+    if missing_columns:
+        raise ValueError(
+            "Prices cache missing required columns: "
+            f"{', '.join(missing_columns)}"
+        )
+
+    working_df = cache_df[list(PRICE_CACHE_COLUMNS)].copy()
+    working_df["ticker"] = working_df["ticker"].fillna("").astype(str).str.strip().str.upper()
+    working_df["date"] = pd.to_datetime(working_df["date"], errors="coerce").dt.date
+    for column in PRICE_CACHE_COLUMNS[2:]:
+        working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
+    working_df = working_df[working_df["ticker"].astype(str).str.len() > 0]
+    working_df = working_df.dropna(subset=["date"]).drop_duplicates(
+        subset=["ticker", "date"], keep="last"
     )
     return working_df
 
@@ -3575,6 +3609,43 @@ def get_latest_indices_cache_date(cache_paths: Optional[list[Path]] = None) -> T
     return latest_date, errors
 
 
+def get_latest_prices_cache_date(
+    frequency: str,
+    cache_paths: Optional[list[Path]] = None,
+    *,
+    on_or_before: Optional[date] = None,
+) -> Tuple[Optional[date], list[str]]:
+    latest_date: Optional[date] = None
+    errors: list[str] = []
+    paths = cache_paths if cache_paths is not None else list_prices_cache_paths(frequency)
+    for path in paths:
+        try:
+            cache_df = load_prices_cache_file(str(path))
+        except Exception as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        if cache_df.empty:
+            continue
+        try:
+            normalized_cache_df = normalize_prices_cache_for_check(cache_df)
+        except ValueError as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        if normalized_cache_df.empty:
+            continue
+        if on_or_before is not None:
+            normalized_cache_df = normalized_cache_df[normalized_cache_df["date"] <= on_or_before]
+            if normalized_cache_df.empty:
+                continue
+        available_dates = normalized_cache_df["date"].dropna().tolist()
+        if not available_dates:
+            continue
+        path_latest_date = max(available_dates)
+        if latest_date is None or path_latest_date > latest_date:
+            latest_date = path_latest_date
+    return latest_date, errors
+
+
 def get_report_select_import_state(selected_date: date) -> Dict[str, object]:
     resolved_report_path, expected_candidates = resolve_report_select_path(selected_date)
     return {
@@ -3584,19 +3655,52 @@ def get_report_select_import_state(selected_date: date) -> Dict[str, object]:
         "report_select_candidates": expected_candidates,
     }
 
+
 def evaluate_home_import_checks(
     selected_date: date,
     cache_paths: Optional[list[Path]] = None,
+    daily_price_cache_paths: Optional[list[Path]] = None,
+    weekly_price_cache_paths: Optional[list[Path]] = None,
 ) -> Dict[str, object]:
     report_select_state = get_report_select_import_state(selected_date)
     active_cache_paths = cache_paths if cache_paths is not None else list_indices_cache_paths()
     latest_indices_date, indices_cache_errors = get_latest_indices_cache_date(active_cache_paths)
+    active_daily_price_cache_paths = (
+        daily_price_cache_paths if daily_price_cache_paths is not None else list_prices_cache_paths("daily")
+    )
+    active_weekly_price_cache_paths = (
+        weekly_price_cache_paths if weekly_price_cache_paths is not None else list_prices_cache_paths("weekly")
+    )
+    latest_daily_prices_date, daily_prices_cache_errors = get_latest_prices_cache_date(
+        "daily",
+        active_daily_price_cache_paths,
+    )
+    latest_weekly_prices_date, weekly_prices_cache_errors = get_latest_prices_cache_date(
+        "weekly",
+        active_weekly_price_cache_paths,
+        on_or_before=selected_date,
+    )
+    indices_check_passed = latest_indices_date is not None and latest_indices_date > selected_date
+    daily_prices_check_passed = latest_daily_prices_date is not None and latest_daily_prices_date > selected_date
+    weekly_prices_check_passed = latest_weekly_prices_date is not None
+    overall_ready = bool(report_select_state["report_select_exists"]) and all(
+        [indices_check_passed, daily_prices_check_passed, weekly_prices_check_passed]
+    )
     return {
         **report_select_state,
         "latest_indices_date": latest_indices_date,
-        "indices_check_passed": latest_indices_date is not None and latest_indices_date >= selected_date,
+        "indices_check_passed": indices_check_passed,
         "indices_cache_paths": active_cache_paths,
         "indices_cache_errors": indices_cache_errors,
+        "latest_daily_prices_date": latest_daily_prices_date,
+        "daily_prices_check_passed": daily_prices_check_passed,
+        "daily_prices_cache_paths": active_daily_price_cache_paths,
+        "daily_prices_cache_errors": daily_prices_cache_errors,
+        "latest_weekly_prices_date": latest_weekly_prices_date,
+        "weekly_prices_check_passed": weekly_prices_check_passed,
+        "weekly_prices_cache_paths": active_weekly_price_cache_paths,
+        "weekly_prices_cache_errors": weekly_prices_cache_errors,
+        "overall_ready": overall_ready,
     }
 
 
@@ -3645,6 +3749,62 @@ def load_indices_cache_state(cache_year: Optional[int] = None) -> Dict[str, obje
     return state
 
 
+def load_prices_cache_state(frequency: str, cache_year: Optional[int] = None) -> Dict[str, object]:
+    resolved_year = cache_year or date.today().year
+    cache_file = prices_cache_path(frequency, resolved_year)
+    state: Dict[str, object] = {
+        "frequency": frequency,
+        "cache_year": resolved_year,
+        "cache_file": cache_file,
+        "cache_df": None,
+        "normalized_cache_df": None,
+        "available_dates": [],
+        "latest_date": None,
+        "row_count": 0,
+        "warning_message": None,
+        "error_message": None,
+    }
+    if not cache_file.exists():
+        state["warning_message"] = (
+            f"No {frequency} prices cache found for current year. Use Home > Prices Import to create it."
+        )
+        return state
+
+    try:
+        cache_df = load_prices_cache_file(str(cache_file))
+    except Exception as exc:  # pragma: no cover - UI feedback
+        state["error_message"] = f"Failed reading {frequency} prices cache: {exc}"
+        return state
+
+    state["cache_df"] = cache_df
+    if cache_df.empty:
+        state["warning_message"] = (
+            f"{frequency.capitalize()} prices cache is empty. Refresh it from Home > Prices Import."
+        )
+        return state
+
+    try:
+        normalized_cache_df = normalize_prices_cache_for_check(cache_df)
+    except ValueError as exc:
+        state["error_message"] = str(exc)
+        return state
+
+    state["normalized_cache_df"] = normalized_cache_df
+    if normalized_cache_df.empty:
+        state["warning_message"] = (
+            f"No valid {frequency} price rows found in cache after ticker/date normalization."
+        )
+        return state
+
+    available_dates = sorted(normalized_cache_df["date"].dropna().unique().tolist())
+    state["available_dates"] = available_dates
+    state["row_count"] = int(len(normalized_cache_df))
+    state["latest_date"] = available_dates[-1] if available_dates else None
+    if not available_dates:
+        state["warning_message"] = f"No valid dates available in {frequency} prices cache."
+    return state
+
+
 def render_indices_cache_state_feedback(cache_state: Dict[str, object], *, hint: Optional[str] = None) -> bool:
     error_message = cache_state.get("error_message")
     if error_message:
@@ -3676,8 +3836,12 @@ def render_home_check_subtab(config: ReportConfig) -> None:
     report_select_path = check_state.get("report_select_path")
     report_candidates = check_state.get("report_select_candidates", (None, None))
     latest_indices_date = check_state.get("latest_indices_date")
+    latest_daily_prices_date = check_state.get("latest_daily_prices_date")
+    latest_weekly_prices_date = check_state.get("latest_weekly_prices_date")
     indices_check_passed = bool(check_state.get("indices_check_passed"))
-    overall_ready = bool(check_state.get("report_select_exists")) and indices_check_passed
+    daily_prices_check_passed = bool(check_state.get("daily_prices_check_passed"))
+    weekly_prices_check_passed = bool(check_state.get("weekly_prices_check_passed"))
+    overall_ready = bool(check_state.get("overall_ready"))
 
     report_note = (
         report_select_path.name
@@ -3689,8 +3853,18 @@ def render_home_check_subtab(config: ReportConfig) -> None:
         if isinstance(latest_indices_date, date)
         else "No valid indices cache date found"
     )
+    daily_prices_note = (
+        f"Latest cached date: {latest_daily_prices_date.isoformat()}"
+        if isinstance(latest_daily_prices_date, date)
+        else "No valid daily prices cache date found"
+    )
+    weekly_prices_note = (
+        f"Latest cached weekly date on/before check date: {latest_weekly_prices_date.isoformat()}"
+        if isinstance(latest_weekly_prices_date, date)
+        else "No valid weekly prices cache date found on/before selected date"
+    )
 
-    status_cols = st.columns(3)
+    status_cols = st.columns(5)
     with status_cols[0]:
         render_kpi_card(
             "Report Excel imported",
@@ -3700,12 +3874,26 @@ def render_home_check_subtab(config: ReportConfig) -> None:
         )
     with status_cols[1]:
         render_kpi_card(
-            "Indices cache >= check date",
+            "Indices cache > check date",
             "PASS" if indices_check_passed else "CHECK",
             indices_note,
             "positive" if indices_check_passed else "warn",
         )
     with status_cols[2]:
+        render_kpi_card(
+            "Daily prices > check date",
+            "PASS" if daily_prices_check_passed else "CHECK",
+            daily_prices_note,
+            "positive" if daily_prices_check_passed else "warn",
+        )
+    with status_cols[3]:
+        render_kpi_card(
+            "Weekly prices ready",
+            "PASS" if weekly_prices_check_passed else "CHECK",
+            weekly_prices_note,
+            "positive" if weekly_prices_check_passed else "warn",
+        )
+    with status_cols[4]:
         render_kpi_card(
             "Overall import readiness",
             "READY" if overall_ready else "INCOMPLETE",
@@ -3721,29 +3909,45 @@ def render_home_check_subtab(config: ReportConfig) -> None:
                 "Details": report_note,
             },
             {
-                "Check": "Indices latest cache date >= selected date",
+                "Check": "Indices latest cache date > selected date",
                 "Status": "PASS" if indices_check_passed else "STALE / MISSING",
                 "Details": indices_note,
+            },
+            {
+                "Check": "Daily prices latest cache date > selected date",
+                "Status": "PASS" if daily_prices_check_passed else "STALE / MISSING",
+                "Details": daily_prices_note,
+            },
+            {
+                "Check": "Weekly prices latest cache date <= selected date",
+                "Status": "PASS" if weekly_prices_check_passed else "STALE / MISSING",
+                "Details": weekly_prices_note,
             },
         ]
     )
     st.dataframe(details_df, use_container_width=True, hide_index=True)
 
-    cache_paths = check_state.get("indices_cache_paths", [])
-    if cache_paths:
-        render_chip_row([
-            f"Indices cache files scanned: {len(cache_paths)}",
-            f"Selected date: {selected_date.isoformat()}",
-        ])
-    else:
-        st.caption("No yearly indices cache files found yet.")
+    render_chip_row([
+        f"Indices cache files scanned: {len(check_state.get('indices_cache_paths', []))}",
+        f"Daily prices cache files scanned: {len(check_state.get('daily_prices_cache_paths', []))}",
+        f"Weekly prices cache files scanned: {len(check_state.get('weekly_prices_cache_paths', []))}",
+        f"Selected date: {selected_date.isoformat()}",
+    ])
 
-    cache_errors = check_state.get("indices_cache_errors", [])
-    if cache_errors:
+    indices_cache_errors = check_state.get("indices_cache_errors", [])
+    if indices_cache_errors:
         st.warning("Some indices cache files could not be used for the check.")
-        st.code("\\n".join(str(entry) for entry in cache_errors))
+        st.code("\n".join(str(entry) for entry in indices_cache_errors))
 
-    st.info("Additional checks for thematic price imports can be added here later.")
+    daily_prices_cache_errors = check_state.get("daily_prices_cache_errors", [])
+    if daily_prices_cache_errors:
+        st.warning("Some daily prices cache files could not be used for the check.")
+        st.code("\n".join(str(entry) for entry in daily_prices_cache_errors))
+
+    weekly_prices_cache_errors = check_state.get("weekly_prices_cache_errors", [])
+    if weekly_prices_cache_errors:
+        st.warning("Some weekly prices cache files could not be used for the check.")
+        st.code("\n".join(str(entry) for entry in weekly_prices_cache_errors))
 
 
 def render_home_report_excel_import(config: ReportConfig) -> None:
@@ -3870,6 +4074,124 @@ def render_home_indices_import_subtab() -> None:
             f"{available_dates[0].isoformat()} -> {available_dates[-1].isoformat()} "
             f"({len(available_dates)} dates)"
         )
+
+
+def render_home_prices_import_subtab() -> None:
+    render_subtab_group_intro(
+        "Prices Import",
+        "Import yearly daily or weekly ticker price history used by thematic and market-regime workflows.",
+    )
+    today_local = date.today()
+    cache_year = today_local.year
+    default_cutoff_date = date(cache_year - 1, 12, 31)
+    cutoff_date = st.date_input(
+        "SQL start date (exclusive)",
+        value=default_cutoff_date,
+        key="home_prices_cutoff_date",
+        help="Query uses date > selected day at 00:00:00.",
+    )
+    scope_label = st.radio(
+        "Import scope",
+        ["All tickers", "Specific tickers"],
+        horizontal=True,
+        key="home_prices_scope",
+    )
+    manual_tickers_text = ""
+    normalized_manual_tickers: list[str] = []
+    if scope_label == "Specific tickers":
+        manual_tickers_text = st.text_area(
+            "Tickers",
+            key="home_prices_manual_tickers",
+            placeholder="AAPL\nMSFT.US\nNVDA",
+            help="Separate tickers with commas, spaces, or new lines. Missing .US will be added automatically.",
+        )
+        normalized_manual_tickers = parse_manual_price_tickers(manual_tickers_text)
+        if normalized_manual_tickers:
+            preview = ", ".join(normalized_manual_tickers[:12])
+            if len(normalized_manual_tickers) > 12:
+                preview = f"{preview}, ..."
+            render_chip_row([
+                f"Normalized tickers: {len(normalized_manual_tickers)}",
+                f"Preview: {preview}",
+            ])
+        else:
+            st.caption("Enter one or more tickers to run a specific-ticker import.")
+    else:
+        st.caption(
+            "All tickers refreshes the live company overview endpoint and intersects it with local screener-eligible tickers when you run an import."
+        )
+
+    daily_cache_file = prices_cache_path("daily", cache_year)
+    weekly_cache_file = prices_cache_path("weekly", cache_year)
+    render_chip_row(
+        [
+            f"Daily cache file: {daily_cache_file.name}",
+            f"Weekly cache file: {weekly_cache_file.name}",
+            f"Cache year: {cache_year}",
+        ]
+    )
+
+    def _run_prices_import(frequency: str) -> None:
+        scope_key = "all" if scope_label == "All tickers" else "specific"
+        requested_tickers = normalized_manual_tickers if scope_key == "specific" else []
+        if scope_key == "specific" and not requested_tickers:
+            st.error("Enter at least one ticker before running a specific-ticker prices import.")
+            return
+        with st.spinner(f"Importing {frequency} prices..."):
+            try:
+                result = import_prices_cache(
+                    frequency,
+                    cutoff_date,
+                    scope=scope_key,
+                    manual_tickers=requested_tickers,
+                )
+                load_prices_cache_file.clear()
+            except Exception as exc:  # pragma: no cover - UI feedback
+                st.error(f"{frequency.capitalize()} prices import failed: {exc}")
+            else:
+                latest_date = result.get("latest_date")
+                latest_date_note = latest_date.isoformat() if isinstance(latest_date, date) else "n/a"
+                st.success(
+                    f"{frequency.capitalize()} prices cache updated: {result['saved_path']} "
+                    f"({result['saved_rows']} rows, latest date {latest_date_note}, "
+                    f"tickers requested {result['requested_tickers_count']})."
+                )
+
+    action_cols = st.columns(2)
+    with action_cols[0]:
+        if st.button("Import daily prices", use_container_width=True, key="home_prices_import_daily"):
+            _run_prices_import("daily")
+    with action_cols[1]:
+        if st.button("Import weekly prices", use_container_width=True, key="home_prices_import_weekly"):
+            _run_prices_import("weekly")
+
+    daily_state = load_prices_cache_state("daily", cache_year)
+    weekly_state = load_prices_cache_state("weekly", cache_year)
+    summary_cols = st.columns(2)
+    with summary_cols[0]:
+        st.markdown("**Daily cache**")
+        st.caption(f"Cache path: {daily_cache_file}")
+        st.caption(f"Last updated: {_format_ts(daily_cache_file)}")
+        if render_indices_cache_state_feedback(
+            daily_state,
+            hint="Run Home > Prices Import > Import daily prices to populate the cache.",
+        ):
+            render_chip_row([
+                f"Rows: {daily_state.get('row_count', 0)}",
+                f"Latest date: {daily_state.get('latest_date').isoformat() if isinstance(daily_state.get('latest_date'), date) else 'n/a'}",
+            ])
+    with summary_cols[1]:
+        st.markdown("**Weekly cache**")
+        st.caption(f"Cache path: {weekly_cache_file}")
+        st.caption(f"Last updated: {_format_ts(weekly_cache_file)}")
+        if render_indices_cache_state_feedback(
+            weekly_state,
+            hint="Run Home > Prices Import > Import weekly prices to populate the cache.",
+        ):
+            render_chip_row([
+                f"Rows: {weekly_state.get('row_count', 0)}",
+                f"Latest date: {weekly_state.get('latest_date').isoformat() if isinstance(weekly_state.get('latest_date'), date) else 'n/a'}",
+            ])
 
 
 def render_indices_tab() -> None:
@@ -4011,15 +4333,15 @@ def render_indices_tab() -> None:
 def render_home(config: ReportConfig) -> None:
     render_page_intro(
         "Home",
-        "Database imports and readiness checks for report Excel and indices data.",
+        "Database imports and readiness checks for report Excel, indices, and prices data.",
         "Equipilot / Home",
     )
     render_subtab_group_intro(
         "Home sections",
-        "Use the sub-tabs below to validate imports, generate report Excel files, and refresh index data.",
+        "Use the sub-tabs below to validate imports, generate report Excel files, refresh index data, and import ticker price history.",
     )
-    check_tab, report_tab, indices_import_tab = st.tabs(
-        ["Check", "Report Excel Import", "Indices Import"]
+    check_tab, report_tab, indices_import_tab, prices_import_tab = st.tabs(
+        ["Check", "Report Excel Import", "Indices Import", "Prices Import"]
     )
     with check_tab:
         render_home_check_subtab(config)
@@ -4027,6 +4349,9 @@ def render_home(config: ReportConfig) -> None:
         render_home_report_excel_import(config)
     with indices_import_tab:
         render_home_indices_import_subtab()
+    with prices_import_tab:
+        render_home_prices_import_subtab()
+
 
 def render_monthly_board(config: ReportConfig) -> None:
     render_page_intro(
@@ -4436,3 +4761,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
