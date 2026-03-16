@@ -1107,6 +1107,7 @@ def _render_rows_editor(
     rows: list[dict[str, object]],
     columns: list[str],
     *,
+    key: str,
     help_text: str = "",
     height: int = 180,
 ) -> list[dict[str, object]]:
@@ -1119,6 +1120,7 @@ def _render_rows_editor(
         hide_index=True,
         use_container_width=True,
         height=height,
+        key=key,
     )
     normalized = _rows_to_records(edited, columns)
     return normalized
@@ -1324,6 +1326,7 @@ def render_api_templates_subtab() -> None:
             "Prompt variables",
             st.session_state.get("api_template_prompt_variables_rows", []),
             ["key", "value"],
+            key="api_prompt_variables_editor",
             help_text="Optional prompt variables saved with the template.",
         )
         st.session_state["api_template_prompt_variables_rows"] = prompt_variable_rows
@@ -1359,6 +1362,7 @@ def render_api_templates_subtab() -> None:
             "Request metadata",
             st.session_state.get("api_template_metadata_rows", []),
             ["key", "value"],
+            key="api_request_metadata_editor",
             help_text="Optional metadata sent on the response request.",
         )
         st.session_state["api_template_metadata_rows"] = metadata_rows
@@ -1424,6 +1428,7 @@ def render_api_templates_subtab() -> None:
             "File metadata filters",
             st.session_state.get("api_template_file_filter_rows", []),
             ["key", "type", "value_type", "value"],
+            key="api_file_metadata_filters_editor",
             help_text="Operators: eq, ne, gt, gte, lt, lte, in, nin. Metadata names stay fully editable.",
             height=220,
         )
@@ -5473,6 +5478,7 @@ def render_monthly_board(config: ReportConfig) -> None:
             value=final_prompt,
             height=340,
             disabled=True,
+            key="monthly_final_prompt_preview",
         )
         copy_button(final_prompt, "monthly_final_prompt_copy")
 
@@ -6163,14 +6169,44 @@ def render_quadrants(default_anchor: date) -> None:
         st.markdown("**Participation (P) discounts**")
         c1, c2, c3 = st.columns(3)
         with c1:
-            p_strong_pos_thresh = st.number_input("Strong +% threshold", value=5.0, step=0.5)
-            p_weak_pos_thresh = st.number_input("Weak +% threshold", value=0.0, step=0.5)
-            p_weak_neg_thresh = st.number_input("Weak -% threshold", value=-5.0, step=0.5)
+            p_strong_pos_thresh = st.number_input(
+                "Strong +% threshold",
+                value=5.0,
+                step=0.5,
+                key="quadrants_p_strong_pos_thresh",
+            )
+            p_weak_pos_thresh = st.number_input(
+                "Weak +% threshold",
+                value=0.0,
+                step=0.5,
+                key="quadrants_p_weak_pos_thresh",
+            )
+            p_weak_neg_thresh = st.number_input(
+                "Weak -% threshold",
+                value=-5.0,
+                step=0.5,
+                key="quadrants_p_weak_neg_thresh",
+            )
         with c2:
-            p_mult_strong_pos = st.number_input("Multiplier > strong +%", value=1.00, step=0.05)
-            p_mult_weak_pos = st.number_input("Multiplier > weak +%", value=0.90, step=0.05)
+            p_mult_strong_pos = st.number_input(
+                "Multiplier > strong +%",
+                value=1.00,
+                step=0.05,
+                key="quadrants_p_mult_strong_pos",
+            )
+            p_mult_weak_pos = st.number_input(
+                "Multiplier > weak +%",
+                value=0.90,
+                step=0.05,
+                key="quadrants_p_mult_weak_pos",
+            )
         with c3:
-            p_mult_weak_neg = st.number_input("Multiplier > weak -%", value=0.80, step=0.05)
+            p_mult_weak_neg = st.number_input(
+                "Multiplier > weak -%",
+                value=0.80,
+                step=0.05,
+                key="quadrants_p_mult_weak_neg",
+            )
             p_mult_strong_neg = st.number_input("Multiplier ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ weak -%", value=0.70, step=0.05)
 
         st.markdown("**Technical (T) adjustment**")
