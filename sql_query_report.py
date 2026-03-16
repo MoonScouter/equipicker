@@ -166,6 +166,7 @@ SELECT
   s.ticker,
   tk.name AS company,
   tk.market_cap,
+  eodhd.beta,
   tk.sector,
   tk.industry,
   ic.trend,
@@ -231,6 +232,8 @@ JOIN tickers AS tk
   ON tk.ticker = s.ticker
 JOIN indicators_computed AS ic
   ON ic.ticker = s.ticker
+LEFT JOIN indicators_eodhd AS eodhd
+  ON eodhd.ticker = s.ticker
 LEFT JOIN eod_asof AS ea
   ON ea.ticker = s.ticker
 JOIN lastrow AS lr

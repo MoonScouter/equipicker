@@ -14,3 +14,4 @@ torch
 transformers
 uvicorn
 mysql-connector-python
+openai
