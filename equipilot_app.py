@@ -286,7 +286,43 @@ def build_thematics_catalog(path_str: str) -> dict[str, object]:
             "sub_baskets": [str(entry) for entry in basket_payload.get("sub_baskets", [])],
             "tickers": normalized_tickers,
             "ticker_count": len(normalized_tickers),
+            "is_ai_super_parent": False,
+            "is_ai_group_child": False,
         }
+
+    ai_child_names = [
+        item_name
+        for item_name, item in items.items()
+        if not str(item.get("parent", "") or "").strip()
+        and pd.to_numeric(item.get("tier"), errors="coerce") == 1
+        and item_name != "AI"
+    ]
+    if ai_child_names:
+        ai_unique_tickers = sorted(
+            {
+                ticker_value
+                for child_name in ai_child_names
+                for ticker_value in items[child_name].get("tickers", [])
+            }
+        )
+        items["AI"] = {
+            "name": "AI",
+            "description": "Umbrella basket across all tier-1 AI groups, counting repeated companies only once.",
+            "article_narrative": "High-level aggregate across AI infrastructure, silicon, software, applications, services, security, robotics, and adjacent AI basket groups.",
+            "tier": 0,
+            "tier_label": "AI umbrella",
+            "value_chain_layer": 0,
+            "parent": "",
+            "is_parent": True,
+            "sub_baskets": sorted(ai_child_names, key=lambda child_name: _thematics_sort_key(items[child_name])),
+            "tickers": ai_unique_tickers,
+            "ticker_count": len(ai_unique_tickers),
+            "is_ai_super_parent": True,
+            "is_ai_group_child": False,
+        }
+        for child_name in ai_child_names:
+            items[child_name]["parent"] = "AI"
+            items[child_name]["is_ai_group_child"] = True
 
     for item in items.values():
         child_names = [child_name for child_name in item["sub_baskets"] if child_name in items]
@@ -413,6 +449,15 @@ def _render_score_with_symbol(value: object, symbol: str) -> str:
     if formatted == "N/A" or not symbol:
         return formatted
     return f"{formatted} {symbol}"
+
+
+def _render_thematics_score_with_symbol(value: object, symbol: str) -> str:
+    rendered = _render_score_with_symbol(value, symbol)
+    if rendered == "N/A":
+        return rendered
+    # Streamlit's grid keeps text columns left-aligned in this view, so pad the
+    # score text itself to visually center the value-plus-symbol string.
+    return f"\u2007{rendered}\u2007"
 
 
 def normalize_indices_cache_for_comparison(cache_df: pd.DataFrame) -> pd.DataFrame:
@@ -2140,14 +2185,14 @@ def _parse_number(value: object) -> Optional[float]:
 def _score_color_css(value: object) -> str:
     numeric = _parse_number(value)
     if numeric is None:
-        return "color:#A0A8B5;"
+        return "color:#A0A8B5; text-align:center; white-space:nowrap;"
     if numeric >= 80:
-        return "color:#0BA360; font-weight:700;"
+        return "color:#0BA360; font-weight:700; text-align:center; white-space:nowrap;"
     if numeric >= 60:
-        return "color:#3BAE72; font-weight:700;"
+        return "color:#3BAE72; font-weight:700; text-align:center; white-space:nowrap;"
     if numeric >= 40:
-        return "color:#F2994A; font-weight:700;"
-    return "color:#EB5757; font-weight:700;"
+        return "color:#F2994A; font-weight:700; text-align:center; white-space:nowrap;"
+    return "color:#EB5757; font-weight:700; text-align:center; white-space:nowrap;"
 
 
 def _variation_color_css(value: object) -> str:
@@ -2828,6 +2873,17 @@ def render_company_drilldown_filters(
     include_ai_exposure_filters: bool = False,
     include_beta_filter: bool = False,
 ) -> pd.DataFrame:
+    def _is_full_numeric_range(
+        range_value: tuple[float, float],
+        *,
+        min_value: float,
+        max_value: float,
+    ) -> bool:
+        return (
+            abs(float(range_value[0]) - float(min_value)) < 1e-9
+            and abs(float(range_value[1]) - float(max_value)) < 1e-9
+        )
+
     thematic_key = f"{prefix}_drilldown_filter_thematic"
     sector_key = f"{prefix}_drilldown_filter_sector"
     industry_key = f"{prefix}_drilldown_filter_industry"
@@ -3177,10 +3233,15 @@ div.st-key-{btn_key} button {{
 
     fund_min, fund_max = fundamental_range
     tech_min, tech_max = technical_range
-    filtered = filtered[filtered["fundamental_total_score"].between(fund_min, fund_max, inclusive="both")]
-    filtered = filtered[filtered["general_technical_score"].between(tech_min, tech_max, inclusive="both")]
+    if not _is_full_numeric_range(tuple(fundamental_range), min_value=0.0, max_value=100.0):
+        filtered = filtered[filtered["fundamental_total_score"].between(fund_min, fund_max, inclusive="both")]
+    if not _is_full_numeric_range(tuple(technical_range), min_value=0.0, max_value=100.0):
+        filtered = filtered[filtered["general_technical_score"].between(tech_min, tech_max, inclusive="both")]
     if include_fundamental_momentum_filter and "fundamental_momentum" in filtered.columns:
-        if filtered["fundamental_momentum"].notna().any():
+        if (
+            filtered["fundamental_momentum"].notna().any()
+            and not _is_full_numeric_range(tuple(fundamental_momentum_range), min_value=0.0, max_value=100.0)
+        ):
             momentum_min, momentum_max = fundamental_momentum_range
             filtered = filtered[
                 filtered["fundamental_momentum"].between(momentum_min, momentum_max, inclusive="both")
@@ -3194,7 +3255,7 @@ div.st-key-{btn_key} button {{
             filtered = filtered[filtered["technical_trend_direction"] == "down"]
     if include_beta_filter and "beta" in filtered.columns:
         beta_min, beta_max = beta_range
-        if filtered["beta"].notna().any():
+        if filtered["beta"].notna().any() and not _is_full_numeric_range(tuple(beta_range), min_value=0.0, max_value=5.0):
             filtered = filtered[filtered["beta"].between(beta_min, beta_max, inclusive="both")]
     if include_rel_strength_filter and rel_strength_value != "All" and "rel_strength" in filtered.columns:
         filtered = filtered[filtered["rel_strength"] == rel_strength_value]
@@ -5728,11 +5789,11 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "1M",
                 "3M",
                 "YTD",
+                "TS",
+                "FS",
+                "Mom. FS",
                 "Rel Strength",
                 "Rel Volume",
-                "Technical Scoring",
-                "Fundamental Scoring",
-                "Fundamental Momentum Scoring",
                 "AI Revenue Exposure",
                 "AI Disruption Risk",
             ]
@@ -5753,40 +5814,59 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "Company": sorted_df["company"],
             "Sector": sorted_df["sector"].fillna("Unspecified"),
             "Industry": sorted_df["industry"].fillna("Unspecified"),
-            "Market Cap": sorted_df["market_cap"].map(_format_market_cap_display),
-            "Beta": sorted_df["beta"].map(lambda value: f"{value:.2f}" if pd.notna(value) else "N/A"),
-            "1W": sorted_df["1w_perf"].map(_format_percent_value),
-            "1M": sorted_df["1m_perf"].map(_format_percent_value),
-            "3M": sorted_df["3m_perf"].map(_format_percent_value),
-            "YTD": sorted_df["ytd_perf"].map(_format_percent_value),
+            "Market Cap": pd.to_numeric(sorted_df["market_cap"], errors="coerce"),
+            "Beta": pd.to_numeric(sorted_df["beta"], errors="coerce"),
+            "1W": pd.to_numeric(sorted_df["1w_perf"], errors="coerce"),
+            "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
+            "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
+            "YTD": pd.to_numeric(sorted_df["ytd_perf"], errors="coerce"),
+            "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
+            "FS": pd.to_numeric(sorted_df["fundamental_total_score"], errors="coerce"),
+            "Mom. FS": pd.to_numeric(sorted_df["fundamental_momentum"], errors="coerce"),
             "Rel Strength": sorted_df["rel_strength"].fillna("N/A"),
             "Rel Volume": sorted_df["rel_volume"].fillna("N/A"),
-            "Technical Scoring": [
-                _render_score_with_symbol(value, symbol)
-                for value, symbol in zip(
-                    sorted_df["general_technical_score"],
-                    sorted_df.get("technical_trend_symbol", pd.Series([""] * len(sorted_df))).fillna(""),
-                )
-            ],
-            "Fundamental Scoring": [
-                _render_score_with_symbol(value, symbol)
-                for value, symbol in zip(
-                    sorted_df["fundamental_total_score"],
-                    sorted_df.get("fundamental_trend_symbol", pd.Series([""] * len(sorted_df))).fillna(""),
-                )
-            ],
-            "Fundamental Momentum Scoring": [
-                _render_score_with_symbol(value, symbol)
-                for value, symbol in zip(
-                    sorted_df["fundamental_momentum"],
-                    sorted_df.get("fundamental_momentum_trend_symbol", pd.Series([""] * len(sorted_df))).fillna(""),
-                )
-            ],
             "AI Revenue Exposure": sorted_df["ai_revenue_exposure"].fillna("none"),
             "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
         }
     )
+    for display_column, symbol_column in [
+        ("TS", "technical_trend_symbol"),
+        ("FS", "fundamental_trend_symbol"),
+        ("Mom. FS", "fundamental_momentum_trend_symbol"),
+    ]:
+        if symbol_column in sorted_df.columns and display_column in display_df.columns:
+            trend_symbols = sorted_df[symbol_column].fillna("").astype(str)
+            rendered_scores: list[str] = []
+            for numeric_value, trend_symbol in zip(display_df[display_column], trend_symbols):
+                if pd.isna(numeric_value):
+                    rendered_scores.append("N/A")
+                    continue
+                rendered_scores.append(
+                    _render_thematics_score_with_symbol(float(numeric_value), str(trend_symbol))
+                )
+            display_df[display_column] = rendered_scores
     return display_df.reset_index(drop=True)
+
+
+def _build_thematics_company_trend_meta(company_df: pd.DataFrame) -> pd.DataFrame:
+    if company_df.empty:
+        return pd.DataFrame(columns=["ts_trend", "fs_trend", "mom_fs_trend"])
+
+    sorted_df = company_df.sort_values(
+        by=["general_technical_score", "fundamental_total_score", "ticker"],
+        ascending=[False, False, True],
+        na_position="last",
+    ).copy()
+    return pd.DataFrame(
+        {
+            "ts_trend": sorted_df.get("technical_trend_symbol", pd.Series([""] * len(sorted_df))).fillna("").astype(str),
+            "fs_trend": sorted_df.get("fundamental_trend_symbol", pd.Series([""] * len(sorted_df))).fillna("").astype(str),
+            "mom_fs_trend": sorted_df.get(
+                "fundamental_momentum_trend_symbol",
+                pd.Series([""] * len(sorted_df)),
+            ).fillna("").astype(str),
+        }
+    ).reset_index(drop=True)
 
 
 def _render_thematics_context_card(catalog: dict[str, object], focus_basket: Optional[str]) -> None:
@@ -5831,10 +5911,145 @@ def _render_thematics_context_card(catalog: dict[str, object], focus_basket: Opt
     )
 
 
+def _build_thematics_constituents_frame(
+    catalog: dict[str, object],
+    focus_basket: Optional[str],
+    report_df: Optional[pd.DataFrame],
+) -> tuple[str, pd.DataFrame]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict) or not items:
+        return "", pd.DataFrame(columns=["Ticker", "Company"])
+
+    basket_name = focus_basket if focus_basket in items else next(iter(items))
+    basket = items.get(basket_name, {})
+    if not isinstance(basket, dict):
+        return basket_name, pd.DataFrame(columns=["Ticker", "Company"])
+
+    raw_tickers = basket.get("tickers", [])
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for ticker_value in raw_tickers if isinstance(raw_tickers, list) else []:
+        ticker = normalize_price_ticker(ticker_value)
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        tickers.append(ticker)
+
+    company_lookup: dict[str, str] = {}
+    prepared_report = _prepare_thematics_report_frame(report_df)
+    if not prepared_report.empty:
+        working = prepared_report.copy()
+        if "company" in working.columns:
+            working["company"] = working["company"].fillna("").astype(str).str.strip()
+            company_lookup = (
+                working.assign(
+                    company=working["company"].where(
+                        working["company"].str.len() > 0,
+                        working["ticker"].map(_base_ticker_symbol),
+                    )
+                )
+                .drop_duplicates(subset=["ticker"], keep="first")
+                .set_index("ticker")["company"]
+                .to_dict()
+            )
+
+    rows = [
+        {
+            "Ticker": ticker,
+            "Company": str(company_lookup.get(ticker, _base_ticker_symbol(ticker)) or _base_ticker_symbol(ticker)),
+        }
+        for ticker in tickers
+    ]
+    return basket_name, pd.DataFrame(rows, columns=["Ticker", "Company"])
+
+
+def _render_thematics_constituents_card(
+    catalog: dict[str, object],
+    focus_basket: Optional[str],
+    report_df: Optional[pd.DataFrame],
+) -> None:
+    basket_name, constituents_df = _build_thematics_constituents_frame(catalog, focus_basket, report_df)
+    if not basket_name:
+        return
+
+    st.markdown(
+        f"""
+<div style="
+  margin-top:0.95rem;
+  border:1px solid #D9E7F1;
+  border-radius:16px;
+  padding:1rem 1.05rem;
+  background:linear-gradient(160deg, rgba(255,255,255,0.98) 0%, rgba(248,251,255,0.98) 100%);
+  box-shadow:0 10px 24px rgba(15,39,71,0.05);
+">
+  <div style="font-size:0.76rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#5F7694;">
+    Constituents
+  </div>
+  <div style="margin-top:0.28rem;font-size:1rem;font-weight:800;color:#123159;">
+    {html_escape(str(basket_name))} | {len(constituents_df)} names
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if constituents_df.empty:
+        st.caption("No tickers are configured for this thematic.")
+        return
+
+    display_height = min(max(180, 68 + len(constituents_df) * 34), 420)
+    styler = constituents_df.style.hide(axis="index")
+    styler = styler.set_table_styles(
+        [
+            {
+                "selector": "th",
+                "props": [
+                    ("background-color", "#F4F8FC"),
+                    ("color", "#173A5E"),
+                    ("font-weight", "800"),
+                    ("text-align", "left"),
+                    ("border-bottom", "1px solid #D9E6F2"),
+                ],
+            },
+            {
+                "selector": "td",
+                "props": [
+                    ("border-bottom", "1px solid #E7EFF7"),
+                    ("vertical-align", "middle"),
+                    ("color", "#334E68"),
+                ],
+            },
+        ],
+        overwrite=False,
+    )
+    styler = styler.set_properties(subset=["Ticker", "Company"], **{"text-align": "left"})
+    st.dataframe(
+        styler,
+        use_container_width=True,
+        height=display_height,
+        hide_index=True,
+        key="thematics_lens_constituents",
+    )
+
+
+def _handle_thematics_basket_checkbox_change(state_prefix: str, basket_name: str) -> None:
+    checkbox_state_key = f"{state_prefix}_check_{basket_name}"
+    selected_key = f"{state_prefix}_selected_basket"
+    focus_key = f"{state_prefix}_focus_basket"
+    checked = bool(st.session_state.get(checkbox_state_key))
+    if checked:
+        st.session_state[selected_key] = basket_name
+    elif st.session_state.get(selected_key) == basket_name:
+        st.session_state[selected_key] = None
+    st.session_state[focus_key] = basket_name
+
+
 def _render_thematics_basket_table(
     basket_metrics_df: pd.DataFrame,
     catalog: dict[str, object],
 ) -> None:
+    _render_thematics_basket_table_v2(basket_metrics_df, catalog)
+    return
     if basket_metrics_df.empty:
         st.info("No basket metrics available for the selected dates.")
         return
@@ -5861,11 +6076,11 @@ def _render_thematics_basket_table(
         "1M",
         "3M",
         "YTD",
-        "Technical",
-        "RS Breadth",
-        "Rel Vol Breadth",
-        "Fundamental",
-        "Fund. Momentum",
+        "TS",
+        "RS %",
+        "Vol %",
+        "FS",
+        "Mom. FS",
     ]
     for col, label in zip(header_cols, header_labels):
         with col:
@@ -5884,24 +6099,58 @@ def _render_thematics_basket_table(
         row = metrics_by_name.get(basket_name, {})
         basket = items.get(basket_name, {})
         is_child = bool(basket.get("parent"))
+        is_ai_super_parent = bool(basket.get("is_ai_super_parent", False))
+        is_ai_group_child = bool(basket.get("is_ai_group_child", False))
         checkbox_state_key = f"{state_prefix}_check_{basket_name}"
         is_selected = selected_basket == basket_name
         st.session_state[checkbox_state_key] = is_selected
         row_cols = st.columns([0.55, 2.75, 0.75, 0.8, 0.8, 0.8, 0.8, 0.9, 0.95, 0.95, 0.95, 1.05])
         with row_cols[0]:
-            checked = st.checkbox(
+            st.checkbox(
                 "",
                 key=checkbox_state_key,
-                help=f"Show companies for {basket_name}",
+                on_change=_handle_thematics_basket_checkbox_change,
+                args=(state_prefix, basket_name),
             )
-            if checked != is_selected:
-                st.session_state[selected_key] = basket_name if checked else None
-                st.session_state[focus_key] = basket_name
-                st.rerun()
         with row_cols[1]:
             if basket.get("is_parent"):
+                toggle_key = f"{state_prefix}_toggle_{re.sub(r'[^0-9A-Za-z_]+', '_', basket_name.lower()).strip('_')}"
+                if is_ai_super_parent:
+                    st.markdown(
+                        f"""
+<style>
+div.st-key-{toggle_key} button {{
+  background: linear-gradient(135deg, #0F2747 0%, #184E82 100%);
+  color: #FFFFFF !important;
+  border: 1px solid #0F2747 !important;
+  font-weight: 800 !important;
+}}
+div.st-key-{toggle_key} button p {{
+  color: #FFFFFF !important;
+}}
+</style>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                elif is_ai_group_child:
+                    st.markdown(
+                        f"""
+<style>
+div.st-key-{toggle_key} button {{
+  background: linear-gradient(135deg, #E4F1FF 0%, #D4EAFF 100%);
+  color: #0B5CAD !important;
+  border: 1px solid #93C5FD !important;
+  font-weight: 700 !important;
+}}
+div.st-key-{toggle_key} button p {{
+  color: #0B5CAD !important;
+}}
+</style>
+                        """,
+                        unsafe_allow_html=True,
+                    )
                 toggle_label = ("▾ " if basket_name in expanded_parents else "▸ ") + basket_name
-                if st.button(toggle_label, key=f"{state_prefix}_toggle_{basket_name}", use_container_width=True):
+                if st.button(toggle_label, key=toggle_key, use_container_width=True):
                     if basket_name in expanded_parents:
                         expanded_parents.remove(basket_name)
                     else:
@@ -5910,9 +6159,18 @@ def _render_thematics_basket_table(
                     st.session_state[focus_key] = basket_name
                     st.rerun()
             else:
-                font_size = "0.9rem" if is_child else "0.98rem"
-                padding_left = "1.4rem" if is_child else "0rem"
-                color = "#5C708A" if is_child else "#123159"
+                if is_ai_super_parent:
+                    font_size = "1.04rem"
+                    padding_left = "0rem"
+                    color = "#0F2747"
+                elif is_ai_group_child:
+                    font_size = "0.95rem"
+                    padding_left = "1.15rem"
+                    color = "#0B5CAD"
+                else:
+                    font_size = "0.9rem" if is_child else "0.98rem"
+                    padding_left = "1.4rem" if is_child else "0rem"
+                    color = "#5C708A" if is_child else "#123159"
                 st.markdown(
                     f"<div style='padding:0.35rem 0 0.2rem {padding_left}; font-size:{font_size}; color:{color}; font-weight:600;'>{html_escape(basket_name)}</div>",
                     unsafe_allow_html=True,
@@ -5934,10 +6192,512 @@ def _render_thematics_basket_table(
         ]
         for col, value in zip(row_cols[2:], values):
             with col:
+                if is_ai_super_parent:
+                    value_color = "#0F2747"
+                    value_weight = "700"
+                elif is_ai_group_child:
+                    value_color = "#0B5CAD"
+                    value_weight = "650"
+                else:
+                    value_color = "#29415D"
+                    value_weight = "500"
                 st.markdown(
-                    f"<div style='padding-top:0.35rem; text-align:center; color:#29415D; font-size:0.9rem;'>{html_escape(str(value))}</div>",
+                    f"<div style='padding-top:0.35rem; text-align:center; color:{value_color}; font-weight:{value_weight}; font-size:0.9rem;'>{html_escape(str(value))}</div>",
                     unsafe_allow_html=True,
                 )
+
+
+def _style_positive_negative_value(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "color:#7B8BA0;"
+    if float(numeric) > 0:
+        return "color:#15803D; font-weight:700;"
+    if float(numeric) < 0:
+        return "color:#B42318; font-weight:700;"
+    return "color:#334E68; font-weight:600;"
+
+
+def _style_breadth_threshold_value(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "color:#7B8BA0;"
+    if float(numeric) >= 50.0:
+        return "color:#15803D; font-weight:700;"
+    return "color:#B42318; font-weight:700;"
+
+
+def _style_sign_label_value(value: object) -> str:
+    label = str(value).strip().lower()
+    if label == "positive":
+        return "color:#15803D; font-weight:700;"
+    if label == "negative":
+        return "color:#B42318; font-weight:700;"
+    return "color:#7B8BA0;"
+
+
+def _extract_dataframe_selection_rows(selection_event: object) -> list[int]:
+    if hasattr(selection_event, "selection") and hasattr(selection_event.selection, "rows"):
+        return list(selection_event.selection.rows or [])
+    if isinstance(selection_event, dict):
+        return list(selection_event.get("selection", {}).get("rows", []))
+    return []
+
+
+def _trend_icon_style(symbol: object) -> str:
+    symbol_text = str(symbol or "").strip()
+    if symbol_text == TREND_SYMBOL_UP:
+        return (
+            "background-image:url(\"data:image/svg+xml;utf8,"
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+            "<path fill='none' stroke='%2315803D' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' "
+            "d='M2 11 L6.1 6.9 L8.8 9.6 L14 4.4'/>"
+            "<path fill='none' stroke='%2315803D' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' "
+            "d='M10.6 4.4 H14 V7.8'/>"
+            "</svg>\");"
+            "background-repeat:no-repeat; background-position:right 0.45rem center; "
+            "background-size:0.9rem 0.9rem; padding-right:1.75rem;"
+        )
+    if symbol_text == TREND_SYMBOL_DOWN:
+        return (
+            "background-image:url(\"data:image/svg+xml;utf8,"
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+            "<path fill='none' stroke='%23B42318' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' "
+            "d='M2 5 L6.1 9.1 L8.8 6.4 L14 11.6'/>"
+            "<path fill='none' stroke='%23B42318' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' "
+            "d='M10.6 11.6 H14 V8.2'/>"
+            "</svg>\");"
+            "background-repeat:no-repeat; background-position:right 0.45rem center; "
+            "background-size:0.9rem 0.9rem; padding-right:1.75rem;"
+        )
+    return ""
+
+
+def _score_trend_class(symbol: object) -> str:
+    symbol_text = str(symbol or "").strip()
+    if symbol_text == TREND_SYMBOL_UP:
+        return "trend-up"
+    if symbol_text == TREND_SYMBOL_DOWN:
+        return "trend-down"
+    return ""
+
+
+def _ordered_thematics_names(catalog: dict[str, object]) -> list[str]:
+    items = catalog.get("items", {})
+    roots = catalog.get("roots", [])
+    if not isinstance(items, dict) or not isinstance(roots, list):
+        return []
+
+    ordered_names: list[str] = []
+    seen: set[str] = set()
+
+    def visit(basket_name: str) -> None:
+        if basket_name in seen or basket_name not in items:
+            return
+        seen.add(basket_name)
+        ordered_names.append(basket_name)
+        basket = items.get(basket_name, {})
+        if isinstance(basket, dict):
+            for child_name in basket.get("children", []):
+                visit(str(child_name))
+
+    for root_name in roots:
+        visit(str(root_name))
+    return ordered_names
+
+
+def _build_thematics_basket_table_frame(
+    basket_metrics_df: pd.DataFrame,
+    catalog: dict[str, object],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict) or basket_metrics_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    metrics_by_name = basket_metrics_df.set_index("name").to_dict(orient="index")
+    rows: list[dict[str, object]] = []
+    meta_rows: list[dict[str, object]] = []
+
+    for basket_name in _ordered_thematics_names(catalog):
+        basket = items.get(basket_name, {})
+        if not isinstance(basket, dict):
+            continue
+        row = metrics_by_name.get(basket_name, {})
+        depth = 0
+        parent_name = str(basket.get("parent", "") or "")
+        while parent_name:
+            depth += 1
+            parent_item = items.get(parent_name, {})
+            if not isinstance(parent_item, dict):
+                break
+            parent_name = str(parent_item.get("parent", "") or "")
+
+        rows.append(
+            {
+                "Name": basket_name,
+                "Beta": pd.to_numeric(row.get("beta"), errors="coerce"),
+                "1W": pd.to_numeric(row.get("1w_perf"), errors="coerce"),
+                "1M": pd.to_numeric(row.get("1m_perf"), errors="coerce"),
+                "3M": pd.to_numeric(row.get("3m_perf"), errors="coerce"),
+                "YTD": pd.to_numeric(row.get("ytd_perf"), errors="coerce"),
+                "RS %": pd.to_numeric(row.get("rel_strength_breadth"), errors="coerce"),
+                "Vol %": pd.to_numeric(row.get("rel_volume_breadth"), errors="coerce"),
+                "TS": _render_thematics_score_with_symbol(
+                    row.get("technical_scoring"),
+                    str(row.get("technical_trend_symbol", "") or ""),
+                ),
+                "FS": _render_thematics_score_with_symbol(
+                    row.get("fundamental_scoring"),
+                    str(row.get("fundamental_trend_symbol", "") or ""),
+                ),
+                "Mom. FS": _render_thematics_score_with_symbol(
+                    row.get("fundamental_momentum_scoring"),
+                    str(row.get("fundamental_momentum_trend_symbol", "") or ""),
+                ),
+            }
+        )
+        meta_rows.append(
+            {
+                "basket_name": basket_name,
+                "depth": depth,
+                "is_parent": bool(basket.get("is_parent", False)),
+                "is_ai_super_parent": bool(basket.get("is_ai_super_parent", False)),
+                "is_ai_group_child": bool(basket.get("is_ai_group_child", False)),
+                "ts_trend": str(row.get("technical_trend_symbol", "") or ""),
+                "fs_trend": str(row.get("fundamental_trend_symbol", "") or ""),
+                "mom_fs_trend": str(row.get("fundamental_momentum_trend_symbol", "") or ""),
+            }
+        )
+
+    return pd.DataFrame(rows), pd.DataFrame(meta_rows)
+
+
+def _build_thematics_lens_frame(catalog: dict[str, object]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict):
+        return pd.DataFrame(), pd.DataFrame()
+
+    rows: list[dict[str, object]] = []
+    meta_rows: list[dict[str, object]] = []
+    for basket_name in _ordered_thematics_names(catalog):
+        basket = items.get(basket_name, {})
+        if not isinstance(basket, dict):
+            continue
+        depth = 0
+        parent_name = str(basket.get("parent", "") or "")
+        while parent_name:
+            depth += 1
+            parent_item = items.get(parent_name, {})
+            if not isinstance(parent_item, dict):
+                break
+            parent_name = str(parent_item.get("parent", "") or "")
+
+        rows.append(
+            {
+                "Thematic": basket_name,
+                "Tier": str(basket.get("tier_label", "") or "Unspecified"),
+                "Parent": str(basket.get("parent", "") or "Root basket"),
+            }
+        )
+        meta_rows.append(
+            {
+                "basket_name": basket_name,
+                "depth": depth,
+                "is_parent": bool(basket.get("is_parent", False)),
+                "is_ai_super_parent": bool(basket.get("is_ai_super_parent", False)),
+                "is_ai_group_child": bool(basket.get("is_ai_group_child", False)),
+            }
+        )
+    return pd.DataFrame(rows), pd.DataFrame(meta_rows)
+
+
+def _build_thematics_hierarchy_styler(
+    display_df: pd.DataFrame,
+    meta_df: pd.DataFrame,
+    *,
+    name_column: str,
+    selected_basket: Optional[str] = None,
+    value_color_rules: Optional[Dict[str, Callable[[object], str]]] = None,
+    format_map: Optional[Dict[str, object]] = None,
+) -> "Styler":
+    styler = display_df.style.hide(axis="index")
+    styler = styler.set_table_styles(
+        [
+            {
+                "selector": "th",
+                "props": [
+                    ("background-color", "#F4F8FC"),
+                    ("color", "#173A5E"),
+                    ("font-weight", "800"),
+                    ("text-align", "center"),
+                    ("border-bottom", "1px solid #D9E6F2"),
+                ],
+            },
+            {
+                "selector": "td",
+                "props": [
+                    ("border-bottom", "1px solid #E7EFF7"),
+                    ("vertical-align", "middle"),
+                ],
+            },
+        ],
+        overwrite=False,
+    )
+
+    centered_columns = [column for column in display_df.columns if column != name_column]
+    if centered_columns:
+        styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
+    score_columns = [column for column in ["TS", "FS", "Mom. FS"] if column in display_df.columns]
+    if score_columns:
+        styler = styler.set_properties(subset=score_columns, **{"text-align": "center", "white-space": "nowrap"})
+
+    def apply_row_background(row: pd.Series) -> list[str]:
+        meta = meta_df.iloc[int(row.name)]
+        basket_name = str(meta.get("basket_name", ""))
+        if basket_name == selected_basket:
+            background = "#FFF7E0"
+        elif bool(meta.get("is_ai_super_parent", False)):
+            background = "#EEF4FF"
+        elif bool(meta.get("is_ai_group_child", False)):
+            background = "#F7FBFF"
+        else:
+            background = "#FFFFFF" if int(row.name) % 2 == 0 else "#FBFDFF"
+        return [f"background-color:{background};" for _ in row]
+
+    def apply_name_style(row: pd.Series) -> list[str]:
+        meta = meta_df.iloc[int(row.name)]
+        depth = int(meta.get("depth", 0) or 0)
+        is_parent = bool(meta.get("is_parent", False))
+        is_ai_super_parent = bool(meta.get("is_ai_super_parent", False))
+        is_ai_group_child = bool(meta.get("is_ai_group_child", False))
+        padding_left = 0.55 + (depth * 1.2)
+        color = "#123159"
+        font_weight = "700" if is_parent else "600"
+        extra = ""
+        if is_ai_super_parent:
+            color = "#123159"
+            font_weight = "800"
+            extra = "border-left:4px solid #184E82;"
+        elif is_ai_group_child:
+            color = "#0B5CAD"
+            font_weight = "700"
+            extra = "border-left:3px solid #93C5FD;"
+        elif depth > 0:
+            color = "#4F647C"
+        styles = ["" for _ in row]
+        name_index = list(display_df.columns).index(name_column)
+        styles[name_index] = (
+            f"text-align:left; padding-left:{padding_left}rem; color:{color}; "
+            f"font-weight:{font_weight}; {extra}"
+        )
+        return styles
+
+    styler = styler.apply(apply_row_background, axis=1)
+    styler = styler.apply(apply_name_style, axis=1)
+
+    if value_color_rules:
+        for column, rule_fn in value_color_rules.items():
+            if column in display_df.columns:
+                styler = styler.applymap(rule_fn, subset=[column])
+
+    if format_map:
+        valid_formats = {column: formatter for column, formatter in format_map.items() if column in display_df.columns}
+        if valid_formats:
+            styler = styler.format(valid_formats, na_rep="N/A")
+
+    return styler
+
+
+def _build_thematics_company_styler(
+    display_df: pd.DataFrame,
+    trend_meta_df: Optional[pd.DataFrame] = None,
+) -> "Styler":
+    styler = display_df.style.hide(axis="index")
+    styler = styler.set_table_styles(
+        [
+            {
+                "selector": "th",
+                "props": [
+                    ("background-color", "#F4F8FC"),
+                    ("color", "#173A5E"),
+                    ("font-weight", "800"),
+                    ("text-align", "center"),
+                    ("border-bottom", "1px solid #D9E6F2"),
+                ],
+            },
+            {
+                "selector": "td",
+                "props": [
+                    ("border-bottom", "1px solid #E7EFF7"),
+                    ("vertical-align", "middle"),
+                    ("color", "#334E68"),
+                ],
+            },
+        ],
+        overwrite=False,
+    )
+
+    left_columns = [
+        "Thematic",
+        "Ticker",
+        "Company",
+        "Sector",
+        "Industry",
+        "Rel Strength",
+        "Rel Volume",
+        "AI Revenue Exposure",
+        "AI Disruption Risk",
+    ]
+    centered_columns = [column for column in display_df.columns if column not in left_columns]
+    usable_left_columns = [column for column in left_columns if column in display_df.columns]
+    if usable_left_columns:
+        styler = styler.set_properties(subset=usable_left_columns, **{"text-align": "left"})
+    if centered_columns:
+        styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
+    score_columns = [column for column in ["TS", "FS", "Mom. FS"] if column in display_df.columns]
+    if score_columns:
+        styler = styler.set_properties(subset=score_columns, **{"text-align": "center", "white-space": "nowrap"})
+
+    def stripe_rows(row: pd.Series) -> list[str]:
+        background = "#FFFFFF" if int(row.name) % 2 == 0 else "#FBFDFF"
+        return [f"background-color:{background};" for _ in row]
+
+    styler = styler.apply(stripe_rows, axis=1)
+
+    for perf_column in ["1W", "1M", "3M", "YTD"]:
+        if perf_column in display_df.columns:
+            styler = styler.applymap(_style_positive_negative_value, subset=[perf_column])
+    for score_column in ["TS", "FS", "Mom. FS"]:
+        if score_column in display_df.columns:
+            styler = styler.applymap(_score_color_css, subset=[score_column])
+    for sign_column in ["Rel Strength", "Rel Volume"]:
+        if sign_column in display_df.columns:
+            styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
+
+    styler = styler.format(
+        {
+            "Market Cap": _format_market_cap_display,
+            "Beta": _format_numeric_value,
+            "1W": _format_percent_value,
+            "1M": _format_percent_value,
+            "3M": _format_percent_value,
+            "YTD": _format_percent_value,
+        },
+        na_rep="N/A",
+    )
+    return styler
+
+
+def _render_thematics_basket_table_v2(
+    basket_metrics_df: pd.DataFrame,
+    catalog: dict[str, object],
+) -> None:
+    display_df, meta_df = _build_thematics_basket_table_frame(basket_metrics_df, catalog)
+    if display_df.empty or meta_df.empty:
+        st.info("No basket metrics available for the selected dates.")
+        return
+
+    selected_basket = st.session_state.get("thematics_impl_selected_basket")
+    styler = _build_thematics_hierarchy_styler(
+        display_df,
+        meta_df,
+        name_column="Name",
+        selected_basket=str(selected_basket) if selected_basket else None,
+        value_color_rules={
+            "1W": _style_positive_negative_value,
+            "1M": _style_positive_negative_value,
+            "3M": _style_positive_negative_value,
+            "YTD": _style_positive_negative_value,
+            "RS %": _style_breadth_threshold_value,
+            "Vol %": _style_breadth_threshold_value,
+            "TS": _score_color_css,
+            "FS": _score_color_css,
+            "Mom. FS": _score_color_css,
+        },
+        format_map={
+            "Beta": _format_numeric_value,
+            "1W": _format_percent_value,
+            "1M": _format_percent_value,
+            "3M": _format_percent_value,
+            "YTD": _format_percent_value,
+            "RS %": _format_percent_value,
+            "Vol %": _format_percent_value,
+        },
+    )
+
+    estimated_height = max(280, 72 + len(display_df) * 38)
+    try:
+        selection_event = st.dataframe(
+            styler,
+            use_container_width=True,
+            height=estimated_height,
+            on_select="rerun",
+            selection_mode="single-row",
+            hide_index=True,
+            key="thematics_impl_basket_table",
+        )
+    except TypeError:
+        st.dataframe(styler, use_container_width=True, height=estimated_height, hide_index=True)
+        st.warning("Row click selection is unavailable on this Streamlit version.")
+        return
+
+    selected_rows = _extract_dataframe_selection_rows(selection_event)
+    if not selected_rows:
+        return
+    selected_index = selected_rows[0]
+    if selected_index < 0 or selected_index >= len(meta_df):
+        return
+    basket_name = str(meta_df.iloc[selected_index]["basket_name"])
+    if st.session_state.get("thematics_impl_selected_basket") != basket_name:
+        st.session_state["thematics_impl_selected_basket"] = basket_name
+        st.rerun()
+
+
+def _render_thematics_lens_tab(
+    catalog: dict[str, object],
+    report_df: Optional[pd.DataFrame],
+) -> None:
+    lens_df, meta_df = _build_thematics_lens_frame(catalog)
+    if lens_df.empty or meta_df.empty:
+        st.info("No thematic baskets available.")
+        return
+
+    lens_focus_key = "thematics_lens_focus_basket"
+    selected_focus = st.session_state.get(lens_focus_key)
+    selector_col, card_col = st.columns([1.3, 1.9])
+    with selector_col:
+        st.caption("Click a thematic to open its lens card.")
+        styler = _build_thematics_hierarchy_styler(
+            lens_df,
+            meta_df,
+            name_column="Thematic",
+            selected_basket=str(selected_focus) if selected_focus else None,
+        )
+        estimated_height = max(280, 72 + len(lens_df) * 38)
+        try:
+            selection_event = st.dataframe(
+                styler,
+                use_container_width=True,
+                height=estimated_height,
+                on_select="rerun",
+                selection_mode="single-row",
+                hide_index=True,
+                key="thematics_lens_selector",
+            )
+        except TypeError:
+            st.dataframe(styler, use_container_width=True, height=estimated_height, hide_index=True)
+            selection_event = None
+        selected_rows = _extract_dataframe_selection_rows(selection_event)
+        if selected_rows:
+            selected_index = selected_rows[0]
+            if 0 <= selected_index < len(meta_df):
+                basket_name = str(meta_df.iloc[selected_index]["basket_name"])
+                if st.session_state.get(lens_focus_key) != basket_name:
+                    st.session_state[lens_focus_key] = basket_name
+                    st.rerun()
+    with card_col:
+        _render_thematics_context_card(catalog, st.session_state.get(lens_focus_key))
+        _render_thematics_constituents_card(catalog, st.session_state.get(lens_focus_key), report_df)
 
 
 def render_thematics_tab(config: ReportConfig) -> None:
@@ -5948,9 +6708,14 @@ def render_thematics_tab(config: ReportConfig) -> None:
     )
     render_subtab_group_intro(
         "Thematics sections",
-        "Use the implementation workspace below to explore hierarchical baskets and their underlying companies.",
+        "Use the implementation workspace for sortable basket and company tables, or open Thematic Lens for the narrative card view.",
     )
-    implementation_tab = st.tabs(["thematics-implementation"])[0]
+    catalog = build_thematics_catalog(str(THEMATICS_CONFIG_PATH)) if THEMATICS_CONFIG_PATH.exists() else {"items": {}, "roots": []}
+    if not THEMATICS_CONFIG_PATH.exists():
+        st.error(f"Missing thematics config: {THEMATICS_CONFIG_PATH}")
+        return
+
+    implementation_tab, lens_tab = st.tabs(["thematics-implementation", "thematic-lens"])
     with implementation_tab:
         reference_date = st.date_input(
             "Reference EOD date",
@@ -5963,11 +6728,6 @@ def render_thematics_tab(config: ReportConfig) -> None:
             key="thematics_previous_eod",
         )
         warnings: list[str] = []
-
-        catalog = build_thematics_catalog(str(THEMATICS_CONFIG_PATH)) if THEMATICS_CONFIG_PATH.exists() else {"items": {}, "roots": []}
-        if not THEMATICS_CONFIG_PATH.exists():
-            st.error(f"Missing thematics config: {THEMATICS_CONFIG_PATH}")
-            return
 
         current_report_df, current_report_path, current_candidates, current_error = load_report_select_for_eod(reference_date)
         if current_report_path is None:
@@ -6040,11 +6800,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
         for warning_message in dict.fromkeys(warnings):
             st.warning(warning_message)
 
-        overview_col, context_col = st.columns([3.5, 1.7])
-        with overview_col:
-            _render_thematics_basket_table(basket_metrics_df, catalog)
-        with context_col:
-            _render_thematics_context_card(catalog, st.session_state.get("thematics_impl_focus_basket"))
+        _render_thematics_basket_table(basket_metrics_df, catalog)
 
         selected_basket = st.session_state.get("thematics_impl_selected_basket")
         if selected_basket:
@@ -6097,16 +6853,25 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 include_ai_exposure_filters=True,
                 include_beta_filter=True,
             )
-            st.caption(f"Companies after filters: {len(filtered_companies)}")
+            st.caption(f"Companies after filters: {len(filtered_companies)} of {len(company_universe)}")
             thematic_display = format_thematics_company_display(filtered_companies)
             if thematic_display.empty:
                 st.info("No companies matched the current thematic filters.")
             else:
+                company_trend_meta = _build_thematics_company_trend_meta(filtered_companies)
                 display_height = max(260, 72 + len(thematic_display) * 36)
-                st.dataframe(thematic_display, use_container_width=True, height=display_height, hide_index=True)
+                st.dataframe(
+                    _build_thematics_company_styler(thematic_display, company_trend_meta),
+                    use_container_width=True,
+                    height=display_height,
+                    hide_index=True,
+                    key="thematics_company_grid",
+                )
             if st.button("Hide thematic company list", key="thematics_hide_company_list"):
                 st.session_state["thematics_impl_selected_basket"] = None
                 st.rerun()
+    with lens_tab:
+        _render_thematics_lens_tab(catalog, current_report_df)
 
 def render_quadrants(default_anchor: date) -> None:
     render_page_intro(

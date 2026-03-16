@@ -14,6 +14,7 @@ from equipilot_app import (
     _compute_company_return_metrics,
     _prepare_company_drilldown_universe,
     apply_trend_symbols_to_table,
+    format_thematics_company_display,
     format_company_drilldown_display,
 )
 
@@ -224,6 +225,41 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
 
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertEqual(rendered.iloc[0]["Technical Score"], f"90.0 {TREND_SYMBOL_UP}")
+
+    def test_thematics_company_display_appends_score_trend_symbols(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "thematic": "AI Infra",
+                    "ticker": "AAA.US",
+                    "company": "Alpha Inc",
+                    "sector": "Technology",
+                    "industry": "Hardware",
+                    "market_cap": 1_000_000_000,
+                    "beta": 1.2,
+                    "1w_perf": 2.0,
+                    "1m_perf": -1.0,
+                    "3m_perf": 5.0,
+                    "ytd_perf": 10.0,
+                    "general_technical_score": 81.0,
+                    "fundamental_total_score": 76.0,
+                    "fundamental_momentum": 68.0,
+                    "technical_trend_symbol": TREND_SYMBOL_UP,
+                    "fundamental_trend_symbol": TREND_SYMBOL_DOWN,
+                    "fundamental_momentum_trend_symbol": "",
+                    "rel_strength": "Positive",
+                    "rel_volume": "Positive",
+                    "ai_revenue_exposure": "direct",
+                    "ai_disruption_risk": "low",
+                }
+            ]
+        )
+
+        rendered = format_thematics_company_display(company_df)
+
+        self.assertEqual(str(rendered.iloc[0]["TS"]).strip(), f"81.0 {TREND_SYMBOL_UP}")
+        self.assertEqual(str(rendered.iloc[0]["FS"]).strip(), f"76.0 {TREND_SYMBOL_DOWN}")
+        self.assertEqual(str(rendered.iloc[0]["Mom. FS"]).strip(), "68.0")
 
 
     def test_apply_trend_symbols_to_table_formats_threshold_crossings_and_missing_previous(self) -> None:
