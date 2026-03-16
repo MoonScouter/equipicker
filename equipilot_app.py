@@ -7,6 +7,7 @@ import logging
 import base64
 import re
 import time
+from bisect import bisect_right
 from html import escape as html_escape
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import date, datetime, timedelta
@@ -44,11 +45,28 @@ from prices_service import (
     import_prices_cache,
     list_prices_cache_paths,
     load_prices_cache,
+    normalize_price_ticker,
     parse_manual_price_tickers,
     prices_cache_path,
 )
 from report_select_service import generate_report_select_cache
 from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
+from openai_responses_service import (
+    API_TEMPLATES_DIR,
+    OPENAI_API_KEY_ENV,
+    PROMPT_STORE_DIR,
+    RESPONSE_OUTPUT_DIR,
+    build_responses_payload,
+    clone_default_prompt_payload,
+    clone_default_template_payload,
+    ensure_api_storage_dirs,
+    list_saved_names,
+    load_json_document,
+    load_output_text,
+    run_responses_request,
+    save_json_document,
+    save_output_text,
+)
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
 from weekly_scoring_board import compute_sector_overview_stats
 
@@ -59,6 +77,7 @@ REPORTS_DIR = BASE_DIR / "reports"
 QUADRANTS_DIR = REPORTS_DIR / "quadrants"
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 CONFIG_DIR = CONFIG_PATH.parent
+THEMATICS_CONFIG_PATH = CONFIG_DIR / "thematics.json"
 SUMMARY_JSON_PATH = CONFIG_DIR / "text_generated.json"
 BANNER_CANDIDATES = [
     BASE_DIR / "banner_equipilot.png",
@@ -80,6 +99,9 @@ TREND_FILTER_LABELS = {
     "down": f"Down ({TREND_SYMBOL_DOWN})",
 }
 TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["flat"], TREND_FILTER_LABELS["down"]]
+SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
+AI_REVENUE_FILTER_OPTIONS = ["All", "direct", "indirect", "none"]
+AI_DISRUPTION_FILTER_OPTIONS = ["All", "high", "medium", "low", "none"]
 
 
 def _trend_symbol_for_delta(delta_value: Optional[float], threshold: float) -> str:
@@ -193,6 +215,204 @@ def load_indices_cache_file(path_str: str) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_prices_cache_file(path_str: str) -> pd.DataFrame:
     return load_prices_cache(Path(path_str))
+
+
+@st.cache_data(show_spinner=False)
+def load_thematics_config(path_str: str) -> dict:
+    path = Path(path_str)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _base_ticker_symbol(ticker: object) -> str:
+    raw = str(ticker or "").strip().upper()
+    if not raw:
+        return ""
+    if "." in raw:
+        raw = raw.split(".", 1)[0]
+    return raw
+
+
+@st.cache_data(show_spinner=False)
+def build_ai_exposure_lookup(path_str: str) -> dict[str, dict[str, str]]:
+    payload = load_thematics_config(path_str)
+    tickers = payload.get("ai_exposure", {}).get("tickers", {})
+    lookup: dict[str, dict[str, str]] = {}
+    if not isinstance(tickers, dict):
+        return lookup
+    for raw_ticker, exposure_data in tickers.items():
+        normalized = normalize_price_ticker(raw_ticker)
+        if not normalized:
+            continue
+        exposure_payload = exposure_data if isinstance(exposure_data, dict) else {}
+        lookup[normalized] = {
+            "ai_revenue_exposure": str(exposure_payload.get("ai_revenue_exposure", "none") or "none").strip().lower(),
+            "ai_disruption_risk": str(exposure_payload.get("ai_disruption_risk", "none") or "none").strip().lower(),
+        }
+    return lookup
+
+
+def _thematics_sort_key(item: dict) -> tuple[float, str]:
+    tier_value = pd.to_numeric(item.get("tier"), errors="coerce")
+    layer_value = pd.to_numeric(item.get("value_chain_layer"), errors="coerce")
+    tier_num = float(tier_value) if pd.notna(tier_value) else 999.0
+    layer_num = float(layer_value) if pd.notna(layer_value) else 999.0
+    return tier_num, layer_num, str(item.get("name", "")).lower()
+
+
+@st.cache_data(show_spinner=False)
+def build_thematics_catalog(path_str: str) -> dict[str, object]:
+    payload = load_thematics_config(path_str)
+    raw_thematics = payload.get("thematics", {})
+    items: dict[str, dict[str, object]] = {}
+    if not isinstance(raw_thematics, dict):
+        return {"items": items, "roots": []}
+
+    for basket_name, raw_value in raw_thematics.items():
+        basket_payload = raw_value if isinstance(raw_value, dict) else {}
+        normalized_tickers = [
+            normalize_price_ticker(ticker_value)
+            for ticker_value in basket_payload.get("tickers", [])
+            if normalize_price_ticker(ticker_value)
+        ]
+        items[str(basket_name)] = {
+            "name": str(basket_name),
+            "description": str(basket_payload.get("description", "") or ""),
+            "article_narrative": str(basket_payload.get("article_narrative", "") or ""),
+            "tier": basket_payload.get("tier"),
+            "tier_label": "AI" if pd.to_numeric(basket_payload.get("tier"), errors="coerce") == 1 else f"Tier {basket_payload.get('tier')}",
+            "value_chain_layer": basket_payload.get("value_chain_layer"),
+            "parent": str(basket_payload.get("parent", "") or ""),
+            "is_parent": bool(basket_payload.get("is_parent", False)),
+            "sub_baskets": [str(entry) for entry in basket_payload.get("sub_baskets", [])],
+            "tickers": normalized_tickers,
+            "ticker_count": len(normalized_tickers),
+        }
+
+    for item in items.values():
+        child_names = [child_name for child_name in item["sub_baskets"] if child_name in items]
+        if item["is_parent"] and child_names:
+            child_names = sorted(child_names, key=lambda child_name: _thematics_sort_key(items[child_name]))
+        item["children"] = child_names
+
+    roots = [
+        item["name"]
+        for item in items.values()
+        if not str(item.get("parent", "") or "").strip()
+    ]
+    roots = sorted(roots, key=lambda root_name: _thematics_sort_key(items[root_name]))
+    return {"items": items, "roots": roots}
+
+
+@st.cache_data(show_spinner=False)
+def build_price_history_lookup(path_str: str) -> dict[str, dict[str, list[object]]]:
+    normalized_prices = normalize_prices_cache_for_check(load_prices_cache_file(path_str))
+    lookup: dict[str, dict[str, list[object]]] = {}
+    if normalized_prices.empty:
+        return lookup
+    grouped = normalized_prices.groupby("ticker", sort=False)
+    for ticker_value, group in grouped:
+        sorted_group = group.sort_values("date", kind="stable")
+        lookup[str(ticker_value)] = {
+            "dates": sorted_group["date"].tolist(),
+            "closes": pd.to_numeric(sorted_group["adjusted_close"], errors="coerce").tolist(),
+        }
+    return lookup
+
+
+def _price_close_for_target(
+    price_entry: Optional[dict[str, list[object]]],
+    target_date: date,
+    *,
+    exact: bool = False,
+    allow_after_fallback: bool = False,
+) -> Optional[float]:
+    if not price_entry:
+        return None
+    dates = price_entry.get("dates", [])
+    closes = price_entry.get("closes", [])
+    if not dates or not closes:
+        return None
+    if exact:
+        idx = bisect_right(dates, target_date) - 1
+        if idx < 0 or idx >= len(dates) or dates[idx] != target_date:
+            return None
+        close_value = pd.to_numeric(closes[idx], errors="coerce")
+        return None if pd.isna(close_value) else float(close_value)
+    idx = bisect_right(dates, target_date) - 1
+    if idx < 0 or idx >= len(dates):
+        if not allow_after_fallback:
+            return None
+        after_idx = bisect_right(dates, target_date - timedelta(days=1))
+        if after_idx < 0 or after_idx >= len(dates):
+            return None
+        close_value = pd.to_numeric(closes[after_idx], errors="coerce")
+        return None if pd.isna(close_value) else float(close_value)
+    close_value = pd.to_numeric(closes[idx], errors="coerce")
+    return None if pd.isna(close_value) else float(close_value)
+
+
+def _compute_company_return_metrics(
+    tickers: list[str],
+    price_lookup: dict[str, dict[str, list[object]]],
+    reference_date: date,
+) -> tuple[pd.DataFrame, bool]:
+    anchor_targets = {
+        "1w_perf": reference_date - timedelta(days=7),
+        "1m_perf": reference_date - timedelta(days=30),
+        "3m_perf": reference_date - timedelta(days=90),
+        "ytd_perf": date(reference_date.year, 1, 1),
+    }
+    rows: list[dict[str, object]] = []
+    exact_anchor_missing = False
+    for ticker_value in tickers:
+        price_entry = price_lookup.get(ticker_value)
+        anchor_close = _price_close_for_target(price_entry, reference_date, exact=True)
+        if anchor_close is None:
+            exact_anchor_missing = True
+        row: dict[str, object] = {
+            "ticker": ticker_value,
+            "anchor_close": anchor_close,
+        }
+        for metric_name, target_date in anchor_targets.items():
+            base_close = _price_close_for_target(
+                price_entry,
+                target_date,
+                allow_after_fallback=(metric_name == "ytd_perf"),
+            )
+            if anchor_close is None or base_close is None or base_close == 0:
+                row[metric_name] = np.nan
+            else:
+                row[metric_name] = 100.0 * (anchor_close / base_close - 1.0)
+        rows.append(row)
+    return pd.DataFrame(rows), exact_anchor_missing
+
+
+def _basket_average(series: pd.Series) -> float:
+    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    if numeric.empty:
+        return float("nan")
+    return float(numeric.mean())
+
+
+def _format_percent_value(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "N/A"
+    return f"{float(numeric):.1f}%"
+
+
+def _format_numeric_value(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "N/A"
+    return f"{float(numeric):.1f}"
+
+
+def _render_score_with_symbol(value: object, symbol: str) -> str:
+    formatted = _format_numeric_value(value)
+    if formatted == "N/A" or not symbol:
+        return formatted
+    return f"{formatted} {symbol}"
 
 
 def normalize_indices_cache_for_comparison(cache_df: pd.DataFrame) -> pd.DataFrame:
@@ -860,6 +1080,474 @@ def copy_button(text: str, key: str) -> None:
         """,
         height=60,
     )
+
+
+def _deep_merge_dict(base: dict[str, object], incoming: dict[str, object]) -> dict[str, object]:
+    for key, value in incoming.items():
+        if isinstance(base.get(key), dict) and isinstance(value, dict):
+            _deep_merge_dict(base[key], value)  # type: ignore[index]
+        else:
+            base[key] = value
+    return base
+
+
+def _rows_to_records(rows: object, columns: list[str]) -> list[dict[str, object]]:
+    if isinstance(rows, pd.DataFrame):
+        frame = rows.copy()
+    else:
+        frame = pd.DataFrame(rows or [], columns=columns)
+    if frame.empty:
+        frame = pd.DataFrame(columns=columns)
+    frame = frame.reindex(columns=columns, fill_value="")
+    return frame.replace({np.nan: ""}).to_dict("records")
+
+
+def _render_rows_editor(
+    label: str,
+    rows: list[dict[str, object]],
+    columns: list[str],
+    *,
+    help_text: str = "",
+    height: int = 180,
+) -> list[dict[str, object]]:
+    st.caption(label)
+    if help_text:
+        st.caption(help_text)
+    edited = st.data_editor(
+        pd.DataFrame(rows or [], columns=columns),
+        num_rows="dynamic",
+        hide_index=True,
+        use_container_width=True,
+        height=height,
+    )
+    normalized = _rows_to_records(edited, columns)
+    return normalized
+
+
+def apply_api_template_state(template_payload: Optional[dict[str, object]] = None) -> None:
+    template_state = clone_default_template_payload()
+    if template_payload:
+        _deep_merge_dict(template_state, template_payload)
+
+    prompt_payload = template_state["prompt"]
+    web_search_payload = template_state["web_search"]
+    file_search_payload = template_state["file_search"]
+    ranking_payload = file_search_payload["ranking_options"]
+    filters_payload = file_search_payload["filters"]
+    user_location_payload = web_search_payload["user_location"]
+
+    st.session_state["api_template_name"] = str(template_state.get("name", "") or "")
+    st.session_state["api_template_model"] = str(template_state.get("model", "") or "")
+    st.session_state["api_template_developer_text"] = str(template_state.get("developer_text", "") or "")
+    st.session_state["api_template_user_text"] = str(template_state.get("user_text", "") or "")
+    st.session_state["api_template_prompt_id"] = str(prompt_payload.get("id", "") or "")
+    st.session_state["api_template_prompt_version"] = str(prompt_payload.get("version", "") or "")
+    st.session_state["api_template_prompt_variables_rows"] = _rows_to_records(
+        prompt_payload.get("variables", []), ["key", "value"]
+    )
+    st.session_state["api_template_tool_choice"] = str(template_state.get("tool_choice", "auto") or "auto")
+    st.session_state["api_template_temperature"] = float(template_state.get("temperature", 1.0) or 1.0)
+    st.session_state["api_template_top_p"] = float(template_state.get("top_p", 1.0) or 1.0)
+    st.session_state["api_template_max_output_tokens"] = int(
+        template_state.get("max_output_tokens", 1200) or 1200
+    )
+    st.session_state["api_template_store"] = bool(template_state.get("store", True))
+    st.session_state["api_template_parallel_tool_calls"] = bool(
+        template_state.get("parallel_tool_calls", True)
+    )
+    st.session_state["api_template_metadata_rows"] = _rows_to_records(
+        template_state.get("metadata", []), ["key", "value"]
+    )
+    st.session_state["api_template_default_output_name"] = str(
+        template_state.get("default_output_name", "") or ""
+    )
+
+    st.session_state["api_template_web_enabled"] = bool(web_search_payload.get("enabled", False))
+    st.session_state["api_template_web_allowed_domains"] = "\n".join(
+        [str(item) for item in web_search_payload.get("allowed_domains", []) if str(item).strip()]
+    )
+    st.session_state["api_template_web_external_access"] = bool(
+        web_search_payload.get("external_web_access", True)
+    )
+    st.session_state["api_template_web_country"] = str(user_location_payload.get("country", "") or "")
+    st.session_state["api_template_web_city"] = str(user_location_payload.get("city", "") or "")
+    st.session_state["api_template_web_region"] = str(user_location_payload.get("region", "") or "")
+    st.session_state["api_template_web_timezone"] = str(user_location_payload.get("timezone", "") or "")
+
+    st.session_state["api_template_file_enabled"] = bool(file_search_payload.get("enabled", False))
+    st.session_state["api_template_file_vector_store_ids"] = "\n".join(
+        [str(item) for item in file_search_payload.get("vector_store_ids", []) if str(item).strip()]
+    )
+    st.session_state["api_template_file_max_num_results"] = int(
+        file_search_payload.get("max_num_results", 8) or 8
+    )
+    st.session_state["api_template_file_include_results"] = bool(
+        file_search_payload.get("include_results", False)
+    )
+    st.session_state["api_template_file_ranker"] = str(ranking_payload.get("ranker", "") or "")
+    st.session_state["api_template_file_score_threshold"] = str(
+        ranking_payload.get("score_threshold", "") or ""
+    )
+    st.session_state["api_template_file_filter_type"] = str(filters_payload.get("type", "and") or "and")
+    st.session_state["api_template_file_filter_rows"] = _rows_to_records(
+        filters_payload.get("rows", []), ["key", "type", "value_type", "value"]
+    )
+
+
+def apply_prompt_store_state(prompt_payload: Optional[dict[str, object]] = None) -> None:
+    prompt_state = clone_default_prompt_payload()
+    if prompt_payload:
+        prompt_state.update(prompt_payload)
+    st.session_state["api_prompt_name"] = str(prompt_state.get("name", "") or "")
+    st.session_state["api_prompt_developer_text"] = str(prompt_state.get("developer_text", "") or "")
+    st.session_state["api_prompt_user_text"] = str(prompt_state.get("user_text", "") or "")
+
+
+def ensure_api_state() -> None:
+    ensure_api_storage_dirs()
+    if "api_template_model" not in st.session_state:
+        apply_api_template_state()
+    if "api_prompt_name" not in st.session_state:
+        apply_prompt_store_state()
+    st.session_state.setdefault("api_last_output_text", "")
+    st.session_state.setdefault("api_last_output_path", "")
+    st.session_state.setdefault("api_last_payload", {})
+
+
+def collect_api_template_from_state(
+    prompt_variable_rows: list[dict[str, object]],
+    metadata_rows: list[dict[str, object]],
+    filter_rows: list[dict[str, object]],
+) -> dict[str, object]:
+    score_threshold_value = str(st.session_state.get("api_template_file_score_threshold", "") or "").strip()
+    return {
+        "name": str(st.session_state.get("api_template_name", "") or "").strip(),
+        "model": str(st.session_state.get("api_template_model", "") or "").strip(),
+        "developer_text": st.session_state.get("api_template_developer_text", "") or "",
+        "user_text": st.session_state.get("api_template_user_text", "") or "",
+        "prompt": {
+            "id": str(st.session_state.get("api_template_prompt_id", "") or "").strip(),
+            "version": str(st.session_state.get("api_template_prompt_version", "") or "").strip(),
+            "variables": prompt_variable_rows,
+        },
+        "tool_choice": str(st.session_state.get("api_template_tool_choice", "auto") or "auto"),
+        "temperature": float(st.session_state.get("api_template_temperature", 1.0) or 1.0),
+        "top_p": float(st.session_state.get("api_template_top_p", 1.0) or 1.0),
+        "max_output_tokens": int(st.session_state.get("api_template_max_output_tokens", 1200) or 1200),
+        "store": bool(st.session_state.get("api_template_store", True)),
+        "parallel_tool_calls": bool(st.session_state.get("api_template_parallel_tool_calls", True)),
+        "metadata": metadata_rows,
+        "web_search": {
+            "enabled": bool(st.session_state.get("api_template_web_enabled", False)),
+            "allowed_domains": st.session_state.get("api_template_web_allowed_domains", "") or "",
+            "external_web_access": bool(st.session_state.get("api_template_web_external_access", True)),
+            "user_location": {
+                "country": st.session_state.get("api_template_web_country", "") or "",
+                "city": st.session_state.get("api_template_web_city", "") or "",
+                "region": st.session_state.get("api_template_web_region", "") or "",
+                "timezone": st.session_state.get("api_template_web_timezone", "") or "",
+            },
+        },
+        "file_search": {
+            "enabled": bool(st.session_state.get("api_template_file_enabled", False)),
+            "vector_store_ids": st.session_state.get("api_template_file_vector_store_ids", "") or "",
+            "max_num_results": int(st.session_state.get("api_template_file_max_num_results", 8) or 8),
+            "include_results": bool(st.session_state.get("api_template_file_include_results", False)),
+            "ranking_options": {
+                "ranker": str(st.session_state.get("api_template_file_ranker", "") or "").strip(),
+                "score_threshold": score_threshold_value,
+            },
+            "filters": {
+                "type": str(st.session_state.get("api_template_file_filter_type", "and") or "and"),
+                "rows": filter_rows,
+            },
+        },
+        "default_output_name": str(st.session_state.get("api_template_default_output_name", "") or "").strip(),
+    }
+
+
+def collect_prompt_store_from_state() -> dict[str, str]:
+    return {
+        "name": str(st.session_state.get("api_prompt_name", "") or "").strip(),
+        "developer_text": st.session_state.get("api_prompt_developer_text", "") or "",
+        "user_text": st.session_state.get("api_prompt_user_text", "") or "",
+    }
+
+
+def render_api_templates_subtab() -> None:
+    template_names = list_saved_names(API_TEMPLATES_DIR, ".json")
+    template_options = [""] + template_names
+    default_index = 0
+    selected_name = st.selectbox(
+        "Saved template",
+        template_options,
+        index=default_index,
+        key="api_template_selected_name",
+        format_func=lambda value: value or "(new template)",
+    )
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button("Load template", use_container_width=True, key="api_load_template_button"):
+            if not selected_name:
+                st.info("Select a saved template first.")
+            else:
+                apply_api_template_state(load_json_document(API_TEMPLATES_DIR, selected_name))
+                st.success(f"Loaded template: {selected_name}")
+    with action_cols[1]:
+        if st.button("Clear template", use_container_width=True, key="api_clear_template_button"):
+            apply_api_template_state()
+            st.success("Template editor reset.")
+
+    st.info(
+        f"Set `{OPENAI_API_KEY_ENV}` before triggering requests. "
+        f"PowerShell: `$env:{OPENAI_API_KEY_ENV}=\"your-key\"` or `setx {OPENAI_API_KEY_ENV} \"your-key\"`."
+    )
+
+    top_cols = st.columns([1.4, 1.2, 1.0])
+    with top_cols[0]:
+        st.text_input("Template file name", key="api_template_name", help="Saved under data/api_templates/")
+    with top_cols[1]:
+        st.text_input("Model", key="api_template_model")
+    with top_cols[2]:
+        st.text_input(
+            "Output file name",
+            key="api_template_default_output_name",
+            help="Blank uses the request trigger timestamp.",
+        )
+
+    prompt_col, request_col = st.columns(2)
+    with prompt_col:
+        st.markdown("**Prompt Reference**")
+        st.text_input("Prompt ID", key="api_template_prompt_id", help="Sent as prompt.id.")
+        st.text_input("Prompt version", key="api_template_prompt_version")
+        prompt_variable_rows = _render_rows_editor(
+            "Prompt variables",
+            st.session_state.get("api_template_prompt_variables_rows", []),
+            ["key", "value"],
+            help_text="Optional prompt variables saved with the template.",
+        )
+        st.session_state["api_template_prompt_variables_rows"] = prompt_variable_rows
+    with request_col:
+        st.markdown("**Request Controls**")
+        st.selectbox("Tool choice", ["auto", "none", "required"], key="api_template_tool_choice")
+        numeric_cols = st.columns(2)
+        with numeric_cols[0]:
+            st.number_input(
+                "Temperature",
+                min_value=0.0,
+                max_value=2.0,
+                step=0.1,
+                key="api_template_temperature",
+            )
+            st.checkbox("Store response server-side", key="api_template_store")
+        with numeric_cols[1]:
+            st.number_input(
+                "Top P",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                key="api_template_top_p",
+            )
+            st.checkbox("Parallel tool calls", key="api_template_parallel_tool_calls")
+        st.number_input(
+            "Max output tokens",
+            min_value=1,
+            step=50,
+            key="api_template_max_output_tokens",
+        )
+        metadata_rows = _render_rows_editor(
+            "Request metadata",
+            st.session_state.get("api_template_metadata_rows", []),
+            ["key", "value"],
+            help_text="Optional metadata sent on the response request.",
+        )
+        st.session_state["api_template_metadata_rows"] = metadata_rows
+
+    text_cols = st.columns(2)
+    with text_cols[0]:
+        st.text_area(
+            "Developer instructions override",
+            key="api_template_developer_text",
+            height=220,
+        )
+    with text_cols[1]:
+        st.text_area(
+            "User input override",
+            key="api_template_user_text",
+            height=220,
+        )
+
+    web_tab, file_tab = st.tabs(["Web Search", "File Search"])
+    with web_tab:
+        st.checkbox("Enable web search", key="api_template_web_enabled")
+        st.checkbox("External web access", key="api_template_web_external_access")
+        st.text_area(
+            "Allowed domains",
+            key="api_template_web_allowed_domains",
+            height=120,
+            help="One domain per line or comma-separated.",
+        )
+        location_cols = st.columns(4)
+        with location_cols[0]:
+            st.text_input("Country", key="api_template_web_country")
+        with location_cols[1]:
+            st.text_input("City", key="api_template_web_city")
+        with location_cols[2]:
+            st.text_input("Region", key="api_template_web_region")
+        with location_cols[3]:
+            st.text_input("Timezone", key="api_template_web_timezone")
+
+    with file_tab:
+        st.checkbox("Enable file search", key="api_template_file_enabled")
+        st.text_area(
+            "Vector store IDs",
+            key="api_template_file_vector_store_ids",
+            height=110,
+            help="One vector store ID per line or comma-separated.",
+        )
+        file_cols = st.columns(4)
+        with file_cols[0]:
+            st.number_input(
+                "Max results",
+                min_value=1,
+                step=1,
+                key="api_template_file_max_num_results",
+            )
+        with file_cols[1]:
+            st.checkbox("Include search results", key="api_template_file_include_results")
+        with file_cols[2]:
+            st.text_input("Ranker", key="api_template_file_ranker")
+        with file_cols[3]:
+            st.text_input("Score threshold", key="api_template_file_score_threshold")
+        st.selectbox("Filter combine mode", ["and", "or"], key="api_template_file_filter_type")
+        filter_rows = _render_rows_editor(
+            "File metadata filters",
+            st.session_state.get("api_template_file_filter_rows", []),
+            ["key", "type", "value_type", "value"],
+            help_text="Operators: eq, ne, gt, gte, lt, lte, in, nin. Metadata names stay fully editable.",
+            height=220,
+        )
+        st.session_state["api_template_file_filter_rows"] = filter_rows
+
+    template_payload = collect_api_template_from_state(prompt_variable_rows, metadata_rows, filter_rows)
+
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button("Save template", use_container_width=True, key="api_save_template_button"):
+            template_name = str(template_payload.get("name", "") or "").strip()
+            if not template_name:
+                st.error("Template file name is required before saving.")
+            else:
+                saved_path = save_json_document(API_TEMPLATES_DIR, template_name, template_payload)
+                st.success(f"Template saved: {saved_path.name}")
+    with action_cols[1]:
+        if st.button("Run request", use_container_width=True, key="api_run_request_button"):
+            try:
+                payload, _response, output_text = run_responses_request(template_payload)
+                output_path = save_output_text(
+                    output_text,
+                    str(template_payload.get("default_output_name", "") or "").strip(),
+                )
+            except Exception as exc:  # pragma: no cover - UI feedback
+                st.error(f"Request failed: {exc}")
+            else:
+                st.session_state["api_last_payload"] = payload
+                st.session_state["api_last_output_text"] = output_text
+                st.session_state["api_last_output_path"] = str(output_path)
+                st.success(f"Response saved: {output_path.name}")
+
+    preview_payload: dict[str, object]
+    try:
+        preview_payload = build_responses_payload(template_payload)
+    except Exception as exc:
+        st.warning(f"Payload preview unavailable: {exc}")
+    else:
+        with st.expander("Payload preview", expanded=False):
+            st.json(preview_payload)
+
+    last_output_path = st.session_state.get("api_last_output_path", "")
+    if last_output_path:
+        st.caption(f"Latest saved output: {Path(last_output_path).name}")
+
+
+def render_api_outputs_subtab() -> None:
+    output_names = list_saved_names(RESPONSE_OUTPUT_DIR, ".txt")
+    if not output_names:
+        st.info("No output files saved yet. Trigger a request from the Templates sub-tab first.")
+        return
+
+    selected_output = st.selectbox("Saved output file", output_names, key="api_output_selected_name")
+    selected_text = load_output_text(selected_output)
+    st.caption(f"Folder: {RESPONSE_OUTPUT_DIR}")
+    st.text_area(
+        "Saved output text",
+        value=selected_text,
+        height=360,
+        disabled=True,
+        key=f"api_output_viewer_{selected_output}",
+    )
+    copy_button(selected_text, "api_output_copy_button")
+
+
+def render_api_prompts_subtab() -> None:
+    prompt_names = list_saved_names(PROMPT_STORE_DIR, ".json")
+    prompt_options = [""] + prompt_names
+    selected_name = st.selectbox(
+        "Saved prompt file",
+        prompt_options,
+        key="api_prompt_selected_name",
+        format_func=lambda value: value or "(new prompt file)",
+    )
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button("Load prompt", use_container_width=True, key="api_load_prompt_button"):
+            if not selected_name:
+                st.info("Select a saved prompt first.")
+            else:
+                apply_prompt_store_state(load_json_document(PROMPT_STORE_DIR, selected_name))
+                st.success(f"Loaded prompt: {selected_name}")
+    with action_cols[1]:
+        if st.button("Clear prompt", use_container_width=True, key="api_clear_prompt_button"):
+            apply_prompt_store_state()
+            st.success("Prompt editor reset.")
+
+    st.text_input("Prompt file name", key="api_prompt_name", help="Saved under data/prompt_store/")
+    prompt_cols = st.columns(2)
+    with prompt_cols[0]:
+        st.text_area(
+            "Developer prompt text",
+            key="api_prompt_developer_text",
+            height=260,
+        )
+    with prompt_cols[1]:
+        st.text_area(
+            "User prompt text",
+            key="api_prompt_user_text",
+            height=260,
+        )
+
+    if st.button("Save prompt", use_container_width=False, key="api_save_prompt_button"):
+        prompt_payload = collect_prompt_store_from_state()
+        prompt_name = prompt_payload["name"].strip()
+        if not prompt_name:
+            st.error("Prompt file name is required before saving.")
+        else:
+            saved_path = save_json_document(PROMPT_STORE_DIR, prompt_name, prompt_payload)
+            st.success(f"Prompt saved: {saved_path.name}")
+
+
+def render_api_tab() -> None:
+    render_subtab_group_intro(
+        "API cockpit",
+        "Save reusable OpenAI Responses API templates, manage prompt files, and load saved output text files.",
+    )
+    template_tab, outputs_tab, prompts_tab = st.tabs(["Templates", "Outputs", "Prompts"])
+    with template_tab:
+        render_api_templates_subtab()
+    with outputs_tab:
+        render_api_outputs_subtab()
+    with prompts_tab:
+        render_api_prompts_subtab()
 
 
 def get_banner_path() -> Optional[Path]:
@@ -1730,8 +2418,18 @@ def _market_cap_bucket_from_usd(value: object) -> str:
     return "Mega"
 
 
+def _sign_label(value: object) -> str:
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return "N/A"
+    return "Positive" if float(numeric_value) > 0 else "Negative"
+
+
 def _prepare_company_drilldown_universe(
     report_df: pd.DataFrame,
+    *,
+    include_beta: bool = False,
+    thematic_memberships: Optional[dict[str, list[str]]] = None,
 ) -> tuple[Optional[pd.DataFrame], Optional[str]]:
     required_columns = {
         "ticker",
@@ -1757,9 +2455,15 @@ def _prepare_company_drilldown_universe(
         selected_columns.insert(1, "company")
     if "fundamental_momentum" in report_df.columns:
         selected_columns.append("fundamental_momentum")
+    if "rs_monthly" in report_df.columns:
+        selected_columns.append("rs_monthly")
+    if "obvm_monthly" in report_df.columns:
+        selected_columns.append("obvm_monthly")
+    if include_beta and "beta" in report_df.columns:
+        selected_columns.append("beta")
 
     working = report_df[selected_columns].copy()
-    working["ticker"] = working["ticker"].fillna("").astype(str).str.strip()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
     if "company" in working.columns:
         working["company"] = working["company"].fillna("").astype(str).str.strip()
     else:
@@ -1774,7 +2478,39 @@ def _prepare_company_drilldown_universe(
         working["fundamental_momentum"] = pd.to_numeric(working["fundamental_momentum"], errors="coerce")
     else:
         working["fundamental_momentum"] = np.nan
+    if "rs_monthly" in working.columns:
+        working["rs_monthly"] = pd.to_numeric(working["rs_monthly"], errors="coerce")
+    else:
+        working["rs_monthly"] = np.nan
+    if "obvm_monthly" in working.columns:
+        working["obvm_monthly"] = pd.to_numeric(working["obvm_monthly"], errors="coerce")
+    else:
+        working["obvm_monthly"] = np.nan
+    if "beta" in working.columns:
+        working["beta"] = pd.to_numeric(working["beta"], errors="coerce")
+    else:
+        working["beta"] = np.nan
     working["market_cap_bucket"] = working["market_cap"].apply(_market_cap_bucket_from_usd)
+    working["rel_strength"] = working["rs_monthly"].map(_sign_label)
+    working["rel_volume"] = working["obvm_monthly"].map(_sign_label)
+
+    ai_lookup = build_ai_exposure_lookup(str(THEMATICS_CONFIG_PATH)) if THEMATICS_CONFIG_PATH.exists() else {}
+    ai_revenue_exposure: list[str] = []
+    ai_disruption_risk: list[str] = []
+    thematic_display: list[str] = []
+    thematic_membership_values: list[list[str]] = []
+    membership_lookup = thematic_memberships or {}
+    for ticker_value in working["ticker"].tolist():
+        ai_entry = ai_lookup.get(ticker_value, {})
+        ai_revenue_exposure.append(str(ai_entry.get("ai_revenue_exposure", "none")))
+        ai_disruption_risk.append(str(ai_entry.get("ai_disruption_risk", "none")))
+        memberships = sorted(set(membership_lookup.get(ticker_value, [])))
+        thematic_membership_values.append(memberships)
+        thematic_display.append(" | ".join(memberships) if memberships else "Unassigned")
+    working["ai_revenue_exposure"] = ai_revenue_exposure
+    working["ai_disruption_risk"] = ai_disruption_risk
+    working["thematic"] = thematic_display
+    working["thematic_memberships"] = thematic_membership_values
     return working, None
 
 
@@ -1837,6 +2573,61 @@ def _annotate_company_technical_trend(
     ]
     return merged.drop(columns=["general_technical_score_prev"])
 
+
+def _annotate_company_score_trends(
+    company_df: pd.DataFrame,
+    previous_report_df: pd.DataFrame,
+    *,
+    threshold: float = 5.0,
+) -> pd.DataFrame:
+    annotated = _annotate_company_technical_trend(company_df, previous_report_df, threshold=threshold)
+    if annotated.empty or "ticker" not in previous_report_df.columns:
+        annotated["fundamental_trend_symbol"] = ""
+        annotated["fundamental_trend_direction"] = "none"
+        annotated["fundamental_momentum_trend_symbol"] = ""
+        annotated["fundamental_momentum_trend_direction"] = "none"
+        return annotated
+
+    previous_scores = previous_report_df.copy()
+    previous_scores["ticker"] = previous_scores["ticker"].map(normalize_price_ticker)
+    previous_scores["fundamental_total_score_prev"] = pd.to_numeric(
+        previous_scores.get("fundamental_total_score"), errors="coerce"
+    )
+    previous_scores["fundamental_momentum_prev"] = pd.to_numeric(
+        previous_scores.get("fundamental_momentum"), errors="coerce"
+    )
+    previous_subset = previous_scores[
+        ["ticker", "fundamental_total_score_prev", "fundamental_momentum_prev"]
+    ].drop_duplicates(subset=["ticker"], keep="first")
+
+    merged = annotated.merge(previous_subset, on="ticker", how="left")
+    for metric_name, current_col, prev_col, symbol_col, direction_col in [
+        (
+            "fundamental",
+            "fundamental_total_score",
+            "fundamental_total_score_prev",
+            "fundamental_trend_symbol",
+            "fundamental_trend_direction",
+        ),
+        (
+            "fundamental_momentum",
+            "fundamental_momentum",
+            "fundamental_momentum_prev",
+            "fundamental_momentum_trend_symbol",
+            "fundamental_momentum_trend_direction",
+        ),
+    ]:
+        current_values = pd.to_numeric(merged.get(current_col), errors="coerce")
+        previous_values = pd.to_numeric(merged.get(prev_col), errors="coerce")
+        deltas = current_values - previous_values
+        merged[symbol_col] = [
+            _trend_symbol_for_delta(delta_value, threshold) for delta_value in deltas.tolist()
+        ]
+        merged[direction_col] = [
+            _trend_direction_for_delta(delta_value, threshold) for delta_value in deltas.tolist()
+        ]
+    return merged.drop(columns=["fundamental_total_score_prev", "fundamental_momentum_prev"])
+
 def _company_filter_presets() -> dict[str, dict[str, object]]:
     return {
         "Strong and Up": {
@@ -1888,8 +2679,18 @@ def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
     )
     st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = str(preset["trend_dir"])
     # Presets are intended to be one-click snapshots of thresholds, not text/cap filters.
+    st.session_state[f"{prefix}_drilldown_filter_thematic"] = list(
+        st.session_state.get(f"{prefix}_drilldown_filter_default_thematic", [])
+    )
     st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
     st.session_state[f"{prefix}_drilldown_filter_cap"] = []
+    st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = "All"
+    st.session_state[f"{prefix}_drilldown_filter_rel_volume"] = "All"
+    st.session_state[f"{prefix}_drilldown_filter_ai_revenue_exposure"] = "All"
+    st.session_state[f"{prefix}_drilldown_filter_ai_disruption_risk"] = "All"
+    st.session_state[f"{prefix}_drilldown_filter_beta_range"] = tuple(
+        st.session_state.get(f"{prefix}_drilldown_filter_default_beta_range", (0.0, 5.0))
+    )
     st.session_state[f"{prefix}_drilldown_filter_active_preset"] = preset_name
 
 
@@ -1916,20 +2717,34 @@ def _sync_drilldown_filter_defaults(
     *,
     default_sectors: list[str],
     default_industries: list[str],
+    default_thematics: Optional[list[str]] = None,
     default_fund_range: tuple[float, float] = (0.0, 100.0),
     default_tech_range: tuple[float, float] = (0.0, 100.0),
     default_fund_momentum_range: tuple[float, float] = (0.0, 100.0),
     default_tech_trend_dir: str = "All",
+    default_rel_strength: str = "All",
+    default_rel_volume: str = "All",
+    default_ai_revenue_exposure: str = "All",
+    default_ai_disruption_risk: str = "All",
+    default_beta_range: tuple[float, float] = (0.0, 5.0),
 ) -> None:
     signature_key = f"{prefix}_drilldown_filter_signature"
     if st.session_state.get(signature_key) == signature:
         return
+    default_thematics_list = list(default_thematics or [])
+    st.session_state[f"{prefix}_drilldown_filter_default_thematic"] = default_thematics_list
     st.session_state[f"{prefix}_drilldown_filter_default_sector"] = list(default_sectors)
     st.session_state[f"{prefix}_drilldown_filter_default_industry"] = list(default_industries)
     st.session_state[f"{prefix}_drilldown_filter_default_fund_range"] = tuple(default_fund_range)
     st.session_state[f"{prefix}_drilldown_filter_default_tech_range"] = tuple(default_tech_range)
     st.session_state[f"{prefix}_drilldown_filter_default_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_default_tech_trend_dir"] = default_tech_trend_dir
+    st.session_state[f"{prefix}_drilldown_filter_default_rel_strength"] = default_rel_strength
+    st.session_state[f"{prefix}_drilldown_filter_default_rel_volume"] = default_rel_volume
+    st.session_state[f"{prefix}_drilldown_filter_default_ai_revenue_exposure"] = default_ai_revenue_exposure
+    st.session_state[f"{prefix}_drilldown_filter_default_ai_disruption_risk"] = default_ai_disruption_risk
+    st.session_state[f"{prefix}_drilldown_filter_default_beta_range"] = tuple(default_beta_range)
+    st.session_state[f"{prefix}_drilldown_filter_thematic"] = default_thematics_list
     st.session_state[f"{prefix}_drilldown_filter_sector"] = list(default_sectors)
     st.session_state[f"{prefix}_drilldown_filter_industry"] = list(default_industries)
     st.session_state[f"{prefix}_drilldown_filter_cap"] = []
@@ -1937,6 +2752,11 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(default_tech_range)
     st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = default_tech_trend_dir
+    st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = default_rel_strength
+    st.session_state[f"{prefix}_drilldown_filter_rel_volume"] = default_rel_volume
+    st.session_state[f"{prefix}_drilldown_filter_ai_revenue_exposure"] = default_ai_revenue_exposure
+    st.session_state[f"{prefix}_drilldown_filter_ai_disruption_risk"] = default_ai_disruption_risk
+    st.session_state[f"{prefix}_drilldown_filter_beta_range"] = tuple(default_beta_range)
     st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
     st.session_state[signature_key] = signature
 
@@ -1997,7 +2817,13 @@ def render_company_drilldown_filters(
     ticker_label: str,
     include_fundamental_momentum_filter: bool = False,
     include_technical_trend_filter: bool = False,
+    include_thematic_filter: bool = False,
+    include_rel_strength_filter: bool = False,
+    include_rel_volume_filter: bool = False,
+    include_ai_exposure_filters: bool = False,
+    include_beta_filter: bool = False,
 ) -> pd.DataFrame:
+    thematic_key = f"{prefix}_drilldown_filter_thematic"
     sector_key = f"{prefix}_drilldown_filter_sector"
     industry_key = f"{prefix}_drilldown_filter_industry"
     cap_key = f"{prefix}_drilldown_filter_cap"
@@ -2005,17 +2831,29 @@ def render_company_drilldown_filters(
     tech_range_key = f"{prefix}_drilldown_filter_tech_range"
     fund_momentum_range_key = f"{prefix}_drilldown_filter_fund_momentum_range"
     tech_trend_dir_key = f"{prefix}_drilldown_filter_tech_trend_dir"
+    rel_strength_key = f"{prefix}_drilldown_filter_rel_strength"
+    rel_volume_key = f"{prefix}_drilldown_filter_rel_volume"
+    ai_revenue_exposure_key = f"{prefix}_drilldown_filter_ai_revenue_exposure"
+    ai_disruption_risk_key = f"{prefix}_drilldown_filter_ai_disruption_risk"
+    beta_range_key = f"{prefix}_drilldown_filter_beta_range"
     ticker_key = f"{prefix}_drilldown_filter_ticker"
     pending_reset_key = f"{prefix}_drilldown_filter_pending_reset"
+    default_thematic_key = f"{prefix}_drilldown_filter_default_thematic"
     default_fund_range_key = f"{prefix}_drilldown_filter_default_fund_range"
     default_tech_range_key = f"{prefix}_drilldown_filter_default_tech_range"
     default_fund_momentum_range_key = f"{prefix}_drilldown_filter_default_fund_momentum_range"
     default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
+    default_rel_strength_key = f"{prefix}_drilldown_filter_default_rel_strength"
+    default_rel_volume_key = f"{prefix}_drilldown_filter_default_rel_volume"
+    default_ai_revenue_exposure_key = f"{prefix}_drilldown_filter_default_ai_revenue_exposure"
+    default_ai_disruption_risk_key = f"{prefix}_drilldown_filter_default_ai_disruption_risk"
+    default_beta_range_key = f"{prefix}_drilldown_filter_default_beta_range"
     active_preset_key = f"{prefix}_drilldown_filter_active_preset"
 
     # Streamlit forbids changing widget-bound session keys after widget instantiation.
     # Apply reset defaults at the top of a rerun before creating widgets.
     if st.session_state.pop(pending_reset_key, False):
+        st.session_state[thematic_key] = list(st.session_state.get(default_thematic_key, []))
         st.session_state[sector_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
         st.session_state[industry_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
         st.session_state[cap_key] = []
@@ -2025,8 +2863,16 @@ def render_company_drilldown_filters(
             st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))
         )
         st.session_state[tech_trend_dir_key] = st.session_state.get(default_tech_trend_dir_key, "All")
+        st.session_state[rel_strength_key] = st.session_state.get(default_rel_strength_key, "All")
+        st.session_state[rel_volume_key] = st.session_state.get(default_rel_volume_key, "All")
+        st.session_state[ai_revenue_exposure_key] = st.session_state.get(default_ai_revenue_exposure_key, "All")
+        st.session_state[ai_disruption_risk_key] = st.session_state.get(default_ai_disruption_risk_key, "All")
+        st.session_state[beta_range_key] = tuple(st.session_state.get(default_beta_range_key, (0.0, 5.0)))
         st.session_state[ticker_key] = ""
 
+    st.session_state.setdefault(
+        thematic_key, list(st.session_state.get(default_thematic_key, []))
+    )
     st.session_state.setdefault(
         sector_key, list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
     )
@@ -2043,6 +2889,26 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(
         tech_trend_dir_key,
         st.session_state.get(default_tech_trend_dir_key, "All"),
+    )
+    st.session_state.setdefault(
+        rel_strength_key,
+        st.session_state.get(default_rel_strength_key, "All"),
+    )
+    st.session_state.setdefault(
+        rel_volume_key,
+        st.session_state.get(default_rel_volume_key, "All"),
+    )
+    st.session_state.setdefault(
+        ai_revenue_exposure_key,
+        st.session_state.get(default_ai_revenue_exposure_key, "All"),
+    )
+    st.session_state.setdefault(
+        ai_disruption_risk_key,
+        st.session_state.get(default_ai_disruption_risk_key, "All"),
+    )
+    st.session_state.setdefault(
+        beta_range_key,
+        tuple(st.session_state.get(default_beta_range_key, (0.0, 5.0))),
     )
     st.session_state.setdefault(ticker_key, "")
     st.session_state.setdefault(active_preset_key, "")
@@ -2110,11 +2976,30 @@ div.st-key-{btn_key} button {{
         st.markdown("**Company filters**")
 
     with st.form(key=f"{prefix}_drilldown_filters_form", clear_on_submit=False):
-        filter_cols_top = st.columns(3)
-        with filter_cols_top[0]:
+        top_layout: list[float] = []
+        if include_thematic_filter:
+            top_layout.append(1.1)
+        top_layout.extend([1, 1, 1])
+        filter_cols_top = st.columns(top_layout)
+        next_top_col = 0
+        selected_thematics: list[str] = []
+        if include_thematic_filter:
+            with filter_cols_top[next_top_col]:
+                thematic_options = sorted(
+                    {
+                        thematic_name
+                        for memberships in company_df.get("thematic_memberships", pd.Series([], dtype=object)).tolist()
+                        if isinstance(memberships, list)
+                        for thematic_name in memberships
+                    }
+                )
+                selected_thematics = st.multiselect("Thematic filter", options=thematic_options, key=thematic_key)
+            next_top_col += 1
+        with filter_cols_top[next_top_col]:
             sector_options = sorted(company_df["sector"].dropna().unique().tolist())
             selected_sectors = st.multiselect("Sector filter", options=sector_options, key=sector_key)
-        with filter_cols_top[1]:
+        next_top_col += 1
+        with filter_cols_top[next_top_col]:
             if selected_sectors:
                 industry_source = company_df[company_df["sector"].isin(selected_sectors)]
             else:
@@ -2125,22 +3010,24 @@ div.st-key-{btn_key} button {{
             if st.session_state.get(industry_key, []) != selected_industries_state:
                 st.session_state[industry_key] = selected_industries_state
             selected_industries = st.multiselect("Industry filter", options=industry_options, key=industry_key)
-        with filter_cols_top[2]:
+        next_top_col += 1
+        with filter_cols_top[next_top_col]:
             available_caps = set(company_df["market_cap_bucket"].dropna().tolist())
             cap_options = [entry for entry in CAP_BUCKET_ORDER if entry in available_caps]
             cap_options.extend(sorted(available_caps.difference(cap_options)))
             selected_caps = st.multiselect("Market cap bucket", options=cap_options, key=cap_key)
 
-        bottom_layout = [1, 1]
+        middle_layout = [1, 1]
         if include_fundamental_momentum_filter:
-            bottom_layout.append(1)
+            middle_layout.append(1)
         if include_technical_trend_filter:
-            bottom_layout.append(1)
-        bottom_layout.append(1.4)
-        filter_cols_bottom = st.columns(bottom_layout)
-        next_bottom_col = 0
+            middle_layout.append(1)
+        if include_beta_filter:
+            middle_layout.append(1)
+        filter_cols_middle = st.columns(middle_layout)
+        next_middle_col = 0
         trend_filter_value = "All"
-        with filter_cols_bottom[0]:
+        with filter_cols_middle[0]:
             fundamental_range = st.slider(
                 "Fundamental score range",
                 min_value=0.0,
@@ -2148,8 +3035,8 @@ div.st-key-{btn_key} button {{
                 step=0.5,
                 key=fund_range_key,
             )
-        next_bottom_col += 1
-        with filter_cols_bottom[next_bottom_col]:
+        next_middle_col += 1
+        with filter_cols_middle[next_middle_col]:
             technical_range = st.slider(
                 "Technical score range",
                 min_value=0.0,
@@ -2157,9 +3044,9 @@ div.st-key-{btn_key} button {{
                 step=0.5,
                 key=tech_range_key,
             )
-        next_bottom_col += 1
+        next_middle_col += 1
         if include_fundamental_momentum_filter:
-            with filter_cols_bottom[next_bottom_col]:
+            with filter_cols_middle[next_middle_col]:
                 fundamental_momentum_range = st.slider(
                     "Fundamental momentum range",
                     min_value=0.0,
@@ -2167,15 +3054,73 @@ div.st-key-{btn_key} button {{
                     step=0.5,
                     key=fund_momentum_range_key,
                 )
-            next_bottom_col += 1
+            next_middle_col += 1
         else:
             fundamental_momentum_range = (0.0, 100.0)
         if include_technical_trend_filter:
-            with filter_cols_bottom[next_bottom_col]:
+            with filter_cols_middle[next_middle_col]:
                 trend_filter_value = st.selectbox(
                     "Technical trend filter",
                     options=TREND_FILTER_OPTIONS,
                     key=tech_trend_dir_key,
+                )
+            next_middle_col += 1
+        if include_beta_filter:
+            with filter_cols_middle[next_middle_col]:
+                beta_range = st.slider(
+                    "Beta range",
+                    min_value=0.0,
+                    max_value=5.0,
+                    step=0.1,
+                    key=beta_range_key,
+                )
+            next_middle_col += 1
+        else:
+            beta_range = (0.0, 5.0)
+
+        bottom_layout: list[float] = []
+        if include_rel_strength_filter:
+            bottom_layout.append(1)
+        if include_rel_volume_filter:
+            bottom_layout.append(1)
+        if include_ai_exposure_filters:
+            bottom_layout.extend([1, 1])
+        bottom_layout.append(1.4)
+        filter_cols_bottom = st.columns(bottom_layout)
+        next_bottom_col = 0
+        rel_strength_value = "All"
+        rel_volume_value = "All"
+        ai_revenue_exposure_value = "All"
+        ai_disruption_risk_value = "All"
+        if include_rel_strength_filter:
+            with filter_cols_bottom[next_bottom_col]:
+                rel_strength_value = st.selectbox(
+                    "Rel Strength",
+                    options=SIGN_FILTER_OPTIONS,
+                    key=rel_strength_key,
+                )
+            next_bottom_col += 1
+        if include_rel_volume_filter:
+            with filter_cols_bottom[next_bottom_col]:
+                rel_volume_value = st.selectbox(
+                    "Rel Volume",
+                    options=SIGN_FILTER_OPTIONS,
+                    key=rel_volume_key,
+                )
+            next_bottom_col += 1
+        if include_ai_exposure_filters:
+            with filter_cols_bottom[next_bottom_col]:
+                ai_revenue_exposure_value = st.selectbox(
+                    "AI revenue exposure",
+                    options=AI_REVENUE_FILTER_OPTIONS,
+                    key=ai_revenue_exposure_key,
+                )
+            next_bottom_col += 1
+            with filter_cols_bottom[next_bottom_col]:
+                ai_disruption_risk_value = st.selectbox(
+                    "AI disruption risk",
+                    options=AI_DISRUPTION_FILTER_OPTIONS,
+                    key=ai_disruption_risk_key,
                 )
             next_bottom_col += 1
         with filter_cols_bottom[next_bottom_col]:
@@ -2212,6 +3157,12 @@ div.st-key-{btn_key} button {{
         st.rerun()
 
     filtered = company_df.copy()
+    if include_thematic_filter and selected_thematics:
+        filtered = filtered[
+            filtered["thematic_memberships"].apply(
+                lambda memberships: bool(set(selected_thematics).intersection(memberships or []))
+            )
+        ]
     if selected_sectors:
         filtered = filtered[filtered["sector"].isin(selected_sectors)]
     if selected_industries:
@@ -2236,6 +3187,18 @@ div.st-key-{btn_key} button {{
             filtered = filtered[filtered["technical_trend_direction"] == "flat"]
         elif trend_filter_value == TREND_FILTER_LABELS["down"]:
             filtered = filtered[filtered["technical_trend_direction"] == "down"]
+    if include_beta_filter and "beta" in filtered.columns:
+        beta_min, beta_max = beta_range
+        if filtered["beta"].notna().any():
+            filtered = filtered[filtered["beta"].between(beta_min, beta_max, inclusive="both")]
+    if include_rel_strength_filter and rel_strength_value != "All" and "rel_strength" in filtered.columns:
+        filtered = filtered[filtered["rel_strength"] == rel_strength_value]
+    if include_rel_volume_filter and rel_volume_value != "All" and "rel_volume" in filtered.columns:
+        filtered = filtered[filtered["rel_volume"] == rel_volume_value]
+    if include_ai_exposure_filters and ai_revenue_exposure_value != "All" and "ai_revenue_exposure" in filtered.columns:
+        filtered = filtered[filtered["ai_revenue_exposure"] == ai_revenue_exposure_value]
+    if include_ai_exposure_filters and ai_disruption_risk_value != "All" and "ai_disruption_risk" in filtered.columns:
+        filtered = filtered[filtered["ai_disruption_risk"] == ai_disruption_risk_value]
 
     if ticker_query:
         filtered = filtered[
@@ -2246,21 +3209,17 @@ div.st-key-{btn_key} button {{
 
 def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) -> pd.DataFrame:
     if company_df.empty:
-        if sort_by == "technical":
-            return pd.DataFrame(
-                columns=[
-                    "Ticker",
-                    "Company",
-                    "Sector",
-                    "Industry",
-                    "Market Cap",
-                    "Fundamental Score",
-                    "Fundamental Momentum",
-                    "Technical Score",
-                ]
-            )
         return pd.DataFrame(
-            columns=["Ticker", "Sector", "Industry", "Market Cap", "Fundamental Score", "Technical Score"]
+            columns=[
+                "Ticker",
+                "Company",
+                "Sector",
+                "Industry",
+                "Market Cap",
+                "Fundamental Score",
+                "Fundamental Momentum",
+                "Technical Score",
+            ]
         )
 
     if sort_by == "fundamental":
@@ -2278,25 +3237,24 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
 
     display_columns = [
         "ticker",
+        "company",
         "sector",
         "industry",
         "market_cap",
         "fundamental_total_score",
+        "fundamental_momentum",
         "general_technical_score",
     ]
     rename_map = {
         "ticker": "Ticker",
+        "company": "Company",
         "sector": "Sector",
         "industry": "Industry",
         "market_cap": "Market Cap",
         "fundamental_total_score": "Fundamental Score",
+        "fundamental_momentum": "Fundamental Momentum",
         "general_technical_score": "Technical Score",
     }
-    if sort_by == "technical":
-        display_columns.insert(1, "company")
-        display_columns.insert(-1, "fundamental_momentum")
-        rename_map["company"] = "Company"
-        rename_map["fundamental_momentum"] = "Fundamental Momentum"
 
     display_df = sorted_df[display_columns].rename(columns=rename_map)
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
@@ -2317,10 +3275,9 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         display_df["Technical Score"] = display_df["Technical Score"].map(
             lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
         )
-    if "Fundamental Momentum" in display_df.columns:
-        display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(
-            lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-        )
+    display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(
+        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+    )
     return display_df.reset_index(drop=True)
 
 
@@ -3007,6 +3964,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
     selected_key = st.session_state.get("fundamental_selected_key")
     selected_mode = st.session_state.get("fundamental_selected_mode")
     if selected_key and selected_mode:
+        company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
         details_title, company_universe, default_sectors, default_industries, details_error = build_company_drilldown_context(
             report_df,
             selected_sector=selected_sector,
@@ -3016,6 +3974,12 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         if details_error:
             st.warning(details_error)
         elif company_universe is not None:
+            if company_trend_enabled and previous_report_df is not None:
+                company_universe = _annotate_company_technical_trend(
+                    company_universe,
+                    previous_report_df,
+                    threshold=5.0,
+                )
             filter_signature = (
                 selected_eod.isoformat(),
                 previous_eod.isoformat(),
@@ -3028,6 +3992,10 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 filter_signature,
                 default_sectors=default_sectors,
                 default_industries=default_industries,
+                default_fund_range=(50.0, 100.0),
+                default_tech_range=(60.0, 100.0),
+                default_fund_momentum_range=(60.0, 100.0),
+                default_tech_trend_dir="All",
             )
             st.markdown("---")
             st.caption(details_title)
@@ -3035,6 +4003,11 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 company_universe,
                 prefix="fundamental",
                 ticker_label="Ticker filter (Fundamental drilldown)",
+                include_fundamental_momentum_filter=True,
+                include_technical_trend_filter=company_trend_enabled,
+                include_rel_strength_filter=True,
+                include_rel_volume_filter=True,
+                include_ai_exposure_filters=True,
             )
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             details_display = format_company_drilldown_display(filtered_companies, sort_by="fundamental")
@@ -3256,6 +4229,9 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 ticker_label="Ticker filter (Technical drilldown)",
                 include_fundamental_momentum_filter=True,
                 include_technical_trend_filter=company_trend_enabled,
+                include_rel_strength_filter=True,
+                include_rel_volume_filter=True,
+                include_ai_exposure_filters=True,
             )
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
@@ -4518,13 +5494,613 @@ def render_sector_tab(config: ReportConfig) -> None:
         render_technical_scoring_board(config)
 
 
-def render_thematics_tab() -> None:
+def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    if report_df is None or report_df.empty:
+        return pd.DataFrame(columns=["ticker"])
+    working = report_df.copy()
+    if "ticker" not in working.columns:
+        return pd.DataFrame(columns=["ticker"])
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    for column in [
+        "market_cap",
+        "beta",
+        "fundamental_total_score",
+        "general_technical_score",
+        "fundamental_momentum",
+        "rs_monthly",
+        "obvm_monthly",
+    ]:
+        if column in working.columns:
+            working[column] = pd.to_numeric(working[column], errors="coerce")
+    return working.drop_duplicates(subset=["ticker"], keep="first")
+
+
+def _thematic_memberships_for_scope(
+    basket_name: str,
+    catalog: dict[str, object],
+) -> dict[str, list[str]]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict) or basket_name not in items:
+        return {}
+    basket = items[basket_name]
+    memberships: dict[str, list[str]] = {}
+    children = basket.get("children", [])
+    if basket.get("is_parent") and isinstance(children, list) and children:
+        for child_name in children:
+            child_item = items.get(child_name)
+            if not isinstance(child_item, dict):
+                continue
+            for ticker_value in child_item.get("tickers", []):
+                memberships.setdefault(str(ticker_value), []).append(str(child_name))
+        for ticker_value in basket.get("tickers", []):
+            ticker_str = str(ticker_value)
+            memberships.setdefault(ticker_str, [basket_name])
+    else:
+        for ticker_value in basket.get("tickers", []):
+            memberships[str(ticker_value)] = [basket_name]
+    return memberships
+
+
+def _build_thematics_company_universe(
+    basket_name: str,
+    catalog: dict[str, object],
+    report_df: Optional[pd.DataFrame],
+    price_lookup: dict[str, dict[str, list[object]]],
+    reference_date: date,
+) -> tuple[pd.DataFrame, bool]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict) or basket_name not in items:
+        return pd.DataFrame(), False
+
+    basket = items[basket_name]
+    scope_tickers = list(basket.get("tickers", []))
+    base_df = pd.DataFrame({"ticker": scope_tickers})
+    current_report = _prepare_thematics_report_frame(report_df)
+    if not current_report.empty:
+        available_columns = [
+            column
+            for column in [
+                "ticker",
+                "company",
+                "sector",
+                "industry",
+                "market_cap",
+                "beta",
+                "fundamental_total_score",
+                "general_technical_score",
+                "fundamental_momentum",
+                "rs_monthly",
+                "obvm_monthly",
+            ]
+            if column in current_report.columns
+        ]
+        report_subset = current_report[current_report["ticker"].isin(scope_tickers)][available_columns].copy()
+        base_df = base_df.merge(report_subset, on="ticker", how="left")
+
+    if "company" not in base_df.columns:
+        base_df["company"] = ""
+    base_df["company"] = (
+        base_df["company"].fillna("").astype(str).str.strip()
+    )
+    base_df["company"] = base_df["company"].where(base_df["company"].str.len() > 0, base_df["ticker"].map(_base_ticker_symbol))
+    base_df["sector"] = base_df.get("sector", pd.Series(index=base_df.index)).fillna("Unspecified")
+    base_df["industry"] = base_df.get("industry", pd.Series(index=base_df.index)).fillna("Unspecified")
+    for required_numeric in [
+        "market_cap",
+        "beta",
+        "fundamental_total_score",
+        "general_technical_score",
+        "fundamental_momentum",
+        "rs_monthly",
+        "obvm_monthly",
+    ]:
+        if required_numeric not in base_df.columns:
+            base_df[required_numeric] = np.nan
+
+    memberships = _thematic_memberships_for_scope(basket_name, catalog)
+    company_universe, error_message = _prepare_company_drilldown_universe(
+        base_df,
+        include_beta=True,
+        thematic_memberships=memberships,
+    )
+    if error_message or company_universe is None:
+        return pd.DataFrame(), False
+
+    performance_df, anchor_missing = _compute_company_return_metrics(scope_tickers, price_lookup, reference_date)
+    if not performance_df.empty:
+        company_universe = company_universe.merge(performance_df, on="ticker", how="left")
+    else:
+        for metric_name in ["anchor_close", "1w_perf", "1m_perf", "3m_perf", "ytd_perf"]:
+            company_universe[metric_name] = np.nan
+    return company_universe, anchor_missing
+
+
+def _build_thematics_basket_metrics(
+    catalog: dict[str, object],
+    report_df: Optional[pd.DataFrame],
+    previous_report_df: Optional[pd.DataFrame],
+    price_lookup: dict[str, dict[str, list[object]]],
+    reference_date: date,
+) -> tuple[pd.DataFrame, bool]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict):
+        return pd.DataFrame(), False
+
+    current_report = _prepare_thematics_report_frame(report_df)
+    previous_report = _prepare_thematics_report_frame(previous_report_df)
+    all_unique_tickers = sorted(
+        {
+            str(ticker_value)
+            for item in items.values()
+            if isinstance(item, dict)
+            for ticker_value in item.get("tickers", [])
+        }
+    )
+    performance_df, anchor_missing = _compute_company_return_metrics(all_unique_tickers, price_lookup, reference_date)
+    rows: list[dict[str, object]] = []
+
+    for basket_name, basket in items.items():
+        if not isinstance(basket, dict):
+            continue
+        scope_tickers = list(basket.get("tickers", []))
+        perf_scope = performance_df[performance_df["ticker"].isin(scope_tickers)]
+        report_scope = current_report[current_report["ticker"].isin(scope_tickers)] if not current_report.empty else pd.DataFrame()
+        previous_scope = previous_report[previous_report["ticker"].isin(scope_tickers)] if not previous_report.empty else pd.DataFrame()
+
+        technical_score = _basket_average(report_scope.get("general_technical_score", pd.Series(dtype=float)))
+        previous_technical_score = _basket_average(previous_scope.get("general_technical_score", pd.Series(dtype=float)))
+        fundamental_score = _basket_average(report_scope.get("fundamental_total_score", pd.Series(dtype=float)))
+        previous_fundamental_score = _basket_average(previous_scope.get("fundamental_total_score", pd.Series(dtype=float)))
+        fundamental_momentum_score = _basket_average(report_scope.get("fundamental_momentum", pd.Series(dtype=float)))
+        previous_fundamental_momentum_score = _basket_average(previous_scope.get("fundamental_momentum", pd.Series(dtype=float)))
+
+        rows.append(
+            {
+                "name": basket_name,
+                "description": basket.get("description", ""),
+                "article_narrative": basket.get("article_narrative", ""),
+                "tier": basket.get("tier"),
+                "tier_label": basket.get("tier_label", ""),
+                "value_chain_layer": basket.get("value_chain_layer"),
+                "parent": basket.get("parent", ""),
+                "is_parent": basket.get("is_parent", False),
+                "children": basket.get("children", []),
+                "ticker_count": len(scope_tickers),
+                "beta": _basket_average(report_scope.get("beta", pd.Series(dtype=float))),
+                "1w_perf": _basket_average(perf_scope.get("1w_perf", pd.Series(dtype=float))),
+                "1m_perf": _basket_average(perf_scope.get("1m_perf", pd.Series(dtype=float))),
+                "3m_perf": _basket_average(perf_scope.get("3m_perf", pd.Series(dtype=float))),
+                "ytd_perf": _basket_average(perf_scope.get("ytd_perf", pd.Series(dtype=float))),
+                "technical_scoring": technical_score,
+                "rel_strength_breadth": (
+                    float((report_scope["rs_monthly"] > 0).mean() * 100.0)
+                    if "rs_monthly" in report_scope.columns and report_scope["rs_monthly"].notna().any()
+                    else float("nan")
+                ),
+                "rel_volume_breadth": (
+                    float((report_scope["obvm_monthly"] > 0).mean() * 100.0)
+                    if "obvm_monthly" in report_scope.columns and report_scope["obvm_monthly"].notna().any()
+                    else float("nan")
+                ),
+                "fundamental_scoring": fundamental_score,
+                "fundamental_momentum_scoring": fundamental_momentum_score,
+                "technical_trend_symbol": _trend_symbol_for_delta(
+                    technical_score - previous_technical_score
+                    if pd.notna(technical_score) and pd.notna(previous_technical_score)
+                    else None,
+                    5.0,
+                ),
+                "fundamental_trend_symbol": _trend_symbol_for_delta(
+                    fundamental_score - previous_fundamental_score
+                    if pd.notna(fundamental_score) and pd.notna(previous_fundamental_score)
+                    else None,
+                    5.0,
+                ),
+                "fundamental_momentum_trend_symbol": _trend_symbol_for_delta(
+                    fundamental_momentum_score - previous_fundamental_momentum_score
+                    if pd.notna(fundamental_momentum_score) and pd.notna(previous_fundamental_momentum_score)
+                    else None,
+                    5.0,
+                ),
+            }
+        )
+    return pd.DataFrame(rows), anchor_missing
+
+
+def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
+    if company_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "Thematic",
+                "Ticker",
+                "Company",
+                "Sector",
+                "Industry",
+                "Market Cap",
+                "Beta",
+                "1W",
+                "1M",
+                "3M",
+                "YTD",
+                "Rel Strength",
+                "Rel Volume",
+                "Technical Scoring",
+                "Fundamental Scoring",
+                "Fundamental Momentum Scoring",
+                "AI Revenue Exposure",
+                "AI Disruption Risk",
+            ]
+        )
+
+    sorted_df = company_df.sort_values(
+        by=["general_technical_score", "fundamental_total_score", "ticker"],
+        ascending=[False, False, True],
+        na_position="last",
+    ).copy()
+    sorted_df["company"] = sorted_df["company"].fillna("").astype(str).str.strip()
+    sorted_df["company"] = sorted_df["company"].where(sorted_df["company"].str.len() > 0, sorted_df["ticker"].map(_base_ticker_symbol))
+
+    display_df = pd.DataFrame(
+        {
+            "Thematic": sorted_df["thematic"].fillna("Unassigned"),
+            "Ticker": sorted_df["ticker"],
+            "Company": sorted_df["company"],
+            "Sector": sorted_df["sector"].fillna("Unspecified"),
+            "Industry": sorted_df["industry"].fillna("Unspecified"),
+            "Market Cap": sorted_df["market_cap"].map(_format_market_cap_display),
+            "Beta": sorted_df["beta"].map(lambda value: f"{value:.2f}" if pd.notna(value) else "N/A"),
+            "1W": sorted_df["1w_perf"].map(_format_percent_value),
+            "1M": sorted_df["1m_perf"].map(_format_percent_value),
+            "3M": sorted_df["3m_perf"].map(_format_percent_value),
+            "YTD": sorted_df["ytd_perf"].map(_format_percent_value),
+            "Rel Strength": sorted_df["rel_strength"].fillna("N/A"),
+            "Rel Volume": sorted_df["rel_volume"].fillna("N/A"),
+            "Technical Scoring": [
+                _render_score_with_symbol(value, symbol)
+                for value, symbol in zip(
+                    sorted_df["general_technical_score"],
+                    sorted_df.get("technical_trend_symbol", pd.Series([""] * len(sorted_df))).fillna(""),
+                )
+            ],
+            "Fundamental Scoring": [
+                _render_score_with_symbol(value, symbol)
+                for value, symbol in zip(
+                    sorted_df["fundamental_total_score"],
+                    sorted_df.get("fundamental_trend_symbol", pd.Series([""] * len(sorted_df))).fillna(""),
+                )
+            ],
+            "Fundamental Momentum Scoring": [
+                _render_score_with_symbol(value, symbol)
+                for value, symbol in zip(
+                    sorted_df["fundamental_momentum"],
+                    sorted_df.get("fundamental_momentum_trend_symbol", pd.Series([""] * len(sorted_df))).fillna(""),
+                )
+            ],
+            "AI Revenue Exposure": sorted_df["ai_revenue_exposure"].fillna("none"),
+            "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
+        }
+    )
+    return display_df.reset_index(drop=True)
+
+
+def _render_thematics_context_card(catalog: dict[str, object], focus_basket: Optional[str]) -> None:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict) or not items:
+        st.info("No thematic baskets available.")
+        return
+    basket_name = focus_basket if focus_basket in items else next(iter(items))
+    basket = items[basket_name]
+    description = str(basket.get("description", "") or "No description available yet.")
+    narrative = str(basket.get("article_narrative", "") or "")
+    parent_name = str(basket.get("parent", "") or "Root basket")
+    child_names = basket.get("children", [])
+    child_summary = ", ".join(child_names[:4]) if isinstance(child_names, list) and child_names else "No child baskets"
+    st.markdown(
+        f"""
+<div style="
+  border:1px solid #D9E7F1;
+  border-radius:16px;
+  padding:1rem 1.05rem;
+  background:linear-gradient(160deg, rgba(255,255,255,0.96) 0%, rgba(236,244,255,0.96) 100%);
+  box-shadow:0 10px 24px rgba(15,39,71,0.06);
+">
+  <div style="font-size:0.76rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#5F7694;">
+    Thematic Lens
+  </div>
+  <div style="margin-top:0.28rem;font-size:1.2rem;font-weight:800;color:#123159;">
+    {html_escape(str(basket_name))}
+  </div>
+  <div style="margin-top:0.2rem;color:#496685;font-size:0.84rem;">
+    {html_escape(str(basket.get("tier_label", "")))} | Layer {html_escape(str(basket.get("value_chain_layer", "n/a")))} | Parent: {html_escape(parent_name)}
+  </div>
+  <div style="margin-top:0.75rem;color:#334E68;font-size:0.92rem;line-height:1.45;">
+    {html_escape(description)}
+  </div>
+  <div style="margin-top:0.75rem;padding:0.72rem;border-radius:12px;background:rgba(18,49,89,0.05);color:#29415D;font-size:0.88rem;line-height:1.45;">
+    {html_escape(narrative or child_summary)}
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_thematics_basket_table(
+    basket_metrics_df: pd.DataFrame,
+    catalog: dict[str, object],
+) -> None:
+    if basket_metrics_df.empty:
+        st.info("No basket metrics available for the selected dates.")
+        return
+
+    items = catalog.get("items", {})
+    roots = catalog.get("roots", [])
+    if not isinstance(items, dict) or not isinstance(roots, list):
+        st.info("No thematic catalog could be built.")
+        return
+
+    state_prefix = "thematics_impl"
+    expanded_key = f"{state_prefix}_expanded_parents"
+    selected_key = f"{state_prefix}_selected_basket"
+    focus_key = f"{state_prefix}_focus_basket"
+    expanded_parents = set(st.session_state.get(expanded_key, []))
+    selected_basket = st.session_state.get(selected_key)
+
+    header_cols = st.columns([0.55, 2.75, 0.75, 0.8, 0.8, 0.8, 0.8, 0.9, 0.95, 0.95, 0.95, 1.05])
+    header_labels = [
+        "",
+        "Name",
+        "Beta",
+        "1W",
+        "1M",
+        "3M",
+        "YTD",
+        "Technical",
+        "RS Breadth",
+        "Rel Vol Breadth",
+        "Fundamental",
+        "Fund. Momentum",
+    ]
+    for col, label in zip(header_cols, header_labels):
+        with col:
+            st.markdown(f"**{label}**")
+
+    metrics_by_name = basket_metrics_df.set_index("name").to_dict(orient="index")
+    visible_rows: list[str] = []
+    for root_name in roots:
+        visible_rows.append(root_name)
+        root_item = items.get(root_name, {})
+        if root_name in expanded_parents:
+            for child_name in root_item.get("children", []):
+                visible_rows.append(child_name)
+
+    for basket_name in visible_rows:
+        row = metrics_by_name.get(basket_name, {})
+        basket = items.get(basket_name, {})
+        is_child = bool(basket.get("parent"))
+        checkbox_state_key = f"{state_prefix}_check_{basket_name}"
+        is_selected = selected_basket == basket_name
+        st.session_state[checkbox_state_key] = is_selected
+        row_cols = st.columns([0.55, 2.75, 0.75, 0.8, 0.8, 0.8, 0.8, 0.9, 0.95, 0.95, 0.95, 1.05])
+        with row_cols[0]:
+            checked = st.checkbox(
+                "",
+                key=checkbox_state_key,
+                help=f"Show companies for {basket_name}",
+            )
+            if checked != is_selected:
+                st.session_state[selected_key] = basket_name if checked else None
+                st.session_state[focus_key] = basket_name
+                st.rerun()
+        with row_cols[1]:
+            if basket.get("is_parent"):
+                toggle_label = ("▾ " if basket_name in expanded_parents else "▸ ") + basket_name
+                if st.button(toggle_label, key=f"{state_prefix}_toggle_{basket_name}", use_container_width=True):
+                    if basket_name in expanded_parents:
+                        expanded_parents.remove(basket_name)
+                    else:
+                        expanded_parents.add(basket_name)
+                    st.session_state[expanded_key] = sorted(expanded_parents)
+                    st.session_state[focus_key] = basket_name
+                    st.rerun()
+            else:
+                font_size = "0.9rem" if is_child else "0.98rem"
+                padding_left = "1.4rem" if is_child else "0rem"
+                color = "#5C708A" if is_child else "#123159"
+                st.markdown(
+                    f"<div style='padding:0.35rem 0 0.2rem {padding_left}; font-size:{font_size}; color:{color}; font-weight:600;'>{html_escape(basket_name)}</div>",
+                    unsafe_allow_html=True,
+                )
+        values = [
+            _format_numeric_value(row.get("beta")),
+            _format_percent_value(row.get("1w_perf")),
+            _format_percent_value(row.get("1m_perf")),
+            _format_percent_value(row.get("3m_perf")),
+            _format_percent_value(row.get("ytd_perf")),
+            _render_score_with_symbol(row.get("technical_scoring"), str(row.get("technical_trend_symbol", ""))),
+            _format_percent_value(row.get("rel_strength_breadth")),
+            _format_percent_value(row.get("rel_volume_breadth")),
+            _render_score_with_symbol(row.get("fundamental_scoring"), str(row.get("fundamental_trend_symbol", ""))),
+            _render_score_with_symbol(
+                row.get("fundamental_momentum_scoring"),
+                str(row.get("fundamental_momentum_trend_symbol", "")),
+            ),
+        ]
+        for col, value in zip(row_cols[2:], values):
+            with col:
+                st.markdown(
+                    f"<div style='padding-top:0.35rem; text-align:center; color:#29415D; font-size:0.9rem;'>{html_escape(str(value))}</div>",
+                    unsafe_allow_html=True,
+                )
+
+
+def render_thematics_tab(config: ReportConfig) -> None:
     render_page_intro(
         "Thematics",
-        "Thematic views and checks will land here as the next workspace is built.",
+        "Hierarchy-aware thematic baskets with basket metrics, narratives, and drill-down company grids.",
         "Equipilot / Thematics",
     )
-    st.info("Thematics is intentionally blank for now.")
+    render_subtab_group_intro(
+        "Thematics sections",
+        "Use the implementation workspace below to explore hierarchical baskets and their underlying companies.",
+    )
+    implementation_tab = st.tabs(["thematics-implementation"])[0]
+    with implementation_tab:
+        reference_date = st.date_input(
+            "Reference EOD date",
+            value=get_default_board_eod(config),
+            key="thematics_reference_eod",
+        )
+        previous_eod = st.date_input(
+            "Previous EOD date (for trend arrows)",
+            value=get_default_previous_board_eod(reference_date),
+            key="thematics_previous_eod",
+        )
+        warnings: list[str] = []
+
+        catalog = build_thematics_catalog(str(THEMATICS_CONFIG_PATH)) if THEMATICS_CONFIG_PATH.exists() else {"items": {}, "roots": []}
+        if not THEMATICS_CONFIG_PATH.exists():
+            st.error(f"Missing thematics config: {THEMATICS_CONFIG_PATH}")
+            return
+
+        current_report_df, current_report_path, current_candidates, current_error = load_report_select_for_eod(reference_date)
+        if current_report_path is None:
+            warnings.append(
+                f"Metadata/scoring report is missing for {reference_date.isoformat()}; metadata, beta, scoring, RS, and OBVM fields are shown as N/A."
+            )
+            current_report_df = None
+        elif current_error:
+            warnings.append(
+                f"Current report_select file could not be read ({current_report_path}); metadata, beta, scoring, RS, and OBVM fields are shown as N/A."
+            )
+            current_report_df = None
+
+        previous_report_df, previous_report_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
+        previous_ready = True
+        if previous_report_path is None:
+            warnings.append(
+                f"Previous report_select file is missing for {previous_eod.isoformat()}; trend arrows are hidden."
+            )
+            previous_report_df = None
+            previous_ready = False
+        elif previous_error:
+            warnings.append(
+                f"Previous report_select file could not be read ({previous_report_path}); trend arrows are hidden."
+            )
+            previous_report_df = None
+            previous_ready = False
+
+        prices_cache_file = prices_cache_path("daily", reference_date.year)
+        price_lookup: dict[str, dict[str, list[object]]] = {}
+        if prices_cache_file.exists():
+            try:
+                price_lookup = build_price_history_lookup(str(prices_cache_file))
+            except Exception as exc:  # pragma: no cover - UI feedback
+                warnings.append(f"Daily prices cache could not be read ({prices_cache_file}): {exc}")
+        else:
+            warnings.append(
+                f"Daily prices cache is missing for {reference_date.year}; price performance fields are shown as N/A."
+            )
+
+        basket_metrics_df, anchor_missing = _build_thematics_basket_metrics(
+            catalog,
+            current_report_df,
+            previous_report_df if previous_ready else None,
+            price_lookup,
+            reference_date,
+        )
+        if anchor_missing:
+            warnings.append(
+                f"Some tickers do not have an exact daily price for {reference_date.isoformat()}; affected 1W/1M/3M/YTD values are shown as N/A."
+            )
+        if current_report_df is not None and "beta" not in current_report_df.columns:
+            warnings.append(
+                "The selected report_select file does not contain `beta`; basket and company beta values are shown as N/A until the report cache is regenerated with the updated schema."
+            )
+
+        chips = [f"Reference EOD: {reference_date.isoformat()}"]
+        if current_report_path is not None:
+            chips.append(f"Current report: {current_report_path.name}")
+        else:
+            chips.append(f"Expected report: {current_candidates[0].name}")
+        if previous_ready and previous_report_path is not None:
+            chips.append(f"Previous report: {previous_report_path.name}")
+        else:
+            chips.append(f"Previous EOD: {previous_eod.isoformat()} (trend off)")
+        if prices_cache_file.exists():
+            chips.append(f"Prices cache: {prices_cache_file.name}")
+        render_chip_row(chips)
+
+        for warning_message in dict.fromkeys(warnings):
+            st.warning(warning_message)
+
+        overview_col, context_col = st.columns([3.5, 1.7])
+        with overview_col:
+            _render_thematics_basket_table(basket_metrics_df, catalog)
+        with context_col:
+            _render_thematics_context_card(catalog, st.session_state.get("thematics_impl_focus_basket"))
+
+        selected_basket = st.session_state.get("thematics_impl_selected_basket")
+        if selected_basket:
+            company_universe, company_anchor_missing = _build_thematics_company_universe(
+                str(selected_basket),
+                catalog,
+                current_report_df,
+                price_lookup,
+                reference_date,
+            )
+            if company_anchor_missing:
+                st.warning(
+                    f"Some companies in {selected_basket} do not have an exact anchor close for {reference_date.isoformat()}; affected rows show N/A performance."
+                )
+            if previous_ready and previous_report_df is not None and not company_universe.empty:
+                company_universe = _annotate_company_score_trends(company_universe, previous_report_df, threshold=5.0)
+            filter_signature = (
+                reference_date.isoformat(),
+                previous_eod.isoformat(),
+                str(selected_basket),
+                "trend_on" if previous_ready and previous_report_df is not None else "trend_off",
+            )
+            _sync_drilldown_filter_defaults(
+                "thematics",
+                filter_signature,
+                default_thematics=[],
+                default_sectors=[],
+                default_industries=[],
+                default_fund_range=(50.0, 100.0),
+                default_tech_range=(60.0, 100.0),
+                default_fund_momentum_range=(60.0, 100.0),
+                default_tech_trend_dir="All",
+                default_rel_strength="All",
+                default_rel_volume="All",
+                default_ai_revenue_exposure="All",
+                default_ai_disruption_risk="All",
+                default_beta_range=(0.0, 5.0),
+            )
+            st.markdown("---")
+            st.caption(f"Companies in thematic basket: {selected_basket}")
+            filtered_companies = render_company_drilldown_filters(
+                company_universe,
+                prefix="thematics",
+                ticker_label="Ticker filter (Thematics grid)",
+                include_fundamental_momentum_filter=True,
+                include_technical_trend_filter=bool(previous_ready and previous_report_df is not None),
+                include_thematic_filter=True,
+                include_rel_strength_filter=True,
+                include_rel_volume_filter=True,
+                include_ai_exposure_filters=True,
+                include_beta_filter=True,
+            )
+            st.caption(f"Companies after filters: {len(filtered_companies)}")
+            thematic_display = format_thematics_company_display(filtered_companies)
+            if thematic_display.empty:
+                st.info("No companies matched the current thematic filters.")
+            else:
+                display_height = max(260, 72 + len(thematic_display) * 36)
+                st.dataframe(thematic_display, use_container_width=True, height=display_height, hide_index=True)
+            if st.button("Hide thematic company list", key="thematics_hide_company_list"):
+                st.session_state["thematics_impl_selected_basket"] = None
+                st.rerun()
 
 def render_quadrants(default_anchor: date) -> None:
     render_page_intro(
@@ -4721,6 +6297,7 @@ def main() -> None:
     apply_theme_styles()
     force_sync = st.session_state.pop("force_sync", False)
     sync_editors(force=force_sync)
+    ensure_api_state()
 
     try:
         config = load_report_config(CONFIG_PATH)
@@ -4730,7 +6307,7 @@ def main() -> None:
 
     render_header()
 
-    home_tab, indices_tab, sector_tab, thematics_tab, trade_ideas_tab, quadrants_tab = st.tabs(
+    home_tab, indices_tab, sector_tab, thematics_tab, trade_ideas_tab, quadrants_tab, api_tab = st.tabs(
         [
             "Home",
             "Indices",
@@ -4738,6 +6315,7 @@ def main() -> None:
             "Thematics",
             "Trade Ideas",
             "Quadrants",
+            "API",
         ]
     )
     with home_tab:
@@ -4747,12 +6325,14 @@ def main() -> None:
     with sector_tab:
         render_sector_tab(config)
     with thematics_tab:
-        render_thematics_tab()
+        render_thematics_tab(config)
     with trade_ideas_tab:
         render_trade_ideas(config)
     with quadrants_tab:
         default_anchor = config.eod_as_of_date or config.report_date
         render_quadrants(default_anchor)
+    with api_tab:
+        render_api_tab()
 
     st.markdown("---")
     st.markdown(
