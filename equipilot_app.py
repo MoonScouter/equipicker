@@ -6047,8 +6047,10 @@ def _handle_thematics_basket_checkbox_change(state_prefix: str, basket_name: str
 def _render_thematics_basket_table(
     basket_metrics_df: pd.DataFrame,
     catalog: dict[str, object],
+    *,
+    view_mode: str = "all",
 ) -> None:
-    _render_thematics_basket_table_v2(basket_metrics_df, catalog)
+    _render_thematics_basket_table_v2(basket_metrics_df, catalog, view_mode=view_mode)
     return
     if basket_metrics_df.empty:
         st.info("No basket metrics available for the selected dates.")
@@ -6304,6 +6306,157 @@ def _ordered_thematics_names(catalog: dict[str, object]) -> list[str]:
     for root_name in roots:
         visit(str(root_name))
     return ordered_names
+
+
+THEMATICS_VIEW_MODES: tuple[tuple[str, str], ...] = (
+    ("all", "All thematics"),
+    ("ai_vs_rest", "AI vs Rest"),
+    ("ai_layers_vs_rest", "AI layers vs Rest"),
+    ("ai_sub_layers_vs_rest", "AI sub-layers vs Rest"),
+    ("ai_layers", "AI layers"),
+    ("ai_sub_layers", "AI sub-layers"),
+)
+
+
+def _thematics_basket_lineage(catalog: dict[str, object], basket_name: str) -> list[str]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict) or basket_name not in items:
+        return []
+
+    lineage: list[str] = []
+    current_name = basket_name
+    seen: set[str] = set()
+    while current_name in items and current_name not in seen:
+        seen.add(current_name)
+        lineage.append(current_name)
+        basket = items.get(current_name, {})
+        if not isinstance(basket, dict):
+            break
+        parent_name = str(basket.get("parent", "") or "")
+        if not parent_name:
+            break
+        current_name = parent_name
+    return lineage
+
+
+def _classify_thematics_basket_for_view(
+    catalog: dict[str, object],
+    basket_name: str,
+    meta_row: Optional[pd.Series] = None,
+) -> str:
+    if basket_name == "AI":
+        return "ai_super_parent"
+
+    depth = int(meta_row.get("depth", 0) or 0) if meta_row is not None else 0
+    if meta_row is not None and bool(meta_row.get("is_ai_super_parent", False)):
+        return "ai_super_parent"
+    if meta_row is not None and bool(meta_row.get("is_ai_group_child", False)) and depth == 1:
+        return "ai_layer"
+
+    lineage = _thematics_basket_lineage(catalog, basket_name)
+    if lineage and lineage[-1] == "AI":
+        if depth == 1:
+            return "ai_layer"
+        if depth > 1:
+            return "ai_sub_layer"
+
+    if depth == 0 and basket_name != "AI":
+        return "non_ai_root"
+    return "other"
+
+
+def _thematics_view_mode_matches(view_mode: str, basket_class: str) -> bool:
+    if view_mode == "all":
+        return True
+    if view_mode == "ai_vs_rest":
+        return basket_class in {"ai_super_parent", "non_ai_root"}
+    if view_mode == "ai_layers_vs_rest":
+        return basket_class in {"ai_layer", "non_ai_root"}
+    if view_mode == "ai_sub_layers_vs_rest":
+        return basket_class in {"ai_sub_layer", "non_ai_root"}
+    if view_mode == "ai_layers":
+        return basket_class == "ai_layer"
+    if view_mode == "ai_sub_layers":
+        return basket_class == "ai_sub_layer"
+    return True
+
+
+def _filter_thematics_basket_table_for_view(
+    display_df: pd.DataFrame,
+    meta_df: pd.DataFrame,
+    catalog: dict[str, object],
+    view_mode: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if display_df.empty or meta_df.empty or view_mode == "all":
+        return display_df, meta_df
+
+    keep_indices: list[int] = []
+    for row_index in range(len(meta_df)):
+        meta_row = meta_df.iloc[row_index]
+        basket_name = str(meta_row.get("basket_name", ""))
+        basket_class = _classify_thematics_basket_for_view(catalog, basket_name, meta_row)
+        if _thematics_view_mode_matches(view_mode, basket_class):
+            keep_indices.append(row_index)
+
+    if not keep_indices:
+        return display_df.iloc[0:0].copy(), meta_df.iloc[0:0].copy()
+
+    return display_df.iloc[keep_indices].reset_index(drop=True), meta_df.iloc[keep_indices].reset_index(drop=True)
+
+
+def _normalize_thematics_selected_basket(
+    selected_basket: Optional[str],
+    visible_baskets: set[str],
+) -> Optional[str]:
+    if selected_basket and selected_basket in visible_baskets:
+        return selected_basket
+    return None
+
+
+def _render_thematics_view_mode_controls(state_prefix: str) -> str:
+    view_mode_key = f"{state_prefix}_view_mode"
+    allowed_modes = {mode for mode, _ in THEMATICS_VIEW_MODES}
+    current_mode = str(st.session_state.get(view_mode_key, "all") or "all")
+    if current_mode not in allowed_modes:
+        current_mode = "all"
+        st.session_state[view_mode_key] = current_mode
+
+    theme_styles = {
+        True: ("#123159", "#FFFFFF", "#123159"),
+        False: ("#F4F8FC", "#123159", "#D0DDEB"),
+    }
+    css_rules: list[str] = []
+    button_layout = [1.0, 1.0, 1.15, 1.25, 1.0, 1.0]
+    button_cols = st.columns(button_layout)
+    for (mode, label), col in zip(THEMATICS_VIEW_MODES, button_cols):
+        is_active = mode == current_mode
+        bg_color, text_color, border_color = theme_styles[is_active]
+        button_key = f"{state_prefix}_view_{mode}"
+        css_rules.append(
+            f"""
+div.st-key-{button_key} button {{
+  background-color: {bg_color} !important;
+  color: {text_color} !important;
+  border: 1px solid {border_color} !important;
+  min-height: 38px !important;
+  padding: 0.18rem 0.45rem !important;
+  font-size: 0.82rem !important;
+  font-weight: 700 !important;
+  line-height: 1.08 !important;
+}}
+div.st-key-{button_key} button p {{
+  color: {text_color} !important;
+  font-size: 0.82rem !important;
+  font-weight: 700 !important;
+}}
+            """
+        )
+        with col:
+            if st.button(label, key=button_key, use_container_width=True):
+                st.session_state[view_mode_key] = mode
+                st.rerun()
+    st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
+    return current_mode
 
 
 def _build_thematics_basket_table_frame(
@@ -6591,13 +6744,28 @@ def _build_thematics_company_styler(
 def _render_thematics_basket_table_v2(
     basket_metrics_df: pd.DataFrame,
     catalog: dict[str, object],
+    *,
+    view_mode: str = "all",
 ) -> None:
     display_df, meta_df = _build_thematics_basket_table_frame(basket_metrics_df, catalog)
     if display_df.empty or meta_df.empty:
         st.info("No basket metrics available for the selected dates.")
         return
 
+    display_df, meta_df = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, view_mode)
+    if display_df.empty or meta_df.empty:
+        st.info("No thematic baskets match the selected AI view filter.")
+        return
+
     selected_basket = st.session_state.get("thematics_impl_selected_basket")
+    visible_baskets = set(meta_df.get("basket_name", pd.Series(dtype=object)).astype(str).tolist())
+    normalized_selected_basket = _normalize_thematics_selected_basket(
+        str(selected_basket) if selected_basket else None,
+        visible_baskets,
+    )
+    if normalized_selected_basket != selected_basket:
+        st.session_state["thematics_impl_selected_basket"] = normalized_selected_basket
+        selected_basket = normalized_selected_basket
     styler = _build_thematics_hierarchy_styler(
         display_df,
         meta_df,
@@ -6800,7 +6968,8 @@ def render_thematics_tab(config: ReportConfig) -> None:
         for warning_message in dict.fromkeys(warnings):
             st.warning(warning_message)
 
-        _render_thematics_basket_table(basket_metrics_df, catalog)
+        view_mode = _render_thematics_view_mode_controls("thematics_impl")
+        _render_thematics_basket_table(basket_metrics_df, catalog, view_mode=view_mode)
 
         selected_basket = st.session_state.get("thematics_impl_selected_basket")
         if selected_basket:
