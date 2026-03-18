@@ -2733,7 +2733,6 @@ def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
         st.session_state.get(f"{prefix}_drilldown_filter_default_thematic", [])
     )
     st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
-    st.session_state[f"{prefix}_drilldown_filter_cap"] = []
     st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = "All"
     st.session_state[f"{prefix}_drilldown_filter_rel_volume"] = "All"
     st.session_state[f"{prefix}_drilldown_filter_ai_revenue_exposure"] = "All"
@@ -2768,6 +2767,7 @@ def _sync_drilldown_filter_defaults(
     default_sectors: list[str],
     default_industries: list[str],
     default_thematics: Optional[list[str]] = None,
+    default_cap_buckets: Optional[list[str]] = None,
     default_fund_range: tuple[float, float] = (0.0, 100.0),
     default_tech_range: tuple[float, float] = (0.0, 100.0),
     default_fund_momentum_range: tuple[float, float] = (0.0, 100.0),
@@ -2782,9 +2782,11 @@ def _sync_drilldown_filter_defaults(
     if st.session_state.get(signature_key) == signature:
         return
     default_thematics_list = list(default_thematics or [])
+    default_cap_list = list(default_cap_buckets or [])
     st.session_state[f"{prefix}_drilldown_filter_default_thematic"] = default_thematics_list
     st.session_state[f"{prefix}_drilldown_filter_default_sector"] = list(default_sectors)
     st.session_state[f"{prefix}_drilldown_filter_default_industry"] = list(default_industries)
+    st.session_state[f"{prefix}_drilldown_filter_default_cap"] = default_cap_list
     st.session_state[f"{prefix}_drilldown_filter_default_fund_range"] = tuple(default_fund_range)
     st.session_state[f"{prefix}_drilldown_filter_default_tech_range"] = tuple(default_tech_range)
     st.session_state[f"{prefix}_drilldown_filter_default_fund_momentum_range"] = tuple(default_fund_momentum_range)
@@ -2797,7 +2799,7 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_thematic"] = default_thematics_list
     st.session_state[f"{prefix}_drilldown_filter_sector"] = list(default_sectors)
     st.session_state[f"{prefix}_drilldown_filter_industry"] = list(default_industries)
-    st.session_state[f"{prefix}_drilldown_filter_cap"] = []
+    st.session_state[f"{prefix}_drilldown_filter_cap"] = default_cap_list
     st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(default_fund_range)
     st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(default_tech_range)
     st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(default_fund_momentum_range)
@@ -2910,6 +2912,8 @@ def render_company_drilldown_filters(
     default_ai_disruption_risk_key = f"{prefix}_drilldown_filter_default_ai_disruption_risk"
     default_beta_range_key = f"{prefix}_drilldown_filter_default_beta_range"
     active_preset_key = f"{prefix}_drilldown_filter_active_preset"
+    preferred_cap_default = ["Large", "Mega"]
+    cap_initialized_key = f"{prefix}_drilldown_filter_cap_initialized"
 
     # Streamlit forbids changing widget-bound session keys after widget instantiation.
     # Apply reset defaults at the top of a rerun before creating widgets.
@@ -2917,7 +2921,7 @@ def render_company_drilldown_filters(
         st.session_state[thematic_key] = list(st.session_state.get(default_thematic_key, []))
         st.session_state[sector_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
         st.session_state[industry_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
-        st.session_state[cap_key] = []
+        st.session_state[cap_key] = list(preferred_cap_default)
         st.session_state[fund_range_key] = tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0)))
         st.session_state[tech_range_key] = tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0)))
         st.session_state[fund_momentum_range_key] = tuple(
@@ -2930,6 +2934,7 @@ def render_company_drilldown_filters(
         st.session_state[ai_disruption_risk_key] = st.session_state.get(default_ai_disruption_risk_key, "All")
         st.session_state[beta_range_key] = tuple(st.session_state.get(default_beta_range_key, (0.0, 5.0)))
         st.session_state[ticker_key] = ""
+        st.session_state[cap_initialized_key] = True
 
     st.session_state.setdefault(
         thematic_key, list(st.session_state.get(default_thematic_key, []))
@@ -2940,7 +2945,7 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(
         industry_key, list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
     )
-    st.session_state.setdefault(cap_key, [])
+    st.session_state.setdefault(cap_key, list(preferred_cap_default))
     st.session_state.setdefault(fund_range_key, tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0))))
     st.session_state.setdefault(tech_range_key, tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0))))
     st.session_state.setdefault(
@@ -2973,6 +2978,9 @@ def render_company_drilldown_filters(
     )
     st.session_state.setdefault(ticker_key, "")
     st.session_state.setdefault(active_preset_key, "")
+    if not st.session_state.get(cap_initialized_key, False):
+        st.session_state[cap_key] = list(preferred_cap_default)
+        st.session_state[cap_initialized_key] = True
 
     show_presets = bool(include_fundamental_momentum_filter and include_technical_trend_filter)
     if show_presets:
@@ -3073,9 +3081,7 @@ div.st-key-{btn_key} button {{
             selected_industries = st.multiselect("Industry filter", options=industry_options, key=industry_key)
         next_top_col += 1
         with filter_cols_top[next_top_col]:
-            available_caps = set(company_df["market_cap_bucket"].dropna().tolist())
-            cap_options = [entry for entry in CAP_BUCKET_ORDER if entry in available_caps]
-            cap_options.extend(sorted(available_caps.difference(cap_options)))
+            cap_options = list(CAP_BUCKET_ORDER)
             selected_caps = st.multiselect("Market cap bucket", options=cap_options, key=cap_key)
 
         middle_layout = [1, 1]
@@ -3285,6 +3291,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Fundamental Score",
                 "Fundamental Momentum",
                 "Technical Score",
+                "Rel Strength",
+                "Rel Volume",
+                "AI Revenue Exposure",
+                "AI Disruption Risk",
             ]
         )
 
@@ -3300,6 +3310,14 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["company"] = sorted_df["ticker"]
     if "fundamental_momentum" not in sorted_df.columns:
         sorted_df["fundamental_momentum"] = np.nan
+    if "rel_strength" not in sorted_df.columns:
+        sorted_df["rel_strength"] = "N/A"
+    if "rel_volume" not in sorted_df.columns:
+        sorted_df["rel_volume"] = "N/A"
+    if "ai_revenue_exposure" not in sorted_df.columns:
+        sorted_df["ai_revenue_exposure"] = "none"
+    if "ai_disruption_risk" not in sorted_df.columns:
+        sorted_df["ai_disruption_risk"] = "none"
 
     display_columns = [
         "ticker",
@@ -3310,6 +3328,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "fundamental_total_score",
         "fundamental_momentum",
         "general_technical_score",
+        "rel_strength",
+        "rel_volume",
+        "ai_revenue_exposure",
+        "ai_disruption_risk",
     ]
     rename_map = {
         "ticker": "Ticker",
@@ -3320,6 +3342,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "fundamental_total_score": "Fundamental Score",
         "fundamental_momentum": "Fundamental Momentum",
         "general_technical_score": "Technical Score",
+        "rel_strength": "Rel Strength",
+        "rel_volume": "Rel Volume",
+        "ai_revenue_exposure": "AI Revenue Exposure",
+        "ai_disruption_risk": "AI Disruption Risk",
     }
 
     display_df = sorted_df[display_columns].rename(columns=rename_map)
@@ -3344,7 +3370,92 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
     )
+    display_df["Rel Strength"] = display_df["Rel Strength"].fillna("N/A")
+    display_df["Rel Volume"] = display_df["Rel Volume"].fillna("N/A")
+    display_df["AI Revenue Exposure"] = display_df["AI Revenue Exposure"].fillna("none")
+    display_df["AI Disruption Risk"] = display_df["AI Disruption Risk"].fillna("none")
     return display_df.reset_index(drop=True)
+
+
+def _style_ai_exposure_value(value: object) -> str:
+    text = str(value).strip().lower()
+    if text == "direct":
+        return "color:#15803D; font-weight:700;"
+    if text == "indirect":
+        return "color:#B45309; font-weight:700;"
+    if text == "none":
+        return "color:#7B8BA0;"
+    return "color:#334E68;"
+
+
+def _style_ai_risk_value(value: object) -> str:
+    text = str(value).strip().lower()
+    if text == "high":
+        return "color:#B42318; font-weight:700;"
+    if text == "medium":
+        return "color:#B45309; font-weight:700;"
+    if text == "low":
+        return "color:#15803D; font-weight:700;"
+    if text == "none":
+        return "color:#7B8BA0;"
+    return "color:#334E68;"
+
+
+def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
+    styler = display_df.style.hide(axis="index")
+    styler = styler.set_table_styles(
+        [
+            {
+                "selector": "th",
+                "props": [
+                    ("background-color", "#F4F8FC"),
+                    ("color", "#173A5E"),
+                    ("font-weight", "800"),
+                    ("text-align", "center"),
+                    ("border-bottom", "1px solid #D9E6F2"),
+                ],
+            },
+            {
+                "selector": "td",
+                "props": [
+                    ("border-bottom", "1px solid #E7EFF7"),
+                    ("vertical-align", "middle"),
+                    ("color", "#334E68"),
+                ],
+            },
+        ],
+        overwrite=False,
+    )
+
+    left_columns = [
+        "Ticker",
+        "Company",
+        "Sector",
+        "Industry",
+        "Rel Strength",
+        "Rel Volume",
+        "AI Revenue Exposure",
+        "AI Disruption Risk",
+    ]
+    centered_columns = [column for column in display_df.columns if column not in left_columns]
+    usable_left_columns = [column for column in left_columns if column in display_df.columns]
+    if usable_left_columns:
+        styler = styler.set_properties(subset=usable_left_columns, **{"text-align": "left"})
+    if centered_columns:
+        styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
+
+    for score_column in ["Fundamental Score", "Fundamental Momentum", "Technical Score"]:
+        if score_column in display_df.columns:
+            styler = styler.applymap(_score_color_css, subset=[score_column])
+    for sign_column in ["Rel Strength", "Rel Volume"]:
+        if sign_column in display_df.columns:
+            styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
+    if "AI Revenue Exposure" in display_df.columns:
+        styler = styler.applymap(_style_ai_exposure_value, subset=["AI Revenue Exposure"])
+    if "AI Disruption Risk" in display_df.columns:
+        styler = styler.applymap(_style_ai_risk_value, subset=["AI Disruption Risk"])
+
+    return styler
 
 
 def apply_trend_symbols_to_table(
@@ -4058,6 +4169,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 filter_signature,
                 default_sectors=default_sectors,
                 default_industries=default_industries,
+                default_cap_buckets=["Large", "Mega"],
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),
@@ -4081,7 +4193,12 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 st.info("No companies found for the selected row.")
             else:
                 details_height = max(220, 72 + len(details_display) * 34)
-                st.dataframe(details_display, use_container_width=True, height=details_height, hide_index=True)
+                st.dataframe(
+                    _build_company_drilldown_styler(details_display),
+                    use_container_width=True,
+                    height=details_height,
+                    hide_index=True,
+                )
             if st.button("Hide company list", key="fundamental_hide_company_list"):
                 _clear_drilldown_selection("fundamental")
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
@@ -4282,6 +4399,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 filter_signature,
                 default_sectors=default_sectors,
                 default_industries=default_industries,
+                default_cap_buckets=["Large", "Mega"],
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),
@@ -4305,7 +4423,12 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 st.info("No companies found for the selected row.")
             else:
                 details_height = max(220, 72 + len(details_display) * 34)
-                st.dataframe(details_display, use_container_width=True, height=details_height, hide_index=True)
+                st.dataframe(
+                    _build_company_drilldown_styler(details_display),
+                    use_container_width=True,
+                    height=details_height,
+                    hide_index=True,
+                )
             if st.button("Hide company list", key="technical_hide_company_list"):
                 _clear_drilldown_selection("technical")
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
@@ -6998,6 +7121,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 default_thematics=[],
                 default_sectors=[],
                 default_industries=[],
+                default_cap_buckets=["Large", "Mega"],
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),

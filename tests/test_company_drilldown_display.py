@@ -11,6 +11,7 @@ from equipilot_app import (
     _build_thematics_basket_metrics,
     _build_thematics_basket_table_frame,
     _build_thematics_company_universe,
+    _build_company_drilldown_styler,
     _filter_thematics_basket_table_for_view,
     _company_filter_presets,
     _compute_company_return_metrics,
@@ -128,6 +129,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Fundamental Score",
                 "Fundamental Momentum",
                 "Technical Score",
+                "Rel Strength",
+                "Rel Volume",
+                "AI Revenue Exposure",
+                "AI Disruption Risk",
             ],
         )
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
@@ -163,10 +168,83 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Fundamental Score",
                 "Fundamental Momentum",
                 "Technical Score",
+                "Rel Strength",
+                "Rel Volume",
+                "AI Revenue Exposure",
+                "AI Disruption Risk",
             ],
         )
         self.assertEqual(rendered.iloc[0]["Company"], "Alpha Inc")
         self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "85.0")
+
+    def test_fundamental_and_technical_display_include_ai_and_signal_fields(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha Inc",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_500_000_000,
+                    "fundamental_total_score": 88.0,
+                    "fundamental_momentum": 77.0,
+                    "general_technical_score": 91.0,
+                    "rel_strength": "Positive",
+                    "rel_volume": "Negative",
+                    "ai_revenue_exposure": "direct",
+                    "ai_disruption_risk": "low",
+                }
+            ]
+        )
+
+        fundamental_rendered = format_company_drilldown_display(company_df, sort_by="fundamental")
+        technical_rendered = format_company_drilldown_display(company_df, sort_by="technical")
+
+        expected_columns = [
+            "Ticker",
+            "Company",
+            "Sector",
+            "Industry",
+            "Market Cap",
+            "Fundamental Score",
+            "Fundamental Momentum",
+            "Technical Score",
+            "Rel Strength",
+            "Rel Volume",
+            "AI Revenue Exposure",
+            "AI Disruption Risk",
+        ]
+        self.assertEqual(fundamental_rendered.columns.tolist(), expected_columns)
+        self.assertEqual(technical_rendered.columns.tolist(), expected_columns)
+        self.assertEqual(fundamental_rendered.iloc[0]["Rel Strength"], "Positive")
+        self.assertEqual(fundamental_rendered.iloc[0]["AI Revenue Exposure"], "direct")
+        self.assertEqual(technical_rendered.iloc[0]["AI Disruption Risk"], "low")
+
+    def test_company_drilldown_styler_applies_score_and_signal_colors(self) -> None:
+        display_df = pd.DataFrame(
+            [
+                {
+                    "Ticker": "AAA.US",
+                    "Company": "Alpha Inc",
+                    "Sector": "Technology",
+                    "Industry": "Software",
+                    "Market Cap": "1.50B",
+                    "Fundamental Score": "88.0",
+                    "Fundamental Momentum": "77.0",
+                    "Technical Score": "91.0",
+                    "Rel Strength": "Positive",
+                    "Rel Volume": "Negative",
+                    "AI Revenue Exposure": "indirect",
+                    "AI Disruption Risk": "medium",
+                }
+            ]
+        )
+
+        html = _build_company_drilldown_styler(display_df).to_html()
+
+        self.assertIn("#15803D", html)
+        self.assertIn("#B42318", html)
+        self.assertIn("#B45309", html)
 
     def test_annotate_company_technical_trend_builds_symbol_and_direction(self) -> None:
         company_df = pd.DataFrame(
