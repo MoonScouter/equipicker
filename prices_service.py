@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable, Literal, Sequence
 import re
 
+import numpy as np
 import pandas as pd
 import requests
 from sqlalchemy import bindparam, text
@@ -13,6 +14,7 @@ from sqlalchemy import bindparam, text
 from equipicker_connect import CACHE_DIR, make_engine, run_query_to_df
 
 PricesFrequency = Literal["daily", "weekly"]
+RSI_PERIOD = 14
 
 PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "ticker",
@@ -22,6 +24,7 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "adjusted_low",
     "rs",
     "obvm",
+    "rsi_14",
 )
 PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS)
 PRICE_TICKER_ENDPOINT = (
@@ -161,7 +164,7 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     date_series = pd.to_datetime(working_df["date"], errors="coerce").dt.date
     working_df["date"] = date_series.map(lambda value: value.isoformat() if pd.notna(value) else None)
 
-    numeric_columns = ["adjusted_close", "adjusted_high", "adjusted_low", "rs", "obvm"]
+    numeric_columns = ["adjusted_close", "adjusted_high", "adjusted_low", "rs", "obvm", "rsi_14"]
     for column in numeric_columns:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
 
@@ -255,6 +258,152 @@ def build_prices_cache_dataframe(
     return _canonicalize_prices_df(merged_df)
 
 
+def compute_wilder_rsi(close_series: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
+    close = pd.to_numeric(close_series, errors="coerce")
+    rsi_values = np.full(len(close), np.nan, dtype=float)
+    if len(close) <= period:
+        return pd.Series(rsi_values, index=close_series.index)
+
+    close_values = close.to_numpy(dtype=float)
+    if np.isnan(close_values).any():
+        return pd.Series(rsi_values, index=close_series.index)
+
+    deltas = np.diff(close_values)
+    gains = np.maximum(deltas, 0.0)
+    losses = np.maximum(-deltas, 0.0)
+
+    avg_gain = gains[:period].mean()
+    avg_loss = losses[:period].mean()
+
+    if avg_loss == 0.0:
+        rsi_values[period] = 100.0 if avg_gain > 0.0 else 50.0
+    else:
+        rs_value = avg_gain / avg_loss
+        rsi_values[period] = 100.0 - (100.0 / (1.0 + rs_value))
+
+    for idx in range(period + 1, len(close_values)):
+        gain = gains[idx - 1]
+        loss = losses[idx - 1]
+        avg_gain = ((period - 1) * avg_gain + gain) / period
+        avg_loss = ((period - 1) * avg_loss + loss) / period
+        if avg_loss == 0.0:
+            rsi_values[idx] = 100.0 if avg_gain > 0.0 else 50.0
+        else:
+            rs_value = avg_gain / avg_loss
+            rsi_values[idx] = 100.0 - (100.0 / (1.0 + rs_value))
+
+    return pd.Series(rsi_values, index=close_series.index)
+
+
+def _build_rsi_seed_history(
+    existing_df: pd.DataFrame,
+    target_df: pd.DataFrame,
+    selected_tickers: Sequence[object],
+    *,
+    period: int = RSI_PERIOD,
+) -> pd.DataFrame:
+    normalized_existing_df = _canonicalize_prices_df(existing_df)
+    normalized_target_df = _canonicalize_prices_df(target_df)
+    normalized_selected_tickers = normalize_price_tickers(selected_tickers)
+    if (
+        normalized_existing_df.empty
+        or normalized_target_df.empty
+        or not normalized_selected_tickers
+    ):
+        return empty_prices_cache_df()
+
+    selected_set = set(normalized_selected_tickers)
+    target_dates = pd.to_datetime(normalized_target_df["date"], errors="coerce")
+    min_target_dates = (
+        normalized_target_df.loc[normalized_target_df["ticker"].isin(selected_set)]
+        .assign(_target_date=target_dates)
+        .dropna(subset=["_target_date"])
+        .groupby("ticker")["_target_date"]
+        .min()
+    )
+    if min_target_dates.empty:
+        return empty_prices_cache_df()
+
+    existing_subset = normalized_existing_df.loc[
+        normalized_existing_df["ticker"].isin(selected_set)
+    ].copy()
+    if existing_subset.empty:
+        return empty_prices_cache_df()
+
+    existing_subset["_existing_date"] = pd.to_datetime(existing_subset["date"], errors="coerce")
+    seed_parts: list[pd.DataFrame] = []
+    for ticker, min_target_date in min_target_dates.items():
+        ticker_history = existing_subset.loc[
+            (existing_subset["ticker"] == ticker)
+            & existing_subset["_existing_date"].notna()
+            & (existing_subset["_existing_date"] < min_target_date)
+        ].copy()
+        if ticker_history.empty:
+            continue
+        seed_parts.append(ticker_history.sort_values("_existing_date").tail(period))
+
+    if not seed_parts:
+        return empty_prices_cache_df()
+
+    combined_seed = pd.concat(seed_parts, ignore_index=True).drop(columns="_existing_date", errors="ignore")
+    return _canonicalize_prices_df(combined_seed)
+
+
+def enrich_prices_with_rsi(
+    target_df: pd.DataFrame,
+    *,
+    selected_tickers: Sequence[object] | None = None,
+    seed_history_df: pd.DataFrame | None = None,
+    period: int = RSI_PERIOD,
+) -> pd.DataFrame:
+    normalized_target_df = _canonicalize_prices_df(target_df)
+    if normalized_target_df.empty:
+        return normalized_target_df
+
+    if selected_tickers is None:
+        impacted_tickers = normalized_target_df["ticker"].dropna().astype(str).unique().tolist()
+    else:
+        impacted_tickers = normalize_price_tickers(selected_tickers)
+    if not impacted_tickers:
+        return normalized_target_df
+
+    impacted_set = set(impacted_tickers)
+    impacted_target_df = normalized_target_df.loc[normalized_target_df["ticker"].isin(impacted_set)].copy()
+    if impacted_target_df.empty:
+        return normalized_target_df
+
+    working_frames = []
+    normalized_seed_history = _canonicalize_prices_df(seed_history_df) if seed_history_df is not None else empty_prices_cache_df()
+    if not normalized_seed_history.empty:
+        working_frames.append(normalized_seed_history.loc[normalized_seed_history["ticker"].isin(impacted_set)])
+    working_frames.append(impacted_target_df)
+    working_df = _canonicalize_prices_df(pd.concat(working_frames, ignore_index=True))
+    if working_df.empty:
+        return normalized_target_df
+
+    working_df["rsi_14"] = np.nan
+    for ticker, group in working_df.groupby("ticker", sort=False):
+        if ticker not in impacted_set:
+            continue
+        rsi_series = compute_wilder_rsi(group["adjusted_close"], period=period)
+        working_df.loc[group.index, "rsi_14"] = rsi_series.to_numpy()
+
+    impacted_rsi_df = working_df.loc[
+        working_df["ticker"].isin(impacted_set),
+        ["ticker", "date", "rsi_14"],
+    ].copy()
+    impacted_rsi_df = impacted_rsi_df.drop_duplicates(subset=["ticker", "date"], keep="last")
+
+    preserved_df = normalized_target_df.loc[~normalized_target_df["ticker"].isin(impacted_set)].copy()
+    updated_impacted_df = impacted_target_df.drop(columns="rsi_14").merge(
+        impacted_rsi_df,
+        on=["ticker", "date"],
+        how="left",
+    )
+    final_df = pd.concat([preserved_df, updated_impacted_df], ignore_index=True)
+    return _canonicalize_prices_df(final_df)
+
+
 def import_prices_cache(
     frequency: PricesFrequency,
     cutoff_date: date,
@@ -276,16 +425,17 @@ def import_prices_cache(
     if not requested_tickers:
         raise ValueError("No tickers available for import.")
 
+    cache_file = prices_cache_path(frequency, resolved_year)
+    existing_df = empty_prices_cache_df()
+    if cache_file.exists():
+        existing_df = load_prices_cache(cache_file)
+
     fetched_df = fetch_prices_history(
         frequency,
         requested_tickers,
         cutoff_date,
         chunk_size=chunk_size,
     )
-    cache_file = prices_cache_path(frequency, resolved_year)
-    existing_df = empty_prices_cache_df()
-    if normalized_scope == "specific" and cache_file.exists():
-        existing_df = load_prices_cache(cache_file)
 
     final_df = build_prices_cache_dataframe(
         existing_df,
@@ -293,6 +443,23 @@ def import_prices_cache(
         scope=normalized_scope,
         selected_tickers=requested_tickers,
         cutoff_date=cutoff_date,
+    )
+    previous_year_seed_df = empty_prices_cache_df()
+    previous_year_cache_file = prices_cache_path(frequency, resolved_year - 1)
+    if previous_year_cache_file.exists():
+        previous_year_seed_df = _build_rsi_seed_history(
+            load_prices_cache(previous_year_cache_file),
+            final_df,
+            requested_tickers,
+        )
+    current_year_seed_df = _build_rsi_seed_history(existing_df, final_df, requested_tickers)
+    seed_history_df = _canonicalize_prices_df(
+        pd.concat([previous_year_seed_df, current_year_seed_df], ignore_index=True)
+    )
+    final_df = enrich_prices_with_rsi(
+        final_df,
+        selected_tickers=requested_tickers,
+        seed_history_df=seed_history_df,
     )
     saved_path = save_prices_cache(final_df, frequency, resolved_year)
     latest_date = None

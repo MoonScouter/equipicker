@@ -5337,6 +5337,9 @@ def render_home_prices_import_subtab() -> None:
         "Prices Import",
         "Import yearly daily or weekly ticker price history used by thematic and market-regime workflows.",
     )
+    st.caption(
+        "Each prices import also recomputes `rsi_14` for that frequency. Specific-ticker imports refresh RSI only for the selected tickers."
+    )
     today_local = date.today()
     cache_year = today_local.year
     default_cutoff_date = date(cache_year - 1, 12, 31)
