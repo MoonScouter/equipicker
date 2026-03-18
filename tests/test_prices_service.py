@@ -8,6 +8,8 @@ import pandas as pd
 
 from prices_service import (
     build_prices_cache_dataframe,
+    compute_wilder_rsi,
+    enrich_prices_with_rsi,
     fetch_prices_history,
     get_price_history_query,
     intersect_ticker_universe,
@@ -188,6 +190,100 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(result["date"].tolist(), ["2026-01-10", "2026-02-10", "2026-03-10", "2026-02-10"])
         self.assertEqual(result.loc[result["date"] == "2026-02-10", "adjusted_close"].tolist(), [111.0, 200.0])
 
+    def test_compute_wilder_rsi_returns_expected_values_for_monotonic_gain_sequence(self) -> None:
+        closes = pd.Series([float(value) for value in range(1, 18)])
+
+        result = compute_wilder_rsi(closes)
+
+        self.assertTrue(result.iloc[:14].isna().all())
+        self.assertEqual(result.iloc[14], 100.0)
+        self.assertEqual(result.iloc[15], 100.0)
+        self.assertEqual(result.iloc[16], 100.0)
+
+    def test_enrich_prices_with_rsi_updates_only_selected_tickers(self) -> None:
+        target_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": f"2026-01-{day:02d}",
+                    "adjusted_close": float(day),
+                    "adjusted_high": float(day) + 1.0,
+                    "adjusted_low": float(day) - 1.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }
+                for day in range(1, 17)
+            ]
+            + [
+                {
+                    "ticker": "MSFT.US",
+                    "date": f"2026-01-{day:02d}",
+                    "adjusted_close": float(200 - day),
+                    "adjusted_high": float(201 - day),
+                    "adjusted_low": float(199 - day),
+                    "rs": 3.0,
+                    "obvm": 4.0,
+                    "rsi_14": 42.0,
+                }
+                for day in range(1, 17)
+            ]
+        )
+
+        result = enrich_prices_with_rsi(target_df, selected_tickers=["AAPL"])
+
+        aapl_rsi = result.loc[result["ticker"] == "AAPL.US", "rsi_14"]
+        msft_rsi = result.loc[result["ticker"] == "MSFT.US", "rsi_14"]
+        self.assertTrue(aapl_rsi.iloc[:14].isna().all())
+        self.assertEqual(aapl_rsi.iloc[14], 100.0)
+        self.assertEqual(aapl_rsi.iloc[15], 100.0)
+        self.assertTrue((msft_rsi == 42.0).all())
+
+    def test_enrich_prices_with_rsi_can_use_seed_history_for_early_rows(self) -> None:
+        seed_history_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": f"2025-12-{day:02d}",
+                    "adjusted_close": float(day),
+                    "adjusted_high": float(day) + 1.0,
+                    "adjusted_low": float(day) - 1.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }
+                for day in range(17, 31)
+            ]
+        )
+        target_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": "2026-01-04",
+                    "adjusted_close": 31.0,
+                    "adjusted_high": 32.0,
+                    "adjusted_low": 30.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                },
+                {
+                    "ticker": "AAPL.US",
+                    "date": "2026-01-05",
+                    "adjusted_close": 32.0,
+                    "adjusted_high": 33.0,
+                    "adjusted_low": 31.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                },
+            ]
+        )
+
+        result = enrich_prices_with_rsi(
+            target_df,
+            selected_tickers=["AAPL"],
+            seed_history_df=seed_history_df,
+        )
+
+        self.assertEqual(result["rsi_14"].tolist(), [100.0, 100.0])
+
     def test_save_and_load_prices_cache_round_trip_jsonl(self) -> None:
         df = pd.DataFrame(
             [{
@@ -198,6 +294,7 @@ class PricesServiceTests(unittest.TestCase):
                 "adjusted_low": 109.0,
                 "rs": 1.5,
                 "obvm": 2.5,
+                "rsi_14": 75.0,
             }]
         )
         with TemporaryDirectory() as tmp_dir:
@@ -208,6 +305,7 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(saved_path.name, "prices_daily_2026.jsonl")
         self.assertEqual(loaded["ticker"].tolist(), ["AAPL.US"])
         self.assertEqual(loaded["date"].tolist(), ["2026-02-10"])
+        self.assertEqual(loaded["rsi_14"].tolist(), [75.0])
 
 
 if __name__ == "__main__":
