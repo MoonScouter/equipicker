@@ -471,7 +471,6 @@
     "ADP",
     "PAYX",
     "PAYC",
-    "IPG",
     "OMC",
     "WBD",
     "NWS",
@@ -482,8 +481,6 @@
     "DBX",
     "BOX",
     "MTCH",
-    "TRVG",
-    "TZOO",
     "TRIP"
   ]
 },
@@ -1205,7 +1202,6 @@
       "ADP": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "medium" },
       "PAYX": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "medium" },
       "PAYC": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "medium" },
-      "IPG": { "ai_revenue_exposure": "none", "ai_disruption_risk": "high" },
       "OMC": { "ai_revenue_exposure": "none", "ai_disruption_risk": "high" },
       "DOCU": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "medium" },
       "DBX": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "medium" },
@@ -1271,8 +1267,6 @@
       "FIS": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "medium" },
       "FI": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "low" },
       "JKHY": { "ai_revenue_exposure": "none", "ai_disruption_risk": "medium" },
-      "TRVG": { "ai_revenue_exposure": "none", "ai_disruption_risk": "high" },
-      "TZOO": { "ai_revenue_exposure": "none", "ai_disruption_risk": "high" },
       "TRIP": { "ai_revenue_exposure": "none", "ai_disruption_risk": "medium" },
       "SPOT": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "low" },
       "NFLX": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
