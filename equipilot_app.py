@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import base64
+import calendar
 import re
 import time
 from bisect import bisect_right
@@ -156,14 +157,99 @@ def _parse_report_select_date(path: Path) -> Optional[date]:
         return None
 
 
-def list_report_select_dates() -> list[date]:
+def list_report_select_dates(data_dir: Path | None = None) -> list[date]:
+    data_dir = data_dir or DATA_DIR
     dates: list[date] = []
     for pattern in ("report_select_*.xlsx", "report_select_*.csv"):
-        for path in DATA_DIR.glob(pattern):
+        for path in data_dir.glob(pattern):
             parsed = _parse_report_select_date(path)
             if parsed:
                 dates.append(parsed)
     return sorted(set(dates))
+
+
+def _report_select_directory_signature(data_dir: Path | None = None) -> int:
+    data_dir = data_dir or DATA_DIR
+    try:
+        return data_dir.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+@st.cache_data(show_spinner=False)
+def _cached_available_report_select_dates(directory_signature: int) -> tuple[date, ...]:
+    _ = directory_signature
+    return tuple(list_report_select_dates())
+
+
+def get_available_report_select_dates() -> tuple[date, ...]:
+    return _cached_available_report_select_dates(_report_select_directory_signature())
+
+
+def _ordinal_day_number(day_number: int) -> str:
+    if 10 <= day_number % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day_number % 10, "th")
+    return f"{day_number}{suffix}"
+
+
+def _report_select_calendar_label_fragments(entry: date) -> tuple[str, ...]:
+    weekday_name = calendar.day_name[entry.weekday()]
+    month_name = calendar.month_name[entry.month]
+    ordinal_day = _ordinal_day_number(entry.day)
+    plain_day = str(entry.day)
+    return (
+        f"{weekday_name}, {month_name} {ordinal_day} {entry.year}",
+        f"{weekday_name}, {month_name} {ordinal_day}, {entry.year}",
+        f"{weekday_name}, {month_name} {plain_day} {entry.year}",
+        f"{weekday_name}, {month_name} {plain_day}, {entry.year}",
+    )
+
+
+def _render_report_select_calendar_highlight_layer() -> None:
+    available_dates = get_available_report_select_dates()
+    if not available_dates:
+        return
+
+    rules: list[str] = ["<style>"]
+    for entry in available_dates:
+        selectors = [
+            (
+                '[role="gridcell"][aria-roledescription="button"]'
+                f'[aria-label*={json.dumps(fragment)}]'
+            )
+            for fragment in _report_select_calendar_label_fragments(entry)
+        ]
+        selector_list = ",\n".join(selectors)
+        rules.extend(
+            [
+                f"{selector_list}::after {{",
+                "  border-color: #1D74F5 !important;",
+                "  border-width: 2px !important;",
+                "  border-radius: 999px !important;",
+                "  box-shadow: 0 0 0 1px rgba(29, 116, 245, 0.2) !important;",
+                "}",
+                f"{selector_list} > div {{",
+                "  color: #1D4ED8 !important;",
+                "  font-weight: 600 !important;",
+                "}",
+            ]
+        )
+    rules.extend(
+        [
+            '[role="gridcell"][aria-roledescription="button"][aria-selected="true"]::after {',
+            "  border-width: 2px !important;",
+            "}",
+            "</style>",
+        ]
+    )
+    st.markdown("\n".join(rules), unsafe_allow_html=True)
+
+
+def render_report_select_date_input(*args, **kwargs):
+    _render_report_select_calendar_highlight_layer()
+    return st.date_input(*args, **kwargs)
 
 
 def resolve_report_select_path(date_value: date) -> Tuple[Optional[Path], Tuple[Path, Path]]:
@@ -1940,6 +2026,8 @@ def render_page_intro(title: str, subtitle: str, breadcrumb: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+    if get_available_report_select_dates():
+        st.caption("Blue ring in the calendar means a `report_select` file exists for that date.")
 
 
 def render_kpi_card(label: str, value: str, note: str = "", tone: str = "neutral") -> None:
@@ -2061,6 +2149,7 @@ def run_report_select_export(anchor_date: date, run_sql: bool) -> None:
                 placeholder_key="home_log_placeholder",
             )
             st.success(f"Generated report_select cache: {cache_file}")
+        _cached_available_report_select_dates.clear()
         st.caption(f"Rows available: {loaded_rows}")
     finally:
         if stdout_buffer.getvalue():
@@ -2079,7 +2168,7 @@ def run_report_select_export(anchor_date: date, run_sql: bool) -> None:
 
 
 def get_default_board_eod(config: ReportConfig) -> date:
-    available_dates = list_report_select_dates()
+    available_dates = get_available_report_select_dates()
     if config.eod_as_of_date:
         selected, _ = resolve_report_select_path(config.eod_as_of_date)
         if selected is not None:
@@ -2090,7 +2179,7 @@ def get_default_board_eod(config: ReportConfig) -> date:
 
 
 def get_default_previous_board_eod(current_eod: date) -> date:
-    previous_dates = [entry for entry in list_report_select_dates() if entry < current_eod]
+    previous_dates = [entry for entry in get_available_report_select_dates() if entry < current_eod]
     if previous_dates:
         return previous_dates[-1]
     return current_eod - timedelta(days=30)
@@ -3906,7 +3995,7 @@ def render_sector_pulse_board(config: ReportConfig) -> None:
         "Sector breadth, monthly variation, and signal parity with PDF logic.",
         "Equipilot / Sector Pulse",
     )
-    selected_eod = st.date_input(
+    selected_eod = render_report_select_date_input(
         "EOD date",
         value=get_default_board_eod(config),
         key="sector_pulse_eod",
@@ -3959,8 +4048,8 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         "Equipilot / Fundamental Scoring",
     )
     default_eod = get_default_board_eod(config)
-    selected_eod = st.date_input("EOD date", value=default_eod, key="fundamental_scoring_eod")
-    previous_eod = st.date_input(
+    selected_eod = render_report_select_date_input("EOD date", value=default_eod, key="fundamental_scoring_eod")
+    previous_eod = render_report_select_date_input(
         "EOD date (previous)",
         value=get_default_previous_board_eod(selected_eod),
         key="fundamental_scoring_prev_eod",
@@ -4213,8 +4302,8 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         "Equipilot / Technical Scoring",
     )
     default_eod = get_default_board_eod(config)
-    selected_eod = st.date_input("EOD date", value=default_eod, key="technical_scoring_eod")
-    previous_eod = st.date_input(
+    selected_eod = render_report_select_date_input("EOD date", value=default_eod, key="technical_scoring_eod")
+    previous_eod = render_report_select_date_input(
         "EOD date (previous)",
         value=get_default_previous_board_eod(selected_eod),
         key="technical_scoring_prev_eod",
@@ -4596,7 +4685,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
             "Data source: report_select_<EOD> file",
         ]
     )
-    selected_eod = st.date_input(
+    selected_eod = render_report_select_date_input(
         "EOD date",
         value=get_default_board_eod(config),
         key="trade_ideas_eod",
@@ -4994,7 +5083,7 @@ def render_home_check_subtab(config: ReportConfig) -> None:
         "Check",
         "Select a date and validate whether the main import files are already prepared.",
     )
-    selected_date = st.date_input(
+    selected_date = render_report_select_date_input(
         "Check date",
         value=get_default_board_eod(config),
         key="home_check_date",
@@ -5125,7 +5214,7 @@ def render_home_report_excel_import(config: ReportConfig) -> None:
     default_anchor = config.eod_as_of_date or date.fromisoformat(bucharest_today_str())
     controls_col, toggles_col = st.columns([1.15, 1])
     with controls_col:
-        home_anchor_date = st.date_input(
+        home_anchor_date = render_report_select_date_input(
             "Report-select date (EOD anchor)",
             value=default_anchor,
             key="home_report_select_date",
@@ -5136,7 +5225,7 @@ def render_home_report_excel_import(config: ReportConfig) -> None:
             value=False,
             key="home_run_sql_toggle",
         )
-    available_dates = list_report_select_dates()
+    available_dates = get_available_report_select_dates()
     latest_date = available_dates[-1] if available_dates else None
     latest_source, _ = resolve_report_select_path(latest_date) if latest_date else (None, (None, None))
     latest_rows = "n/a"
@@ -5200,7 +5289,7 @@ def render_home_indices_import_subtab() -> None:
     today_local = date.today()
     cache_year = today_local.year
     default_cutoff_date = date(cache_year - 1, 12, 31)
-    cutoff_date = st.date_input(
+    cutoff_date = render_report_select_date_input(
         "SQL start date (exclusive)",
         value=default_cutoff_date,
         key="home_indices_cutoff_date",
@@ -5251,7 +5340,7 @@ def render_home_prices_import_subtab() -> None:
     today_local = date.today()
     cache_year = today_local.year
     default_cutoff_date = date(cache_year - 1, 12, 31)
-    cutoff_date = st.date_input(
+    cutoff_date = render_report_select_date_input(
         "SQL start date (exclusive)",
         value=default_cutoff_date,
         key="home_prices_cutoff_date",
@@ -5385,13 +5474,13 @@ def render_indices_tab() -> None:
 
     date_col_1, date_col_2 = st.columns(2)
     with date_col_1:
-        selected_date_1 = st.date_input(
+        selected_date_1 = render_report_select_date_input(
             "Date 1",
             value=available_dates[0],
             key="indices_date_1",
         )
     with date_col_2:
-        selected_date_2 = st.date_input(
+        selected_date_2 = render_report_select_date_input(
             "Date 2",
             value=available_dates[-1],
             key="indices_date_2",
@@ -5526,8 +5615,8 @@ def render_monthly_board(config: ReportConfig) -> None:
         "Configure report dates, run generation, and manage prompt/source files.",
         "Equipilot / Sector / Monthly Sector Report",
     )
-    report_date_value = st.date_input("Report date", value=config.report_date, key="monthly_report_date")
-    eod_as_of_value = st.date_input(
+    report_date_value = render_report_select_date_input("Report date", value=config.report_date, key="monthly_report_date")
+    eod_as_of_value = render_report_select_date_input(
         "EOD as-of date (30-day window anchor)",
         value=config.eod_as_of_date or report_date_value,
         key="monthly_eod_as_of_date",
@@ -7008,12 +7097,12 @@ def render_thematics_tab(config: ReportConfig) -> None:
 
     implementation_tab, lens_tab = st.tabs(["thematics-implementation", "thematic-lens"])
     with implementation_tab:
-        reference_date = st.date_input(
+        reference_date = render_report_select_date_input(
             "Reference EOD date",
             value=get_default_board_eod(config),
             key="thematics_reference_eod",
         )
-        previous_eod = st.date_input(
+        previous_eod = render_report_select_date_input(
             "Previous EOD date (for trend arrows)",
             value=get_default_previous_board_eod(reference_date),
             key="thematics_previous_eod",
@@ -7177,7 +7266,7 @@ def render_quadrants(default_anchor: date) -> None:
         clear_quadrant_caches()
         st.rerun()
 
-    available_quadrant_dates = list_report_select_dates()
+    available_quadrant_dates = get_available_report_select_dates()
     fallback_curr = default_anchor
     fallback_prev = fallback_curr - timedelta(days=30)
     default_quadrant_curr = available_quadrant_dates[-1] if available_quadrant_dates else fallback_curr
@@ -7186,12 +7275,12 @@ def render_quadrants(default_anchor: date) -> None:
         if len(available_quadrant_dates) >= 2
         else (available_quadrant_dates[-1] if available_quadrant_dates else fallback_prev)
     )
-    quadrant_date_curr = st.date_input(
+    quadrant_date_curr = render_report_select_date_input(
         "Quadrant date (current)",
         value=default_quadrant_curr,
         key="quadrant_date_curr",
     )
-    quadrant_date_prev = st.date_input(
+    quadrant_date_prev = render_report_select_date_input(
         "Quadrant date (previous)",
         value=default_quadrant_prev,
         key="quadrant_date_prev",
