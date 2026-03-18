@@ -9,9 +9,12 @@ from equipilot_app import (
     TREND_SYMBOL_UP,
     _annotate_company_technical_trend,
     _build_thematics_basket_metrics,
+    _build_thematics_basket_table_frame,
     _build_thematics_company_universe,
+    _filter_thematics_basket_table_for_view,
     _company_filter_presets,
     _compute_company_return_metrics,
+    _normalize_thematics_selected_basket,
     _prepare_company_drilldown_universe,
     apply_trend_symbols_to_table,
     format_thematics_company_display,
@@ -451,5 +454,92 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(row["fundamental_scoring"]), 70.0)
         self.assertAlmostEqual(float(row["rel_strength_breadth"]), 50.0)
         self.assertAlmostEqual(float(row["rel_volume_breadth"]), 50.0)
+
+    def test_thematics_ai_view_modes_filter_expected_rows(self) -> None:
+        catalog = {
+            "items": {
+                "AI": {
+                    "name": "AI",
+                    "parent": "",
+                    "is_parent": True,
+                    "children": ["AI Infrastructure", "AI Silicon"],
+                    "tickers": [],
+                    "is_ai_super_parent": True,
+                    "is_ai_group_child": False,
+                },
+                "AI Infrastructure": {
+                    "name": "AI Infrastructure",
+                    "parent": "AI",
+                    "is_parent": False,
+                    "children": ["AI Infra: Power Generation"],
+                    "tickers": [],
+                    "is_ai_super_parent": False,
+                    "is_ai_group_child": True,
+                },
+                "AI Infra: Power Generation": {
+                    "name": "AI Infra: Power Generation",
+                    "parent": "AI Infrastructure",
+                    "is_parent": False,
+                    "children": [],
+                    "tickers": [],
+                    "is_ai_super_parent": False,
+                    "is_ai_group_child": False,
+                },
+                "AI Silicon": {
+                    "name": "AI Silicon",
+                    "parent": "AI",
+                    "is_parent": False,
+                    "children": [],
+                    "tickers": [],
+                    "is_ai_super_parent": False,
+                    "is_ai_group_child": True,
+                },
+                "Utilities Basket": {
+                    "name": "Utilities Basket",
+                    "parent": "",
+                    "is_parent": False,
+                    "children": [],
+                    "tickers": [],
+                    "is_ai_super_parent": False,
+                    "is_ai_group_child": False,
+                },
+            },
+            "roots": ["AI", "Utilities Basket"],
+        }
+        basket_metrics_df = pd.DataFrame(
+            [
+                {"name": "AI", "beta": 1.0},
+                {"name": "AI Infrastructure", "beta": 1.0},
+                {"name": "AI Infra: Power Generation", "beta": 1.0},
+                {"name": "AI Silicon", "beta": 1.0},
+                {"name": "Utilities Basket", "beta": 1.0},
+            ]
+        )
+
+        display_df, meta_df = _build_thematics_basket_table_frame(basket_metrics_df, catalog)
+
+        all_names = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "all")[0]["Name"].tolist()
+        ai_vs_rest = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "ai_vs_rest")[0]["Name"].tolist()
+        ai_layers_vs_rest = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "ai_layers_vs_rest")[0]["Name"].tolist()
+        ai_sub_layers_vs_rest = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "ai_sub_layers_vs_rest")[0]["Name"].tolist()
+        ai_layers = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "ai_layers")[0]["Name"].tolist()
+        ai_sub_layers = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "ai_sub_layers")[0]["Name"].tolist()
+
+        self.assertEqual(all_names, ["AI", "AI Infrastructure", "AI Infra: Power Generation", "AI Silicon", "Utilities Basket"])
+        self.assertEqual(ai_vs_rest, ["AI", "Utilities Basket"])
+        self.assertEqual(ai_layers_vs_rest, ["AI Infrastructure", "AI Silicon", "Utilities Basket"])
+        self.assertEqual(ai_sub_layers_vs_rest, ["AI Infra: Power Generation", "Utilities Basket"])
+        self.assertEqual(ai_layers, ["AI Infrastructure", "AI Silicon"])
+        self.assertEqual(ai_sub_layers, ["AI Infra: Power Generation"])
+
+    def test_thematics_selected_basket_is_cleared_when_hidden(self) -> None:
+        self.assertEqual(
+            _normalize_thematics_selected_basket("AI Infrastructure", {"AI", "Utilities Basket"}),
+            None,
+        )
+        self.assertEqual(
+            _normalize_thematics_selected_basket("AI Infrastructure", {"AI Infrastructure", "Utilities Basket"}),
+            "AI Infrastructure",
+        )
 if __name__ == "__main__":
     unittest.main()
