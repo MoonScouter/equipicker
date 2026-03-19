@@ -36,18 +36,18 @@ def load_market_methodology_text(path: Path | str | None = None) -> str:
     return methodology_path.read_text(encoding="utf-8")
 
 
+def build_market_cache_key(evaluation_date: date) -> str:
+    return f"eval_{evaluation_date.isoformat()}"
+
+
 def build_market_signature(
     evaluation_date: date,
     rsi_start_date: date,
     month_anchor_date: date,
     week_anchor_date: date,
 ) -> str:
-    return (
-        f"eval_{evaluation_date.isoformat()}__"
-        f"rsi_{rsi_start_date.isoformat()}__"
-        f"m1_{month_anchor_date.isoformat()}__"
-        f"w1_{week_anchor_date.isoformat()}"
-    )
+    del rsi_start_date, month_anchor_date, week_anchor_date
+    return build_market_cache_key(evaluation_date)
 
 
 def market_snapshot_path(signature: str, cache_dir: Path | None = None) -> Path:
@@ -102,6 +102,19 @@ def _ensure_market_cache_dir(cache_dir: Path | None = None) -> Path:
     directory = cache_dir or MARKET_CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def _purge_market_cache_files_for_evaluation_date(evaluation_date: date, cache_dir: Path | None = None) -> None:
+    directory = _ensure_market_cache_dir(cache_dir)
+    date_str = evaluation_date.isoformat()
+    for pattern in (
+        f"market_snapshot_eval_{date_str}*.json",
+        f"stock_rsi_regime_eval_{date_str}*.jsonl",
+        f"setup_readiness_eval_{date_str}*.jsonl",
+    ):
+        for path in directory.glob(pattern):
+            if path.is_file():
+                path.unlink()
 
 
 def market_cache_status(signature: str, cache_dir: Path | None = None) -> dict[str, object]:
@@ -1183,7 +1196,7 @@ def compute_and_save_market_bundle(
     cache_dir: Path | None = None,
 ) -> dict[str, object]:
     directory = _ensure_market_cache_dir(cache_dir)
-    signature = build_market_signature(evaluation_date, rsi_start_date, month_anchor_date, week_anchor_date)
+    signature = build_market_cache_key(evaluation_date)
     status = market_cache_status(signature, directory)
     if not force_recompute and bool(status["ready"]):
         cached = load_market_bundle(signature, directory)
@@ -1207,6 +1220,7 @@ def compute_and_save_market_bundle(
         weekly_prices_df=weekly_prices_df,
         cache_dir=directory,
     )
+    _purge_market_cache_files_for_evaluation_date(evaluation_date, directory)
     paths = save_market_bundle(
         signature=signature,
         stock_rsi_regime_df=computed["stock_rsi_regime_df"],

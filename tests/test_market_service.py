@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 
 from market_service import (
+    build_market_cache_key,
     build_market_signature,
     compute_and_save_market_bundle,
     compute_market_bundle,
@@ -210,7 +211,7 @@ class MarketServiceTests(unittest.TestCase):
         self.assertAlmostEqual(market_rotation, family_scores["sector_rotation_score"].mean(), places=6)
         self.assertIn("leading_family_classifier", bundle["market_snapshot_payload"]["market_summary"])
 
-    def test_compute_and_save_market_bundle_reuses_existing_cache(self) -> None:
+    def test_compute_and_save_market_bundle_reuses_existing_cache_for_same_evaluation_date(self) -> None:
         config = load_market_regime_config()
         sector_families = load_sector_families()
         evaluation_date = date(2026, 3, 22)
@@ -256,6 +257,68 @@ class MarketServiceTests(unittest.TestCase):
                 month_df=month_df,
                 week_df=week_df,
                 evaluation_date=evaluation_date,
+                rsi_start_date=evaluation_date - timedelta(days=120),
+                month_anchor_date=evaluation_date - timedelta(days=45),
+                week_anchor_date=evaluation_date - timedelta(days=10),
+                evaluation_source_path=Path("eval.xlsx"),
+                month_source_path=Path("month.xlsx"),
+                week_source_path=Path("week.xlsx"),
+                config=config,
+                sector_families=sector_families,
+                daily_prices_df=daily_prices_df,
+                weekly_prices_df=weekly_prices_df,
+                cache_dir=cache_dir,
+            )
+
+            status = market_cache_status(build_market_cache_key(evaluation_date), cache_dir)
+
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        self.assertTrue(status["ready"])
+        self.assertEqual(first["signature"], build_market_cache_key(evaluation_date))
+        self.assertEqual(second["signature"], build_market_cache_key(evaluation_date))
+        self.assertEqual(
+            first["market_snapshot_payload"]["market_summary"]["market_regime_score"],
+            second["market_snapshot_payload"]["market_summary"]["market_regime_score"],
+        )
+        self.assertEqual(
+            first["market_snapshot_payload"]["metadata"]["month_anchor_date"],
+            second["market_snapshot_payload"]["metadata"]["month_anchor_date"],
+        )
+
+    def test_force_recompute_removes_older_anchor_specific_cache_variants_for_same_evaluation_date(self) -> None:
+        config = load_market_regime_config()
+        sector_families = load_sector_families()
+        evaluation_date = date(2026, 3, 22)
+        daily_prices_df, weekly_prices_df = _build_price_history(evaluation_date)
+        evaluation_df = _report_df(
+            {"NVDA.US": 110.0, "TSLA.US": 108.0, "JNJ.US": 95.0, "PG.US": 96.0},
+            {"NVDA.US": 88.0, "TSLA.US": 78.0, "JNJ.US": 52.0, "PG.US": 50.0},
+        )
+        month_df = _report_df(
+            {"NVDA.US": 100.0, "TSLA.US": 100.0, "JNJ.US": 97.0, "PG.US": 98.0},
+            {"NVDA.US": 70.0, "TSLA.US": 65.0, "JNJ.US": 55.0, "PG.US": 54.0},
+        )
+        week_df = _report_df(
+            {"NVDA.US": 104.0, "TSLA.US": 103.0, "JNJ.US": 96.0, "PG.US": 97.0},
+            {"NVDA.US": 80.0, "TSLA.US": 72.0, "JNJ.US": 53.0, "PG.US": 52.0},
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            cache_dir = Path(tmp_dir)
+            legacy_files = [
+                cache_dir / "market_snapshot_eval_2026-03-22__rsi_2025-12-22__m1_2026-02-20__w1_2026-03-13.json",
+                cache_dir / "stock_rsi_regime_eval_2026-03-22__rsi_2025-12-22__m1_2026-02-20__w1_2026-03-13.jsonl",
+                cache_dir / "setup_readiness_eval_2026-03-22__rsi_2025-12-22__m1_2026-02-20__w1_2026-03-13.jsonl",
+            ]
+            for path in legacy_files:
+                path.write_text("legacy", encoding="utf-8")
+
+            bundle = compute_and_save_market_bundle(
+                evaluation_df=evaluation_df,
+                month_df=month_df,
+                week_df=week_df,
+                evaluation_date=evaluation_date,
                 rsi_start_date=evaluation_date - timedelta(days=90),
                 month_anchor_date=evaluation_date - timedelta(days=30),
                 week_anchor_date=evaluation_date - timedelta(days=7),
@@ -267,16 +330,19 @@ class MarketServiceTests(unittest.TestCase):
                 daily_prices_df=daily_prices_df,
                 weekly_prices_df=weekly_prices_df,
                 cache_dir=cache_dir,
+                force_recompute=True,
             )
 
-            status = market_cache_status(first["signature"], cache_dir)
+            remaining_files = sorted(path.name for path in cache_dir.iterdir())
 
-        self.assertFalse(first["cached"])
-        self.assertTrue(second["cached"])
-        self.assertTrue(status["ready"])
+        self.assertFalse(bundle["cached"])
         self.assertEqual(
-            first["market_snapshot_payload"]["market_summary"]["market_regime_score"],
-            second["market_snapshot_payload"]["market_summary"]["market_regime_score"],
+            remaining_files,
+            [
+                "market_snapshot_eval_2026-03-22.json",
+                "setup_readiness_eval_2026-03-22.jsonl",
+                "stock_rsi_regime_eval_2026-03-22.jsonl",
+            ],
         )
 
     def test_compute_market_bundle_uses_persistence_from_prior_snapshots(self) -> None:
@@ -323,7 +389,10 @@ class MarketServiceTests(unittest.TestCase):
         self.assertGreater(component_scores["persistence_score"], 0)
         self.assertTrue(component_scores["persistence_values_used"])
 
-    def test_signature_builder_includes_all_anchor_dates(self) -> None:
+    def test_market_cache_key_is_based_on_evaluation_date(self) -> None:
+        self.assertEqual(build_market_cache_key(date(2026, 3, 22)), "eval_2026-03-22")
+
+    def test_signature_builder_collapses_to_evaluation_date_key(self) -> None:
         signature = build_market_signature(
             date(2026, 3, 22),
             date(2025, 12, 22),
@@ -331,7 +400,7 @@ class MarketServiceTests(unittest.TestCase):
             date(2026, 3, 13),
         )
 
-        self.assertEqual(signature, "eval_2026-03-22__rsi_2025-12-22__m1_2026-02-20__w1_2026-03-13")
+        self.assertEqual(signature, "eval_2026-03-22")
 
 
 if __name__ == "__main__":

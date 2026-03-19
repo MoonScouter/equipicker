@@ -69,7 +69,7 @@ from openai_responses_service import (
     save_output_text,
 )
 from market_service import (
-    build_market_signature,
+    build_market_cache_key,
     compute_and_save_market_bundle,
     get_default_market_anchors,
     load_market_bundle,
@@ -114,6 +114,7 @@ TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["f
 SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
 AI_REVENUE_FILTER_OPTIONS = ["All", "direct", "indirect", "none"]
 AI_DISRUPTION_FILTER_OPTIONS = ["All", "high", "medium", "low", "none"]
+MARKET_TREND_THRESHOLD = 3.0
 
 
 def _trend_symbol_for_delta(delta_value: Optional[float], threshold: float) -> str:
@@ -543,6 +544,13 @@ def _format_numeric_value(value: object) -> str:
 
 def _render_score_with_symbol(value: object, symbol: str) -> str:
     formatted = _format_numeric_value(value)
+    if formatted == "N/A" or not symbol:
+        return formatted
+    return f"{formatted} {symbol}"
+
+
+def _render_percent_with_symbol(value: object, symbol: str) -> str:
+    formatted = _format_percent_value(value)
     if formatted == "N/A" or not symbol:
         return formatted
     return f"{formatted} {symbol}"
@@ -3604,6 +3612,102 @@ def apply_trend_symbols_to_table(
     return annotated
 
 
+def _metric_trend_symbol(
+    current_value: object,
+    previous_value: object,
+    *,
+    threshold: float = MARKET_TREND_THRESHOLD,
+) -> str:
+    current_numeric = _parse_number(current_value)
+    previous_numeric = _parse_number(previous_value)
+    if current_numeric is None or previous_numeric is None:
+        return ""
+    return _trend_symbol_for_delta(current_numeric - previous_numeric, threshold)
+
+
+def _build_market_component_rows(
+    component_scores: dict[str, object],
+    breadth: dict[str, object],
+    risk_appetite: dict[str, object],
+    previous_payload: Optional[dict[str, object]],
+) -> pd.DataFrame:
+    previous_component_scores = dict(previous_payload.get("component_scores", {})) if previous_payload else {}
+    previous_breadth = dict(previous_payload.get("breadth", {})) if previous_payload else {}
+    previous_risk_appetite = dict(previous_payload.get("risk_appetite", {})) if previous_payload else {}
+    row_definitions = [
+        (
+            "Market RSI participation composite",
+            component_scores.get("market_rsi_participation_composite_score"),
+            previous_component_scores.get("market_rsi_participation_composite_score"),
+            "numeric",
+        ),
+        (
+            "Risk appetite score",
+            risk_appetite.get("risk_appetite_score"),
+            previous_risk_appetite.get("risk_appetite_score"),
+            "numeric",
+        ),
+        (
+            "Market sector rotation score",
+            component_scores.get("market_sector_rotation_score"),
+            previous_component_scores.get("market_sector_rotation_score"),
+            "numeric",
+        ),
+        (
+            "Component agreement score",
+            component_scores.get("component_agreement_score"),
+            previous_component_scores.get("component_agreement_score"),
+            "numeric",
+        ),
+        (
+            "Distance from neutral score",
+            component_scores.get("distance_from_neutral_score"),
+            previous_component_scores.get("distance_from_neutral_score"),
+            "numeric",
+        ),
+        (
+            "Persistence score",
+            component_scores.get("persistence_score"),
+            previous_component_scores.get("persistence_score"),
+            "numeric",
+        ),
+        (
+            "Market breadth < 40",
+            breadth.get("market_rsi_breadth_pct_lt40"),
+            previous_breadth.get("market_rsi_breadth_pct_lt40"),
+            "percent",
+        ),
+        (
+            "Quality / Defensive count",
+            risk_appetite.get("quality_defensive_count"),
+            previous_risk_appetite.get("quality_defensive_count"),
+            "integer",
+        ),
+        (
+            "Speculative count",
+            risk_appetite.get("speculative_count"),
+            previous_risk_appetite.get("speculative_count"),
+            "integer",
+        ),
+    ]
+
+    rows: list[dict[str, str]] = []
+    for label, current_value, previous_value, value_kind in row_definitions:
+        symbol = _metric_trend_symbol(current_value, previous_value)
+        if value_kind == "percent":
+            display_value = _render_percent_with_symbol(current_value, symbol)
+        elif value_kind == "integer":
+            parsed_value = _parse_number(current_value)
+            if parsed_value is None:
+                display_value = "N/A"
+            else:
+                display_value = f"{int(round(parsed_value))}{f' {symbol}' if symbol else ''}"
+        else:
+            display_value = _render_score_with_symbol(current_value, symbol)
+        rows.append({"Component": label, "Value": display_value})
+    return pd.DataFrame(rows)
+
+
 def build_sector_pulse_display(df: pd.DataFrame) -> pd.DataFrame:
     stats = compute_sector_overview_stats(df)
     if stats.empty:
@@ -5633,6 +5737,15 @@ def render_market_values_subtab(config: ReportConfig) -> None:
         value=defaults["evaluation_date"],
         key="market_eval_date",
     )
+    previous_evaluation_candidates = sorted(entry for entry in available_dates if entry < evaluation_date)
+    previous_evaluation_default = (
+        previous_evaluation_candidates[-1] if previous_evaluation_candidates else evaluation_date
+    )
+    previous_evaluation_date = render_report_select_date_input(
+        "vs prev evaluation date",
+        value=previous_evaluation_default,
+        key="market_prev_eval_date",
+    )
     rsi_start_default = evaluation_date - timedelta(days=int(interval_config.get("rsi_window_days", 90)))
     month_default = resolve_anchor_on_or_before(
         available_dates,
@@ -5658,13 +5771,17 @@ def render_market_values_subtab(config: ReportConfig) -> None:
         key="market_week_anchor_date",
     )
 
-    signature = build_market_signature(evaluation_date, rsi_start_date, month_anchor_date, week_anchor_date)
-    cache_state = market_cache_status(signature)
+    cache_key = build_market_cache_key(evaluation_date)
+    previous_cache_key = build_market_cache_key(previous_evaluation_date)
+    cache_state = market_cache_status(cache_key)
+    previous_cache_state = market_cache_status(previous_cache_key)
     render_chip_row(
         [
-            f"Signature: {signature}",
-            f"Cache: {'ready' if cache_state.get('ready') else 'missing / recompute'}",
+            f"Cache key: {cache_key}",
+            f"Current cache: {'ready' if cache_state.get('ready') else 'missing'}",
+            f"Comparison cache: {'ready' if previous_cache_state.get('ready') else 'missing'}",
             f"Evaluation: {evaluation_date.isoformat()}",
+            f"vs prev: {previous_evaluation_date.isoformat()}",
             f"RSI start: {rsi_start_date.isoformat()}",
             f"1M anchor: {month_anchor_date.isoformat()}",
             f"1W anchor: {week_anchor_date.isoformat()}",
@@ -5675,35 +5792,35 @@ def render_market_values_subtab(config: ReportConfig) -> None:
         compute_button_label,
         use_container_width=False,
         key="market_recompute_button",
-        help="Create or overwrite the market snapshot, stock RSI regime cache, and setup readiness cache for the selected anchor signature.",
+        help="Create or overwrite the market snapshot, stock RSI regime cache, and setup readiness cache for the selected evaluation date.",
     )
-
-    evaluation_df, evaluation_path, evaluation_candidates, evaluation_error = load_report_select_for_eod(evaluation_date)
-    if evaluation_path is None:
-        render_missing_report_select(evaluation_date, evaluation_candidates)
-        return
-    if evaluation_error:
-        st.error(f"Failed reading {evaluation_path}: {evaluation_error}")
-        return
-
-    month_df, month_path, month_candidates, month_error = load_report_select_for_eod(month_anchor_date)
-    if month_path is None:
-        render_missing_report_select(month_anchor_date, month_candidates)
-        return
-    if month_error:
-        st.error(f"Failed reading {month_path}: {month_error}")
-        return
-
-    week_df, week_path, week_candidates, week_error = load_report_select_for_eod(week_anchor_date)
-    if week_path is None:
-        render_missing_report_select(week_anchor_date, week_candidates)
-        return
-    if week_error:
-        st.error(f"Failed reading {week_path}: {week_error}")
-        return
 
     bundle: Optional[dict[str, object]] = None
     if run_market_compute:
+        evaluation_df, evaluation_path, evaluation_candidates, evaluation_error = load_report_select_for_eod(evaluation_date)
+        if evaluation_path is None:
+            render_missing_report_select(evaluation_date, evaluation_candidates)
+            return
+        if evaluation_error:
+            st.error(f"Failed reading {evaluation_path}: {evaluation_error}")
+            return
+
+        month_df, month_path, month_candidates, month_error = load_report_select_for_eod(month_anchor_date)
+        if month_path is None:
+            render_missing_report_select(month_anchor_date, month_candidates)
+            return
+        if month_error:
+            st.error(f"Failed reading {month_path}: {month_error}")
+            return
+
+        week_df, week_path, week_candidates, week_error = load_report_select_for_eod(week_anchor_date)
+        if week_path is None:
+            render_missing_report_select(week_anchor_date, week_candidates)
+            return
+        if week_error:
+            st.error(f"Failed reading {week_path}: {week_error}")
+            return
+
         with st.spinner("Computing Market layer..."):
             bundle = compute_and_save_market_bundle(
                 evaluation_df=evaluation_df,
@@ -5722,14 +5839,15 @@ def render_market_values_subtab(config: ReportConfig) -> None:
             )
     elif cache_state.get("ready"):
         with st.spinner("Loading Market cache..."):
-            bundle = load_market_bundle(signature)
-            bundle["signature"] = signature
+            bundle = load_market_bundle(cache_key)
+            bundle["signature"] = cache_key
             bundle["cached"] = True
     else:
-        st.info("No market cache exists for the selected anchors yet. Click `Compute market caches` to create it.")
+        st.info("No market cache exists for the selected evaluation date yet. Click `Compute market caches` to create it.")
         return
 
     payload = bundle["market_snapshot_payload"]
+    metadata = dict(payload.get("metadata", {}))
     market_summary = payload.get("market_summary", {})
     component_scores = payload.get("component_scores", {})
     breadth = payload.get("breadth", {})
@@ -5739,56 +5857,107 @@ def render_market_values_subtab(config: ReportConfig) -> None:
     paths = bundle.get("paths", {})
     stock_rsi_df = bundle.get("stock_rsi_regime_df", pd.DataFrame())
     setup_df = bundle.get("setup_readiness_df", pd.DataFrame())
-
+    source_files = dict(metadata.get("source_files", {}))
+    source_names = [
+        Path(str(source_files.get("evaluation", ""))).name,
+        Path(str(source_files.get("month_anchor", ""))).name,
+        Path(str(source_files.get("week_anchor", ""))).name,
+    ]
     st.caption(
         f"{'Loaded from cache' if bundle.get('cached') else 'Recomputed and saved'} | "
-        f"Source files: {evaluation_path.name}, {month_path.name}, {week_path.name}"
+        f"Source files: {', '.join(name for name in source_names if name)}"
     )
+    if bundle.get("cached") and any(
+        [
+            str(metadata.get("rsi_start_date")) != rsi_start_date.isoformat(),
+            str(metadata.get("month_anchor_date")) != month_anchor_date.isoformat(),
+            str(metadata.get("week_anchor_date")) != week_anchor_date.isoformat(),
+        ]
+    ):
+        st.info(
+            "The loaded cache for this evaluation date was computed with different anchors. "
+            "Click `Recompute market caches` to overwrite it with the currently selected anchors."
+        )
+
+    previous_payload: Optional[dict[str, object]] = None
+    if previous_evaluation_date == evaluation_date:
+        previous_payload = payload
+    elif previous_cache_state.get("ready"):
+        previous_payload = load_market_bundle(previous_cache_key)["market_snapshot_payload"]
+    else:
+        st.info(
+            f"No comparison cache exists for {previous_evaluation_date.isoformat()}. "
+            "Trend symbols are hidden until that date is computed."
+        )
+
+    previous_market_summary = dict(previous_payload.get("market_summary", {})) if previous_payload else {}
+    previous_breadth = dict(previous_payload.get("breadth", {})) if previous_payload else {}
+    previous_family_scores_df = pd.DataFrame(previous_payload.get("family_scores", [])) if previous_payload else pd.DataFrame()
+    previous_sector_df = pd.DataFrame(previous_payload.get("sector_rows", [])) if previous_payload else pd.DataFrame()
 
     summary_cols = st.columns(4)
     with summary_cols[0]:
         render_kpi_card(
             "Market Regime",
-            _format_numeric_value(market_summary.get("market_regime_score")),
+            _render_score_with_symbol(
+                market_summary.get("market_regime_score"),
+                _metric_trend_symbol(
+                    market_summary.get("market_regime_score"),
+                    previous_market_summary.get("market_regime_score"),
+                ),
+            ),
             str(market_summary.get("market_regime_label") or "N/A"),
             tone="neutral",
         )
     with summary_cols[1]:
         render_kpi_card(
             "Confidence",
-            _format_numeric_value(market_summary.get("market_regime_confidence")),
+            _render_score_with_symbol(
+                market_summary.get("market_regime_confidence"),
+                _metric_trend_symbol(
+                    market_summary.get("market_regime_confidence"),
+                    previous_market_summary.get("market_regime_confidence"),
+                ),
+            ),
             str(market_summary.get("market_regime_status") or "N/A"),
             tone="neutral",
         )
     with summary_cols[2]:
         render_kpi_card(
             "Sector Rotation",
-            _format_numeric_value(market_summary.get("market_sector_rotation_score")),
+            _render_score_with_symbol(
+                market_summary.get("market_sector_rotation_score"),
+                _metric_trend_symbol(
+                    market_summary.get("market_sector_rotation_score"),
+                    previous_market_summary.get("market_sector_rotation_score"),
+                ),
+            ),
             str(market_summary.get("leading_family_classifier") or "N/A"),
             tone="neutral",
         )
     with summary_cols[3]:
         render_kpi_card(
             "Stock RSI Breadth >= 60",
-            _format_percent_value(breadth.get("market_rsi_breadth_pct_60")),
-            f">=75: {_format_percent_value(breadth.get('market_rsi_breadth_pct_75'))}",
+            _render_percent_with_symbol(
+                breadth.get("market_rsi_breadth_pct_60"),
+                _metric_trend_symbol(
+                    breadth.get("market_rsi_breadth_pct_60"),
+                    previous_breadth.get("market_rsi_breadth_pct_60"),
+                ),
+            ),
+            ">=75: "
+            + _render_percent_with_symbol(
+                breadth.get("market_rsi_breadth_pct_75"),
+                _metric_trend_symbol(
+                    breadth.get("market_rsi_breadth_pct_75"),
+                    previous_breadth.get("market_rsi_breadth_pct_75"),
+                ),
+            ),
             tone="neutral",
         )
 
     st.markdown("**Underlying components**")
-    component_rows = pd.DataFrame(
-        [
-            {"Component": "Market RSI participation composite", "Value": component_scores.get("market_rsi_participation_composite_score")},
-            {"Component": "Risk appetite score", "Value": risk_appetite.get("risk_appetite_score")},
-            {"Component": "Market sector rotation score", "Value": component_scores.get("market_sector_rotation_score")},
-            {"Component": "Component agreement score", "Value": component_scores.get("component_agreement_score")},
-            {"Component": "Distance from neutral score", "Value": component_scores.get("distance_from_neutral_score")},
-            {"Component": "Persistence score", "Value": component_scores.get("persistence_score")},
-            {"Component": "Market breadth < 40", "Value": breadth.get("market_rsi_breadth_pct_lt40")},
-            {"Component": "Quality / Defensive count", "Value": risk_appetite.get("quality_defensive_count")},
-            {"Component": "Speculative count", "Value": risk_appetite.get("speculative_count")},
-        ]
-    )
+    component_rows = _build_market_component_rows(component_scores, breadth, risk_appetite, previous_payload)
     st.dataframe(component_rows, width="stretch", hide_index=True)
     if risk_appetite.get("warning"):
         st.warning(str(risk_appetite.get("warning")))
@@ -5804,6 +5973,20 @@ def render_market_values_subtab(config: ReportConfig) -> None:
                 "sector_count": "Sector Count",
             }
         )
+        previous_family_display_df = previous_family_scores_df.rename(
+            columns={
+                "family": "Family",
+                "sector_rotation_score": "Sector Rotation Score",
+                "sector_count": "Sector Count",
+            }
+        )
+        if not previous_family_display_df.empty:
+            display_family_df = apply_trend_symbols_to_table(
+                display_family_df,
+                previous_family_display_df,
+                ["Sector Rotation Score"],
+                threshold=MARKET_TREND_THRESHOLD,
+            )
         st.dataframe(display_family_df, width="stretch", hide_index=True)
 
     st.markdown("**Sector table**")
@@ -5811,6 +5994,24 @@ def render_market_values_subtab(config: ReportConfig) -> None:
         st.info("No sector rows are available for the selected anchors.")
     else:
         sector_display_df = sector_df.rename(
+            columns={
+                "sector": "Sector",
+                "family": "Family",
+                "P_now": "P",
+                "T_now": "T",
+                "dP": "dP",
+                "dT": "dT",
+                "trend_of_change_score": "Trend of Change",
+                "sector_rsi_breadth_pct_60": "RSI Breadth >= 60",
+                "sector_rsi_breadth_pct_75": "RSI Breadth >= 75",
+                "sector_rsi_breadth_pct_lt40": "RSI Breadth < 40",
+                "sector_rsi_participation_composite_score": "RSI Participation Composite",
+                "sector_rotation_score": "Sector Rotation Score",
+                "sector_regime_fit_score": "Sector Regime Fit Score",
+                "sector_regime_fit_flag": "Regime Fit Flag",
+            }
+        )
+        previous_sector_display_df = previous_sector_df.rename(
             columns={
                 "sector": "Sector",
                 "family": "Family",
@@ -5850,6 +6051,20 @@ def render_market_values_subtab(config: ReportConfig) -> None:
             ascending=False,
             kind="stable",
         )
+        if not previous_sector_display_df.empty:
+            sector_display_df = apply_trend_symbols_to_table(
+                sector_display_df,
+                previous_sector_display_df.loc[:, [column for column in ordered_columns if column in previous_sector_display_df.columns]],
+                [
+                    "RSI Breadth >= 60",
+                    "RSI Breadth >= 75",
+                    "RSI Breadth < 40",
+                    "RSI Participation Composite",
+                    "Sector Rotation Score",
+                    "Sector Regime Fit Score",
+                ],
+                threshold=MARKET_TREND_THRESHOLD,
+            )
         st.dataframe(sector_display_df, width="stretch", hide_index=True)
 
     st.markdown("**Cache visibility**")
