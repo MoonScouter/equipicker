@@ -1,0 +1,6 @@
+{
+  "offensive": ["Technology", "Communication Services", "Consumer Cyclical"],
+  "cyclical": ["Industrials", "Financial Services", "Basic Materials", "Energy"],
+  "defensive": ["Utilities", "Consumer Defensive", "Healthcare"],
+  "rate_sensitive": ["Real Estate"]
+}

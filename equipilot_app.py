@@ -68,6 +68,17 @@ from openai_responses_service import (
     save_json_document,
     save_output_text,
 )
+from market_service import (
+    build_market_signature,
+    compute_and_save_market_bundle,
+    get_default_market_anchors,
+    load_market_bundle,
+    load_market_methodology_text,
+    load_market_regime_config,
+    load_sector_families,
+    market_cache_status,
+    resolve_anchor_on_or_before,
+)
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
 from weekly_scoring_board import compute_sector_overview_stats
 
@@ -5453,6 +5464,422 @@ def render_home_prices_import_subtab() -> None:
             ])
 
 
+def _bands_to_df(bands: list[dict[str, object]], score_name: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Score": score_name,
+                "Min": band.get("min"),
+                "Max": band.get("max"),
+                "Label": band.get("label"),
+            }
+            for band in bands
+        ]
+    )
+
+
+def _weights_to_df(config_payload: dict[str, object]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for block_name, value in config_payload.items():
+        if not isinstance(value, dict):
+            continue
+        scalar_values = {
+            str(key): scalar
+            for key, scalar in value.items()
+            if not isinstance(scalar, (dict, list))
+        }
+        if not scalar_values:
+            continue
+        for key, scalar in scalar_values.items():
+            rows.append({"Block": block_name, "Key": key, "Value": scalar})
+    return pd.DataFrame(rows)
+
+
+def _preference_scores_to_df(config_payload: dict[str, object]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for regime_label, regime_payload in config_payload.get("regime_preference_scores", {}).items():
+        if not isinstance(regime_payload, dict):
+            continue
+        for family, score in regime_payload.get("family_defaults", {}).items():
+            rows.append(
+                {
+                    "Regime": regime_label,
+                    "Scope": f"family:{family}",
+                    "Preference Score": score,
+                }
+            )
+        for sector_name, score in regime_payload.get("sector_overrides", {}).items():
+            rows.append(
+                {
+                    "Regime": regime_label,
+                    "Scope": f"sector:{sector_name}",
+                    "Preference Score": score,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _alignment_scores_to_df(config_payload: dict[str, object]) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for regime_label, regime_payload in config_payload.get("market_alignment_scores", {}).items():
+        if not isinstance(regime_payload, dict):
+            continue
+        for family, stock_map in regime_payload.get("family_defaults", {}).items():
+            if not isinstance(stock_map, dict):
+                continue
+            for stock_label, score in stock_map.items():
+                rows.append(
+                    {
+                        "Regime": regime_label,
+                        "Scope": f"family:{family}",
+                        "Stock Regime": stock_label,
+                        "Alignment Score": score,
+                    }
+                )
+        for sector_name, stock_map in regime_payload.get("sector_overrides", {}).items():
+            if not isinstance(stock_map, dict):
+                continue
+            for stock_label, score in stock_map.items():
+                rows.append(
+                    {
+                        "Regime": regime_label,
+                        "Scope": f"sector:{sector_name}",
+                        "Stock Regime": stock_label,
+                        "Alignment Score": score,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def render_market_methodology_subtab() -> None:
+    render_subtab_group_intro(
+        "Market - Methodology",
+        "Deterministic formulas, mappings, and interpretation rules that drive the Market layer.",
+    )
+    market_config = load_market_regime_config()
+    sector_families = load_sector_families()
+    st.markdown(load_market_methodology_text())
+
+    bands_df = pd.concat(
+        [
+            _bands_to_df(bands, score_name)
+            for score_name, bands in market_config.get("score_bands", {}).items()
+            if isinstance(bands, list)
+        ],
+        ignore_index=True,
+    )
+    if not bands_df.empty:
+        st.markdown("**Label bands**")
+        st.dataframe(bands_df, width="stretch", hide_index=True)
+
+    weights_df = _weights_to_df(market_config)
+    if not weights_df.empty:
+        st.markdown("**Weights and mapping anchors**")
+        st.dataframe(weights_df, width="stretch", hide_index=True)
+
+    family_rows = [
+        {"Family": family, "Sectors": ", ".join(sectors)}
+        for family, sectors in sector_families.items()
+    ]
+    st.markdown("**Sector families**")
+    st.dataframe(pd.DataFrame(family_rows), width="stretch", hide_index=True)
+
+    preference_df = _preference_scores_to_df(market_config)
+    if not preference_df.empty:
+        st.markdown("**Regime preference scores**")
+        st.dataframe(preference_df, width="stretch", hide_index=True)
+
+    alignment_df = _alignment_scores_to_df(market_config)
+    if not alignment_df.empty:
+        st.markdown("**Market alignment scores**")
+        st.dataframe(alignment_df, width="stretch", hide_index=True)
+
+
+def render_market_ai_commentary_subtab() -> None:
+    render_subtab_group_intro(
+        "ai-commentary",
+        "Reserved for future OpenAI Responses API market commentary workflows.",
+    )
+    st.info(
+        "This area is scaffold-only in the current phase. Deterministic market scores are computed and cached here first; AI commentary will be layered on later."
+    )
+    render_chip_row(
+        [
+            "Future input: market_snapshot cache",
+            "Future input: stock_rsi_regime cache",
+            "Future input: setup_readiness cache",
+            "Future input: current market news context",
+        ]
+    )
+    st.caption("Use the existing API tab for manual Responses API experimentation until this workflow is implemented.")
+
+
+def render_market_values_subtab(config: ReportConfig) -> None:
+    render_subtab_group_intro(
+        "Market - Values",
+        "Operational market regime outputs, sector fit, participation, risk appetite, and cache visibility for the selected anchors.",
+    )
+    market_config = load_market_regime_config()
+    sector_families = load_sector_families()
+    available_dates = list(get_available_report_select_dates())
+    if not available_dates:
+        st.warning("No report_select files are available yet. Generate them from Home > Report Excel Import first.")
+        return
+
+    defaults = get_default_market_anchors(available_dates, market_config)
+    interval_config = market_config.get("default_intervals_days", {})
+    evaluation_date = render_report_select_date_input(
+        "Evaluation date",
+        value=defaults["evaluation_date"],
+        key="market_eval_date",
+    )
+    rsi_start_default = evaluation_date - timedelta(days=int(interval_config.get("rsi_window_days", 90)))
+    month_default = resolve_anchor_on_or_before(
+        available_dates,
+        evaluation_date - timedelta(days=int(interval_config.get("month_offset_days", 30))),
+    )
+    week_default = resolve_anchor_on_or_before(
+        available_dates,
+        evaluation_date - timedelta(days=int(interval_config.get("week_offset_days", 7))),
+    )
+    rsi_start_date = render_report_select_date_input(
+        "RSI regime start date",
+        value=rsi_start_default,
+        key="market_rsi_start_date",
+    )
+    month_anchor_date = render_report_select_date_input(
+        "1 month ago date",
+        value=month_default,
+        key="market_month_anchor_date",
+    )
+    week_anchor_date = render_report_select_date_input(
+        "1 week ago date",
+        value=week_default,
+        key="market_week_anchor_date",
+    )
+
+    signature = build_market_signature(evaluation_date, rsi_start_date, month_anchor_date, week_anchor_date)
+    cache_state = market_cache_status(signature)
+    render_chip_row(
+        [
+            f"Signature: {signature}",
+            f"Cache: {'ready' if cache_state.get('ready') else 'missing / recompute'}",
+            f"Evaluation: {evaluation_date.isoformat()}",
+            f"RSI start: {rsi_start_date.isoformat()}",
+            f"1M anchor: {month_anchor_date.isoformat()}",
+            f"1W anchor: {week_anchor_date.isoformat()}",
+        ]
+    )
+    compute_button_label = "Recompute market caches" if cache_state.get("ready") else "Compute market caches"
+    run_market_compute = st.button(
+        compute_button_label,
+        use_container_width=False,
+        key="market_recompute_button",
+        help="Create or overwrite the market snapshot, stock RSI regime cache, and setup readiness cache for the selected anchor signature.",
+    )
+
+    evaluation_df, evaluation_path, evaluation_candidates, evaluation_error = load_report_select_for_eod(evaluation_date)
+    if evaluation_path is None:
+        render_missing_report_select(evaluation_date, evaluation_candidates)
+        return
+    if evaluation_error:
+        st.error(f"Failed reading {evaluation_path}: {evaluation_error}")
+        return
+
+    month_df, month_path, month_candidates, month_error = load_report_select_for_eod(month_anchor_date)
+    if month_path is None:
+        render_missing_report_select(month_anchor_date, month_candidates)
+        return
+    if month_error:
+        st.error(f"Failed reading {month_path}: {month_error}")
+        return
+
+    week_df, week_path, week_candidates, week_error = load_report_select_for_eod(week_anchor_date)
+    if week_path is None:
+        render_missing_report_select(week_anchor_date, week_candidates)
+        return
+    if week_error:
+        st.error(f"Failed reading {week_path}: {week_error}")
+        return
+
+    bundle: Optional[dict[str, object]] = None
+    if run_market_compute:
+        with st.spinner("Computing Market layer..."):
+            bundle = compute_and_save_market_bundle(
+                evaluation_df=evaluation_df,
+                month_df=month_df,
+                week_df=week_df,
+                evaluation_date=evaluation_date,
+                rsi_start_date=rsi_start_date,
+                month_anchor_date=month_anchor_date,
+                week_anchor_date=week_anchor_date,
+                evaluation_source_path=evaluation_path,
+                month_source_path=month_path,
+                week_source_path=week_path,
+                config=market_config,
+                sector_families=sector_families,
+                force_recompute=True,
+            )
+    elif cache_state.get("ready"):
+        with st.spinner("Loading Market cache..."):
+            bundle = load_market_bundle(signature)
+            bundle["signature"] = signature
+            bundle["cached"] = True
+    else:
+        st.info("No market cache exists for the selected anchors yet. Click `Compute market caches` to create it.")
+        return
+
+    payload = bundle["market_snapshot_payload"]
+    market_summary = payload.get("market_summary", {})
+    component_scores = payload.get("component_scores", {})
+    breadth = payload.get("breadth", {})
+    risk_appetite = payload.get("risk_appetite", {})
+    family_scores_df = pd.DataFrame(payload.get("family_scores", []))
+    sector_df = pd.DataFrame(payload.get("sector_rows", []))
+    paths = bundle.get("paths", {})
+    stock_rsi_df = bundle.get("stock_rsi_regime_df", pd.DataFrame())
+    setup_df = bundle.get("setup_readiness_df", pd.DataFrame())
+
+    st.caption(
+        f"{'Loaded from cache' if bundle.get('cached') else 'Recomputed and saved'} | "
+        f"Source files: {evaluation_path.name}, {month_path.name}, {week_path.name}"
+    )
+
+    summary_cols = st.columns(4)
+    with summary_cols[0]:
+        render_kpi_card(
+            "Market Regime",
+            _format_numeric_value(market_summary.get("market_regime_score")),
+            str(market_summary.get("market_regime_label") or "N/A"),
+            tone="neutral",
+        )
+    with summary_cols[1]:
+        render_kpi_card(
+            "Confidence",
+            _format_numeric_value(market_summary.get("market_regime_confidence")),
+            str(market_summary.get("market_regime_status") or "N/A"),
+            tone="neutral",
+        )
+    with summary_cols[2]:
+        render_kpi_card(
+            "Sector Rotation",
+            _format_numeric_value(market_summary.get("market_sector_rotation_score")),
+            str(market_summary.get("leading_family_classifier") or "N/A"),
+            tone="neutral",
+        )
+    with summary_cols[3]:
+        render_kpi_card(
+            "Stock RSI Breadth >= 60",
+            _format_percent_value(breadth.get("market_rsi_breadth_pct_60")),
+            f">=75: {_format_percent_value(breadth.get('market_rsi_breadth_pct_75'))}",
+            tone="neutral",
+        )
+
+    st.markdown("**Underlying components**")
+    component_rows = pd.DataFrame(
+        [
+            {"Component": "Market RSI participation composite", "Value": component_scores.get("market_rsi_participation_composite_score")},
+            {"Component": "Risk appetite score", "Value": risk_appetite.get("risk_appetite_score")},
+            {"Component": "Market sector rotation score", "Value": component_scores.get("market_sector_rotation_score")},
+            {"Component": "Component agreement score", "Value": component_scores.get("component_agreement_score")},
+            {"Component": "Distance from neutral score", "Value": component_scores.get("distance_from_neutral_score")},
+            {"Component": "Persistence score", "Value": component_scores.get("persistence_score")},
+            {"Component": "Market breadth < 40", "Value": breadth.get("market_rsi_breadth_pct_lt40")},
+            {"Component": "Quality / Defensive count", "Value": risk_appetite.get("quality_defensive_count")},
+            {"Component": "Speculative count", "Value": risk_appetite.get("speculative_count")},
+        ]
+    )
+    st.dataframe(component_rows, width="stretch", hide_index=True)
+    if risk_appetite.get("warning"):
+        st.warning(str(risk_appetite.get("warning")))
+
+    st.markdown("**Family leadership**")
+    if family_scores_df.empty:
+        st.info("No family scores are available for the selected anchors.")
+    else:
+        display_family_df = family_scores_df.rename(
+            columns={
+                "family": "Family",
+                "sector_rotation_score": "Sector Rotation Score",
+                "sector_count": "Sector Count",
+            }
+        )
+        st.dataframe(display_family_df, width="stretch", hide_index=True)
+
+    st.markdown("**Sector table**")
+    if sector_df.empty:
+        st.info("No sector rows are available for the selected anchors.")
+    else:
+        sector_display_df = sector_df.rename(
+            columns={
+                "sector": "Sector",
+                "family": "Family",
+                "P_now": "P",
+                "T_now": "T",
+                "dP": "dP",
+                "dT": "dT",
+                "trend_of_change_score": "Trend of Change",
+                "sector_rsi_breadth_pct_60": "RSI Breadth >= 60",
+                "sector_rsi_breadth_pct_75": "RSI Breadth >= 75",
+                "sector_rsi_breadth_pct_lt40": "RSI Breadth < 40",
+                "sector_rsi_participation_composite_score": "RSI Participation Composite",
+                "sector_rotation_score": "Sector Rotation Score",
+                "sector_regime_fit_score": "Sector Regime Fit Score",
+                "sector_regime_fit_flag": "Regime Fit Flag",
+            }
+        )
+        ordered_columns = [
+            "Sector",
+            "Family",
+            "P",
+            "T",
+            "dP",
+            "dT",
+            "Trend of Change",
+            "RSI Breadth >= 60",
+            "RSI Breadth >= 75",
+            "RSI Breadth < 40",
+            "RSI Participation Composite",
+            "Sector Rotation Score",
+            "Sector Regime Fit Score",
+            "Regime Fit Flag",
+        ]
+        ordered_columns = [column for column in ordered_columns if column in sector_display_df.columns]
+        sector_display_df = sector_display_df.loc[:, ordered_columns].sort_values(
+            by="Sector Rotation Score" if "Sector Rotation Score" in ordered_columns else ordered_columns[0],
+            ascending=False,
+            kind="stable",
+        )
+        st.dataframe(sector_display_df, width="stretch", hide_index=True)
+
+    st.markdown("**Cache visibility**")
+    render_chip_row(
+        [
+            f"Market snapshot: {Path(paths.get('market_snapshot', cache_state.get('market_snapshot'))).name}",
+            f"Stock RSI cache rows: {len(stock_rsi_df)}",
+            f"Setup readiness rows: {len(setup_df)}",
+        ]
+    )
+    st.caption(f"Market snapshot path: {paths.get('market_snapshot', cache_state.get('market_snapshot'))}")
+    st.caption(f"Stock RSI cache path: {paths.get('stock_rsi_regime', cache_state.get('stock_rsi_regime'))}")
+    st.caption(f"Setup readiness path: {paths.get('setup_readiness', cache_state.get('setup_readiness'))}")
+
+
+def render_market_tab(config: ReportConfig) -> None:
+    render_page_intro(
+        "Market",
+        "Deterministic market regime, sector fit, and setup-readiness layer built on report_select snapshots plus cached RSI histories.",
+        "Equipilot / Market",
+    )
+    values_tab, methodology_tab, ai_commentary_tab = st.tabs(["Values", "Methodology", "ai-commentary"])
+    with values_tab:
+        render_market_values_subtab(config)
+    with methodology_tab:
+        render_market_methodology_subtab()
+    with ai_commentary_tab:
+        render_market_ai_commentary_subtab()
+
+
 def render_indices_tab() -> None:
     render_page_intro(
         "Indices",
@@ -7493,10 +7920,11 @@ def main() -> None:
 
     render_header()
 
-    home_tab, indices_tab, sector_tab, thematics_tab, trade_ideas_tab, quadrants_tab, api_tab = st.tabs(
+    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, trade_ideas_tab, quadrants_tab, api_tab = st.tabs(
         [
             "Home",
             "Indices",
+            "Market",
             "Sector",
             "Thematics",
             "Trade Ideas",
@@ -7508,6 +7936,8 @@ def main() -> None:
         render_home(config)
     with indices_tab:
         render_indices_tab()
+    with market_tab:
+        render_market_tab(config)
     with sector_tab:
         render_sector_tab(config)
     with thematics_tab:
