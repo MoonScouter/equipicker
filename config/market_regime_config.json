@@ -1,0 +1,179 @@
+{
+  "version": "1.0",
+  "default_intervals_days": {
+    "rsi_window_days": 90,
+    "month_offset_days": 30,
+    "week_offset_days": 7
+  },
+  "cache": {
+    "subdirectory": "market",
+    "recompute_overwrites_existing": true
+  },
+  "minimum_data": {
+    "min_weekly_rsi_observations": 4,
+    "max_daily_rsi_lookback": 20,
+    "risk_appetite_warning_min_cohort_size": 5
+  },
+  "stock_rsi_weights": {
+    "weekly_range_persistence": 0.45,
+    "expansion_frequency": 0.25,
+    "pullback_resilience": 0.2,
+    "daily_confirmation": 0.1
+  },
+  "trend_of_change": {
+    "weekly_weight": 0.6,
+    "monthly_weight": 0.4,
+    "monthly_divisor": 4.0,
+    "score_factor": 8.0
+  },
+  "risk_appetite": {
+    "return_spread_divisor": 8.0,
+    "technical_spread_divisor": 15.0,
+    "return_component_weight": 0.6,
+    "technical_component_weight": 0.4
+  },
+  "sector_rotation_weights": {
+    "participation_score": 0.35,
+    "technical_score": 0.35,
+    "rsi_participation_score": 0.2,
+    "trend_of_change_score": 0.1
+  },
+  "market_regime_weights": {
+    "market_rsi_participation_composite_score": 0.4,
+    "risk_appetite_score": 0.3,
+    "market_sector_rotation_score": 0.3
+  },
+  "confidence_weights": {
+    "full_history": {
+      "component_agreement_score": 0.45,
+      "distance_from_neutral_score": 0.35,
+      "persistence_score": 0.2
+    },
+    "reduced_history": {
+      "component_agreement_score": 0.45,
+      "distance_from_neutral_score": 0.35,
+      "persistence_score": 0.1
+    }
+  },
+  "sector_regime_fit_weights": {
+    "technical_score": 0.25,
+    "participation_score": 0.25,
+    "sector_rsi_participation_composite_score": 0.2,
+    "regime_preference_score": 0.3
+  },
+  "setup_readiness_weights": {
+    "general_technical_score": 0.25,
+    "stock_rsi_regime_score": 0.2,
+    "fundamental_total_score": 0.2,
+    "sector_regime_fit_score": 0.2,
+    "market_alignment_score": 0.15
+  },
+  "quadrants_participation": {
+    "strong_positive_threshold": 5.0,
+    "weak_positive_threshold": 0.0,
+    "weak_negative_threshold": -5.0,
+    "multiplier_strong_positive": 1.0,
+    "multiplier_weak_positive": 0.9,
+    "multiplier_weak_negative": 0.8,
+    "multiplier_strong_negative": 0.7
+  },
+  "leader_tie_band": 3.0,
+  "score_bands": {
+    "stock_rsi_regime": [
+      {"min": 0, "max": 24, "label": "Bear"},
+      {"min": 25, "max": 39, "label": "Emerging Bear"},
+      {"min": 40, "max": 59, "label": "Neutral"},
+      {"min": 60, "max": 74, "label": "Emerging Bull"},
+      {"min": 75, "max": 100, "label": "Bull"}
+    ],
+    "market_regime": [
+      {"min": 0, "max": 24, "label": "Risk-Off"},
+      {"min": 25, "max": 39, "label": "Late Cycle / Defensive"},
+      {"min": 40, "max": 59, "label": "Neutral / Transition"},
+      {"min": 60, "max": 74, "label": "Recovery"},
+      {"min": 75, "max": 100, "label": "Risk-On"}
+    ],
+    "sector_regime_fit_flag": [
+      {"min": 0, "max": 49.9999, "label": "Avoid"},
+      {"min": 50, "max": 69.9999, "label": "Neutral"},
+      {"min": 70, "max": 100, "label": "Favored"}
+    ],
+    "market_regime_status": [
+      {"min": 0, "max": 49.9999, "label": "Mixed / Transitional"},
+      {"min": 50, "max": 69.9999, "label": "Tentative"},
+      {"min": 70, "max": 100, "label": "Confirmed"}
+    ]
+  },
+  "regime_preference_scores": {
+    "Risk-On": {
+      "family_defaults": {"offensive": 100, "cyclical": 75, "defensive": 40, "rate_sensitive": 55},
+      "sector_overrides": {"Real Estate": 55}
+    },
+    "Recovery": {
+      "family_defaults": {"offensive": 80, "cyclical": 100, "defensive": 45, "rate_sensitive": 70},
+      "sector_overrides": {"Real Estate": 70}
+    },
+    "Neutral / Transition": {
+      "family_defaults": {"offensive": 60, "cyclical": 60, "defensive": 60, "rate_sensitive": 55},
+      "sector_overrides": {"Real Estate": 55}
+    },
+    "Late Cycle / Defensive": {
+      "family_defaults": {"offensive": 35, "cyclical": 55, "defensive": 100, "rate_sensitive": 50},
+      "sector_overrides": {"Energy": 80, "Basic Materials": 80, "Real Estate": 50}
+    },
+    "Risk-Off": {
+      "family_defaults": {"offensive": 20, "cyclical": 35, "defensive": 100, "rate_sensitive": 65},
+      "sector_overrides": {"Real Estate": 65}
+    }
+  },
+  "market_alignment_scores": {
+    "Risk-On": {
+      "family_defaults": {
+        "offensive": {"Bull": 100, "Emerging Bull": 80, "Neutral": 50, "Emerging Bear": 15, "Bear": 5},
+        "cyclical": {"Bull": 100, "Emerging Bull": 80, "Neutral": 50, "Emerging Bear": 15, "Bear": 5},
+        "defensive": {"Bull": 60, "Emerging Bull": 55, "Neutral": 50, "Emerging Bear": 20, "Bear": 10},
+        "rate_sensitive": {"Bull": 55, "Emerging Bull": 50, "Neutral": 50, "Emerging Bear": 20, "Bear": 10}
+      },
+      "sector_overrides": {}
+    },
+    "Recovery": {
+      "family_defaults": {
+        "offensive": {"Bull": 90, "Emerging Bull": 80, "Neutral": 55, "Emerging Bear": 20, "Bear": 10},
+        "cyclical": {"Bull": 100, "Emerging Bull": 85, "Neutral": 55, "Emerging Bear": 15, "Bear": 5},
+        "defensive": {"Bull": 50, "Emerging Bull": 45, "Neutral": 50, "Emerging Bear": 25, "Bear": 15},
+        "rate_sensitive": {"Bull": 70, "Emerging Bull": 60, "Neutral": 50, "Emerging Bear": 25, "Bear": 15}
+      },
+      "sector_overrides": {}
+    },
+    "Neutral / Transition": {
+      "family_defaults": {
+        "offensive": {"Bull": 65, "Emerging Bull": 60, "Neutral": 50, "Emerging Bear": 35, "Bear": 20},
+        "cyclical": {"Bull": 65, "Emerging Bull": 60, "Neutral": 50, "Emerging Bear": 35, "Bear": 20},
+        "defensive": {"Bull": 65, "Emerging Bull": 60, "Neutral": 50, "Emerging Bear": 35, "Bear": 20},
+        "rate_sensitive": {"Bull": 55, "Emerging Bull": 55, "Neutral": 50, "Emerging Bear": 35, "Bear": 20}
+      },
+      "sector_overrides": {}
+    },
+    "Late Cycle / Defensive": {
+      "family_defaults": {
+        "offensive": {"Bull": 35, "Emerging Bull": 30, "Neutral": 40, "Emerging Bear": 20, "Bear": 10},
+        "cyclical": {"Bull": 55, "Emerging Bull": 45, "Neutral": 45, "Emerging Bear": 25, "Bear": 10},
+        "defensive": {"Bull": 100, "Emerging Bull": 80, "Neutral": 55, "Emerging Bear": 25, "Bear": 10},
+        "rate_sensitive": {"Bull": 50, "Emerging Bull": 45, "Neutral": 45, "Emerging Bear": 25, "Bear": 10}
+      },
+      "sector_overrides": {
+        "Energy": {"Bull": 80, "Emerging Bull": 65, "Neutral": 50, "Emerging Bear": 20, "Bear": 10},
+        "Basic Materials": {"Bull": 80, "Emerging Bull": 65, "Neutral": 50, "Emerging Bear": 20, "Bear": 10}
+      }
+    },
+    "Risk-Off": {
+      "family_defaults": {
+        "offensive": {"Bull": 20, "Emerging Bull": 15, "Neutral": 35, "Emerging Bear": 10, "Bear": 0},
+        "cyclical": {"Bull": 20, "Emerging Bull": 15, "Neutral": 35, "Emerging Bear": 10, "Bear": 5},
+        "defensive": {"Bull": 95, "Emerging Bull": 75, "Neutral": 55, "Emerging Bear": 20, "Bear": 10},
+        "rate_sensitive": {"Bull": 65, "Emerging Bull": 55, "Neutral": 45, "Emerging Bear": 20, "Bear": 10}
+      },
+      "sector_overrides": {}
+    }
+  }
+}
