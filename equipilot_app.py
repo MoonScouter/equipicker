@@ -64,6 +64,7 @@ from openai_responses_service import (
     list_saved_names,
     load_json_document,
     load_output_text,
+    parse_string_list,
     run_responses_request,
     save_json_document,
     save_output_text,
@@ -1287,6 +1288,8 @@ def apply_api_template_state(template_payload: Optional[dict[str, object]] = Non
     ranking_payload = file_search_payload["ranking_options"]
     filters_payload = file_search_payload["filters"]
     user_location_payload = web_search_payload["user_location"]
+    reasoning_payload = template_state.get("reasoning", {})
+    text_payload = template_state.get("text", {})
 
     st.session_state["api_template_name"] = str(template_state.get("name", "") or "")
     st.session_state["api_template_model"] = str(template_state.get("model", "") or "")
@@ -1300,9 +1303,20 @@ def apply_api_template_state(template_payload: Optional[dict[str, object]] = Non
     st.session_state["api_template_tool_choice"] = str(template_state.get("tool_choice", "auto") or "auto")
     st.session_state["api_template_temperature"] = float(template_state.get("temperature", 1.0) or 1.0)
     st.session_state["api_template_top_p"] = float(template_state.get("top_p", 1.0) or 1.0)
-    st.session_state["api_template_max_output_tokens"] = int(
-        template_state.get("max_output_tokens", 1200) or 1200
+    max_output_tokens = template_state.get("max_output_tokens", "")
+    st.session_state["api_template_max_output_tokens"] = (
+        "" if max_output_tokens in ("", None) else str(max_output_tokens)
     )
+    if isinstance(reasoning_payload, dict):
+        reasoning_effort = reasoning_payload.get("effort", "")
+    else:
+        reasoning_effort = ""
+    st.session_state["api_template_reasoning_effort"] = str(reasoning_effort or "")
+    if isinstance(text_payload, dict):
+        verbosity = text_payload.get("verbosity", "")
+    else:
+        verbosity = ""
+    st.session_state["api_template_text_verbosity"] = str(verbosity or "")
     st.session_state["api_template_store"] = bool(template_state.get("store", True))
     st.session_state["api_template_parallel_tool_calls"] = bool(
         template_state.get("parallel_tool_calls", True)
@@ -1327,8 +1341,8 @@ def apply_api_template_state(template_payload: Optional[dict[str, object]] = Non
     st.session_state["api_template_web_timezone"] = str(user_location_payload.get("timezone", "") or "")
 
     st.session_state["api_template_file_enabled"] = bool(file_search_payload.get("enabled", False))
-    st.session_state["api_template_file_vector_store_ids"] = "\n".join(
-        [str(item) for item in file_search_payload.get("vector_store_ids", []) if str(item).strip()]
+    st.session_state["api_template_file_vector_store_ids"] = ", ".join(
+        parse_string_list(file_search_payload.get("vector_store_ids", []))
     )
     st.session_state["api_template_file_max_num_results"] = int(
         file_search_payload.get("max_num_results", 8) or 8
@@ -1372,6 +1386,9 @@ def collect_api_template_from_state(
     filter_rows: list[dict[str, object]],
 ) -> dict[str, object]:
     score_threshold_value = str(st.session_state.get("api_template_file_score_threshold", "") or "").strip()
+    max_output_tokens_value = str(st.session_state.get("api_template_max_output_tokens", "") or "").strip()
+    reasoning_effort_value = str(st.session_state.get("api_template_reasoning_effort", "") or "").strip()
+    text_verbosity_value = str(st.session_state.get("api_template_text_verbosity", "") or "").strip()
     return {
         "name": str(st.session_state.get("api_template_name", "") or "").strip(),
         "model": str(st.session_state.get("api_template_model", "") or "").strip(),
@@ -1385,7 +1402,13 @@ def collect_api_template_from_state(
         "tool_choice": str(st.session_state.get("api_template_tool_choice", "auto") or "auto"),
         "temperature": float(st.session_state.get("api_template_temperature", 1.0) or 1.0),
         "top_p": float(st.session_state.get("api_template_top_p", 1.0) or 1.0),
-        "max_output_tokens": int(st.session_state.get("api_template_max_output_tokens", 1200) or 1200),
+        "max_output_tokens": max_output_tokens_value,
+        "reasoning": {
+            "effort": reasoning_effort_value,
+        },
+        "text": {
+            "verbosity": text_verbosity_value,
+        },
         "store": bool(st.session_state.get("api_template_store", True)),
         "parallel_tool_calls": bool(st.session_state.get("api_template_parallel_tool_calls", True)),
         "metadata": metadata_rows,
@@ -1455,161 +1478,177 @@ def render_api_templates_subtab() -> None:
         f"PowerShell: `$env:{OPENAI_API_KEY_ENV}=\"your-key\"` or `setx {OPENAI_API_KEY_ENV} \"your-key\"`."
     )
 
-    top_cols = st.columns([1.4, 1.2, 1.0])
-    with top_cols[0]:
-        st.text_input("Template file name", key="api_template_name", help="Saved under data/api_templates/")
-    with top_cols[1]:
-        st.text_input("Model", key="api_template_model")
-    with top_cols[2]:
-        st.text_input(
-            "Output file name",
-            key="api_template_default_output_name",
-            help="Blank uses the request trigger timestamp.",
-        )
-
-    prompt_col, request_col = st.columns(2)
-    with prompt_col:
-        st.markdown("**Prompt Reference**")
-        st.text_input("Prompt ID", key="api_template_prompt_id", help="Sent as prompt.id.")
-        st.text_input("Prompt version", key="api_template_prompt_version")
-        prompt_variable_rows = _render_rows_editor(
-            "Prompt variables",
-            st.session_state.get("api_template_prompt_variables_rows", []),
-            ["key", "value"],
-            key="api_prompt_variables_editor",
-            help_text="Optional prompt variables saved with the template.",
-        )
-        st.session_state["api_template_prompt_variables_rows"] = prompt_variable_rows
-    with request_col:
-        st.markdown("**Request Controls**")
-        st.selectbox("Tool choice", ["auto", "none", "required"], key="api_template_tool_choice")
-        numeric_cols = st.columns(2)
-        with numeric_cols[0]:
-            st.number_input(
-                "Temperature",
-                min_value=0.0,
-                max_value=2.0,
-                step=0.1,
-                key="api_template_temperature",
+    save_clicked = False
+    run_clicked = False
+    with st.form(key="api_template_form", clear_on_submit=False):
+        top_cols = st.columns([1.4, 1.2, 1.0])
+        with top_cols[0]:
+            st.text_input("Template file name", key="api_template_name", help="Saved under data/api_templates/")
+        with top_cols[1]:
+            st.text_input("Model", key="api_template_model")
+        with top_cols[2]:
+            st.text_input(
+                "Output file name",
+                key="api_template_default_output_name",
+                help="Blank uses the request trigger timestamp.",
             )
-            st.checkbox("Store response server-side", key="api_template_store")
-        with numeric_cols[1]:
-            st.number_input(
-                "Top P",
-                min_value=0.0,
-                max_value=1.0,
-                step=0.05,
-                key="api_template_top_p",
+
+        prompt_col, request_col = st.columns(2)
+        with prompt_col:
+            st.markdown("**Prompt Reference**")
+            st.text_input("Prompt ID", key="api_template_prompt_id", help="Sent as prompt.id.")
+            st.text_input("Prompt version", key="api_template_prompt_version")
+            prompt_variable_rows = _render_rows_editor(
+                "Prompt variables",
+                st.session_state.get("api_template_prompt_variables_rows", []),
+                ["key", "value"],
+                key="api_prompt_variables_editor",
+                help_text="Optional prompt variables saved with the template.",
             )
-            st.checkbox("Parallel tool calls", key="api_template_parallel_tool_calls")
-        st.number_input(
-            "Max output tokens",
-            min_value=1,
-            step=50,
-            key="api_template_max_output_tokens",
-        )
-        metadata_rows = _render_rows_editor(
-            "Request metadata",
-            st.session_state.get("api_template_metadata_rows", []),
-            ["key", "value"],
-            key="api_request_metadata_editor",
-            help_text="Optional metadata sent on the response request.",
-        )
-        st.session_state["api_template_metadata_rows"] = metadata_rows
-
-    text_cols = st.columns(2)
-    with text_cols[0]:
-        st.text_area(
-            "Developer instructions override",
-            key="api_template_developer_text",
-            height=220,
-        )
-    with text_cols[1]:
-        st.text_area(
-            "User input override",
-            key="api_template_user_text",
-            height=220,
-        )
-
-    web_tab, file_tab = st.tabs(["Web Search", "File Search"])
-    with web_tab:
-        st.checkbox("Enable web search", key="api_template_web_enabled")
-        st.checkbox("External web access", key="api_template_web_external_access")
-        st.text_area(
-            "Allowed domains",
-            key="api_template_web_allowed_domains",
-            height=120,
-            help="One domain per line or comma-separated.",
-        )
-        location_cols = st.columns(4)
-        with location_cols[0]:
-            st.text_input("Country", key="api_template_web_country")
-        with location_cols[1]:
-            st.text_input("City", key="api_template_web_city")
-        with location_cols[2]:
-            st.text_input("Region", key="api_template_web_region")
-        with location_cols[3]:
-            st.text_input("Timezone", key="api_template_web_timezone")
-
-    with file_tab:
-        st.checkbox("Enable file search", key="api_template_file_enabled")
-        st.text_area(
-            "Vector store IDs",
-            key="api_template_file_vector_store_ids",
-            height=110,
-            help="One vector store ID per line or comma-separated.",
-        )
-        file_cols = st.columns(4)
-        with file_cols[0]:
-            st.number_input(
-                "Max results",
-                min_value=1,
-                step=1,
-                key="api_template_file_max_num_results",
-            )
-        with file_cols[1]:
-            st.checkbox("Include search results", key="api_template_file_include_results")
-        with file_cols[2]:
-            st.text_input("Ranker", key="api_template_file_ranker")
-        with file_cols[3]:
-            st.text_input("Score threshold", key="api_template_file_score_threshold")
-        st.selectbox("Filter combine mode", ["and", "or"], key="api_template_file_filter_type")
-        filter_rows = _render_rows_editor(
-            "File metadata filters",
-            st.session_state.get("api_template_file_filter_rows", []),
-            ["key", "type", "value_type", "value"],
-            key="api_file_metadata_filters_editor",
-            help_text="Operators: eq, ne, gt, gte, lt, lte, in, nin. Metadata names stay fully editable.",
-            height=220,
-        )
-        st.session_state["api_template_file_filter_rows"] = filter_rows
-
-    template_payload = collect_api_template_from_state(prompt_variable_rows, metadata_rows, filter_rows)
-
-    action_cols = st.columns([1, 1, 2])
-    with action_cols[0]:
-        if st.button("Save template", use_container_width=True, key="api_save_template_button"):
-            template_name = str(template_payload.get("name", "") or "").strip()
-            if not template_name:
-                st.error("Template file name is required before saving.")
-            else:
-                saved_path = save_json_document(API_TEMPLATES_DIR, template_name, template_payload)
-                st.success(f"Template saved: {saved_path.name}")
-    with action_cols[1]:
-        if st.button("Run request", use_container_width=True, key="api_run_request_button"):
-            try:
-                payload, _response, output_text = run_responses_request(template_payload)
-                output_path = save_output_text(
-                    output_text,
-                    str(template_payload.get("default_output_name", "") or "").strip(),
+            st.session_state["api_template_prompt_variables_rows"] = prompt_variable_rows
+        with request_col:
+            st.markdown("**Request Controls**")
+            st.selectbox("Tool choice", ["auto", "none", "required"], key="api_template_tool_choice")
+            numeric_cols = st.columns(2)
+            with numeric_cols[0]:
+                st.number_input(
+                    "Temperature",
+                    min_value=0.0,
+                    max_value=2.0,
+                    step=0.1,
+                    key="api_template_temperature",
                 )
-            except Exception as exc:  # pragma: no cover - UI feedback
-                st.error(f"Request failed: {exc}")
-            else:
-                st.session_state["api_last_payload"] = payload
-                st.session_state["api_last_output_text"] = output_text
-                st.session_state["api_last_output_path"] = str(output_path)
-                st.success(f"Response saved: {output_path.name}")
+                st.checkbox("Store response server-side", key="api_template_store")
+            with numeric_cols[1]:
+                st.number_input(
+                    "Top P",
+                    min_value=0.0,
+                    max_value=1.0,
+                    step=0.05,
+                    key="api_template_top_p",
+                )
+                st.checkbox("Parallel tool calls", key="api_template_parallel_tool_calls")
+            st.selectbox(
+                "Reasoning effort",
+                ["", "none", "low", "medium", "high", "xhigh"],
+                key="api_template_reasoning_effort",
+                format_func=lambda value: value or "(model default)",
+            )
+            st.selectbox(
+                "Text verbosity",
+                ["", "low", "medium", "high"],
+                key="api_template_text_verbosity",
+                format_func=lambda value: value or "(model default)",
+            )
+            st.text_input(
+                "Max output tokens",
+                key="api_template_max_output_tokens",
+                help="Optional. Leave blank to use the model default.",
+            )
+            metadata_rows = _render_rows_editor(
+                "Request metadata",
+                st.session_state.get("api_template_metadata_rows", []),
+                ["key", "value"],
+                key="api_request_metadata_editor",
+                help_text="Optional metadata sent on the response request.",
+            )
+            st.session_state["api_template_metadata_rows"] = metadata_rows
+
+        text_cols = st.columns(2)
+        with text_cols[0]:
+            st.text_area(
+                "Developer instructions override",
+                key="api_template_developer_text",
+                height=220,
+            )
+        with text_cols[1]:
+            st.text_area(
+                "User input override",
+                key="api_template_user_text",
+                height=220,
+            )
+
+        web_tab, file_tab = st.tabs(["Web Search", "File Search"])
+        with web_tab:
+            st.checkbox("Enable web search", key="api_template_web_enabled")
+            st.checkbox("External web access", key="api_template_web_external_access")
+            st.text_area(
+                "Allowed domains",
+                key="api_template_web_allowed_domains",
+                height=120,
+                help="One domain per line or comma-separated.",
+            )
+            location_cols = st.columns(4)
+            with location_cols[0]:
+                st.text_input("Country", key="api_template_web_country")
+            with location_cols[1]:
+                st.text_input("City", key="api_template_web_city")
+            with location_cols[2]:
+                st.text_input("Region", key="api_template_web_region")
+            with location_cols[3]:
+                st.text_input("Timezone", key="api_template_web_timezone")
+
+        with file_tab:
+            st.checkbox("Enable file search", key="api_template_file_enabled")
+            st.text_input(
+                "Vector store IDs",
+                key="api_template_file_vector_store_ids",
+                help="Comma-separated IDs. You can also paste newline-separated IDs.",
+            )
+            file_cols = st.columns(4)
+            with file_cols[0]:
+                st.number_input(
+                    "Max results",
+                    min_value=1,
+                    step=1,
+                    key="api_template_file_max_num_results",
+                )
+            with file_cols[1]:
+                st.checkbox("Include search results", key="api_template_file_include_results")
+            with file_cols[2]:
+                st.text_input("Ranker", key="api_template_file_ranker")
+            with file_cols[3]:
+                st.text_input("Score threshold", key="api_template_file_score_threshold")
+            st.selectbox("Filter combine mode", ["and", "or"], key="api_template_file_filter_type")
+            filter_rows = _render_rows_editor(
+                "File metadata filters",
+                st.session_state.get("api_template_file_filter_rows", []),
+                ["key", "type", "value_type", "value"],
+                key="api_file_metadata_filters_editor",
+                help_text="Operators: eq, ne, gt, gte, lt, lte, in, nin. Metadata names stay fully editable.",
+                height=220,
+            )
+            st.session_state["api_template_file_filter_rows"] = filter_rows
+
+        template_payload = collect_api_template_from_state(prompt_variable_rows, metadata_rows, filter_rows)
+
+        action_cols = st.columns([1, 1, 2])
+        with action_cols[0]:
+            save_clicked = st.form_submit_button("Save template", use_container_width=True)
+        with action_cols[1]:
+            run_clicked = st.form_submit_button("Run request", use_container_width=True)
+
+    if save_clicked:
+        template_name = str(template_payload.get("name", "") or "").strip()
+        if not template_name:
+            st.error("Template file name is required before saving.")
+        else:
+            saved_path = save_json_document(API_TEMPLATES_DIR, template_name, template_payload)
+            st.success(f"Template saved: {saved_path.name}")
+    if run_clicked:
+        try:
+            payload, _response, output_text = run_responses_request(template_payload)
+            output_path = save_output_text(
+                output_text,
+                str(template_payload.get("default_output_name", "") or "").strip(),
+            )
+        except Exception as exc:  # pragma: no cover - UI feedback
+            st.error(f"Request failed: {exc}")
+        else:
+            st.session_state["api_last_payload"] = payload
+            st.session_state["api_last_output_text"] = output_text
+            st.session_state["api_last_output_path"] = str(output_path)
+            st.success(f"Response saved: {output_path.name}")
 
     preview_payload: dict[str, object]
     try:
