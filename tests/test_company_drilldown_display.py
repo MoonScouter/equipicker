@@ -2,6 +2,7 @@ import unittest
 
 import pandas as pd
 from datetime import date
+from unittest.mock import patch
 
 from equipilot_app import (
     TREND_FILTER_LABELS,
@@ -12,9 +13,12 @@ from equipilot_app import (
     _build_thematics_basket_table_frame,
     _build_thematics_company_universe,
     _build_company_drilldown_styler,
+    _enrich_company_universe_with_market_regime,
     _filter_thematics_basket_table_for_view,
+    _filter_by_optional_numeric_range,
     _company_filter_presets,
     _compute_company_return_metrics,
+    _load_market_regime_company_metrics_for_date,
     _normalize_thematics_selected_basket,
     _prepare_company_drilldown_universe,
     apply_trend_symbols_to_table,
@@ -64,6 +68,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(prepared["rel_volume"].tolist(), ["Negative", "Positive"])
         self.assertEqual(prepared["ai_revenue_exposure"].tolist(), ["none", "none"])
         self.assertEqual(prepared["ai_disruption_risk"].tolist(), ["none", "none"])
+        self.assertTrue(prepared["stock_rsi_regime_score"].isna().all())
+        self.assertTrue(prepared["sector_regime_fit_score"].isna().all())
 
     def test_prepare_company_universe_backfills_missing_company_column(self) -> None:
         report_df = pd.DataFrame(
@@ -87,8 +93,76 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(prepared.iloc[0]["company"], "AAA.US")
         self.assertIn("fundamental_momentum", prepared.columns)
         self.assertTrue(pd.isna(prepared.iloc[0]["fundamental_momentum"]))
+        self.assertIn("stock_rsi_regime_score", prepared.columns)
+        self.assertIn("sector_regime_fit_score", prepared.columns)
         self.assertEqual(prepared.iloc[0]["rel_strength"], "N/A")
         self.assertEqual(prepared.iloc[0]["rel_volume"], "N/A")
+
+    def test_enrich_company_universe_merges_regime_scores_from_market_cache(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "AAA.US", "company": "Alpha"},
+                {"ticker": "BBB.US", "company": "Beta"},
+            ]
+        )
+        setup_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "stock_rsi_regime_score": 81.5,
+                    "sector_regime_fit_score": 67.25,
+                }
+            ]
+        )
+
+        _load_market_regime_company_metrics_for_date.clear()
+        with patch("equipilot_app.market_cache_status", return_value={"ready": True}), patch(
+            "equipilot_app.load_market_bundle",
+            return_value={"setup_readiness_df": setup_df},
+        ):
+            enriched, warning = _enrich_company_universe_with_market_regime(
+                company_df,
+                date(2026, 3, 13),
+            )
+
+        self.assertIsNone(warning)
+        by_ticker = enriched.set_index("ticker")
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "stock_rsi_regime_score"]), 81.5)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "sector_regime_fit_score"]), 67.25)
+        self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "stock_rsi_regime_score"]))
+        self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "sector_regime_fit_score"]))
+
+    def test_enrich_company_universe_warns_and_leaves_regime_scores_empty_when_cache_missing(self) -> None:
+        company_df = pd.DataFrame([{"ticker": "AAA.US", "company": "Alpha"}])
+
+        _load_market_regime_company_metrics_for_date.clear()
+        with patch("equipilot_app.market_cache_status", return_value={"ready": False}):
+            enriched, warning = _enrich_company_universe_with_market_regime(
+                company_df,
+                date(2026, 3, 20),
+            )
+
+        assert warning is not None
+        self.assertIn("2026-03-20", warning)
+        self.assertTrue(enriched["stock_rsi_regime_score"].isna().all())
+        self.assertTrue(enriched["sector_regime_fit_score"].isna().all())
+
+    def test_optional_numeric_range_filter_relaxes_when_column_has_no_values(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"ticker": "AAA.US", "stock_rsi_regime_score": float("nan")},
+                {"ticker": "BBB.US", "stock_rsi_regime_score": float("nan")},
+            ]
+        )
+
+        filtered, applied = _filter_by_optional_numeric_range(
+            df,
+            column="stock_rsi_regime_score",
+            range_value=(70.0, 100.0),
+        )
+
+        self.assertFalse(applied)
+        self.assertEqual(filtered["ticker"].tolist(), ["AAA.US", "BBB.US"])
 
     def test_technical_display_includes_company_column_and_preserves_sort(self) -> None:
         company_df = pd.DataFrame(
@@ -102,6 +176,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 95.0,
                     "fundamental_momentum": 60.0,
                     "general_technical_score": 80.0,
+                    "stock_rsi_regime_score": 69.0,
+                    "sector_regime_fit_score": 58.0,
                 },
                 {
                     "ticker": "HIGH.US",
@@ -112,6 +188,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 70.0,
                     "fundamental_momentum": 72.0,
                     "general_technical_score": 90.0,
+                    "stock_rsi_regime_score": 82.0,
+                    "sector_regime_fit_score": 74.0,
                 },
             ]
         )
@@ -129,6 +207,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Fundamental Score",
                 "Fundamental Momentum",
                 "Technical Score",
+                "RSI Regime Score",
+                "Sector Regime Fit",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -138,6 +218,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertEqual(rendered.iloc[0]["Company"], "High Tech")
         self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "72.0")
+        self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "82.0")
+        self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "74.0")
 
     def test_fundamental_display_now_includes_company_and_momentum(self) -> None:
         company_df = pd.DataFrame(
@@ -151,6 +233,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 92.0,
                     "fundamental_momentum": 85.0,
                     "general_technical_score": 70.0,
+                    "stock_rsi_regime_score": 76.0,
+                    "sector_regime_fit_score": 68.0,
                 }
             ]
         )
@@ -168,6 +252,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Fundamental Score",
                 "Fundamental Momentum",
                 "Technical Score",
+                "RSI Regime Score",
+                "Sector Regime Fit",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -176,6 +262,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         )
         self.assertEqual(rendered.iloc[0]["Company"], "Alpha Inc")
         self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "85.0")
+        self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "76.0")
+        self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "68.0")
 
     def test_fundamental_and_technical_display_include_ai_and_signal_fields(self) -> None:
         company_df = pd.DataFrame(
@@ -189,6 +277,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 88.0,
                     "fundamental_momentum": 77.0,
                     "general_technical_score": 91.0,
+                    "stock_rsi_regime_score": 84.0,
+                    "sector_regime_fit_score": 72.0,
                     "rel_strength": "Positive",
                     "rel_volume": "Negative",
                     "ai_revenue_exposure": "direct",
@@ -209,6 +299,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             "Fundamental Score",
             "Fundamental Momentum",
             "Technical Score",
+            "RSI Regime Score",
+            "Sector Regime Fit",
             "Rel Strength",
             "Rel Volume",
             "AI Revenue Exposure",
@@ -216,6 +308,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         ]
         self.assertEqual(fundamental_rendered.columns.tolist(), expected_columns)
         self.assertEqual(technical_rendered.columns.tolist(), expected_columns)
+        self.assertEqual(fundamental_rendered.iloc[0]["RSI Regime Score"], "84.0")
+        self.assertEqual(fundamental_rendered.iloc[0]["Sector Regime Fit"], "72.0")
         self.assertEqual(fundamental_rendered.iloc[0]["Rel Strength"], "Positive")
         self.assertEqual(fundamental_rendered.iloc[0]["AI Revenue Exposure"], "direct")
         self.assertEqual(technical_rendered.iloc[0]["AI Disruption Risk"], "low")
@@ -232,6 +326,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "Fundamental Score": "88.0",
                     "Fundamental Momentum": "77.0",
                     "Technical Score": "91.0",
+                    "RSI Regime Score": "84.0",
+                    "Sector Regime Fit": "72.0",
                     "Rel Strength": "Positive",
                     "Rel Volume": "Negative",
                     "AI Revenue Exposure": "indirect",
@@ -323,6 +419,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "3m_perf": 5.0,
                     "ytd_perf": 10.0,
                     "general_technical_score": 81.0,
+                    "stock_rsi_regime_score": 74.0,
+                    "sector_regime_fit_score": 66.0,
                     "fundamental_total_score": 76.0,
                     "fundamental_momentum": 68.0,
                     "technical_trend_symbol": TREND_SYMBOL_UP,
@@ -338,7 +436,34 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
 
         rendered = format_thematics_company_display(company_df)
 
+        self.assertEqual(
+            rendered.columns.tolist(),
+            [
+                "Thematic",
+                "Ticker",
+                "Company",
+                "Sector",
+                "Industry",
+                "Market Cap",
+                "Beta",
+                "1W",
+                "1M",
+                "3M",
+                "YTD",
+                "TS",
+                "RSI Regime",
+                "Sector Regime Fit",
+                "FS",
+                "Mom. FS",
+                "Rel Strength",
+                "Rel Volume",
+                "AI Revenue Exposure",
+                "AI Disruption Risk",
+            ],
+        )
         self.assertEqual(str(rendered.iloc[0]["TS"]).strip(), f"81.0 {TREND_SYMBOL_UP}")
+        self.assertAlmostEqual(float(rendered.iloc[0]["RSI Regime"]), 74.0)
+        self.assertAlmostEqual(float(rendered.iloc[0]["Sector Regime Fit"]), 66.0)
         self.assertEqual(str(rendered.iloc[0]["FS"]).strip(), f"76.0 {TREND_SYMBOL_DOWN}")
         self.assertEqual(str(rendered.iloc[0]["Mom. FS"]).strip(), "68.0")
 
@@ -379,6 +504,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 TREND_FILTER_LABELS["flat"],
                 TREND_FILTER_LABELS["down"],
             },
+        )
+        self.assertTrue(all(tuple(preset["rsi_regime_range"]) == (70.0, 100.0) for preset in presets.values()))
+        self.assertTrue(
+            all(tuple(preset["sector_regime_fit_range"]) == (60.0, 100.0) for preset in presets.values())
         )
 
     def test_compute_company_return_metrics_uses_exact_anchor_and_prior_targets(self) -> None:

@@ -2543,6 +2543,8 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "default_industry",
         "default_fund_range",
         "default_tech_range",
+        "default_rsi_regime_range",
+        "default_sector_regime_fit_range",
         "default_fund_momentum_range",
         "default_tech_trend_dir",
         "active_preset",
@@ -2552,6 +2554,8 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "cap",
         "fund_range",
         "tech_range",
+        "rsi_regime_range",
+        "sector_regime_fit_range",
         "fund_momentum_range",
         "tech_trend_dir",
         "ticker",
@@ -2597,6 +2601,115 @@ def _format_market_cap_display(value: object) -> str:
     return f"{numeric_value / 1_000_000:.2f}M"
 
 
+def _empty_market_regime_company_metrics() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=["ticker", "stock_rsi_regime_score", "sector_regime_fit_score"]
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _load_market_regime_company_metrics_for_date(
+    evaluation_date: date,
+) -> tuple[pd.DataFrame, Optional[str]]:
+    cache_key = build_market_cache_key(evaluation_date)
+    cache_state = market_cache_status(cache_key)
+    missing_warning = (
+        f"Market regime cache is missing for {evaluation_date.isoformat()}. "
+        "RSI Regime Score and Sector Regime Fit are shown as N/A and the default regime filters are relaxed until "
+        "Market > Values is computed for this EOD."
+    )
+    if not bool(cache_state.get("ready")):
+        return _empty_market_regime_company_metrics(), missing_warning
+
+    try:
+        bundle = load_market_bundle(cache_key)
+    except Exception as exc:  # pragma: no cover - UI feedback
+        return (
+            _empty_market_regime_company_metrics(),
+            f"Market regime cache for {evaluation_date.isoformat()} could not be loaded ({exc}). "
+            "RSI Regime Score and Sector Regime Fit are shown as N/A and the default regime filters are relaxed.",
+        )
+
+    setup_df = bundle.get("setup_readiness_df", pd.DataFrame())
+    if not isinstance(setup_df, pd.DataFrame) or setup_df.empty:
+        return (
+            _empty_market_regime_company_metrics(),
+            f"Market regime cache for {evaluation_date.isoformat()} is incomplete. "
+            "RSI Regime Score and Sector Regime Fit are shown as N/A and the default regime filters are relaxed.",
+        )
+
+    available_columns = [
+        column
+        for column in ["ticker", "stock_rsi_regime_score", "sector_regime_fit_score"]
+        if column in setup_df.columns
+    ]
+    if "ticker" not in available_columns:
+        return (
+            _empty_market_regime_company_metrics(),
+            f"Market regime cache for {evaluation_date.isoformat()} is missing ticker data. "
+            "RSI Regime Score and Sector Regime Fit are shown as N/A and the default regime filters are relaxed.",
+        )
+
+    working = setup_df[available_columns].copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    if "stock_rsi_regime_score" not in working.columns:
+        working["stock_rsi_regime_score"] = np.nan
+    if "sector_regime_fit_score" not in working.columns:
+        working["sector_regime_fit_score"] = np.nan
+    working["stock_rsi_regime_score"] = pd.to_numeric(
+        working["stock_rsi_regime_score"], errors="coerce"
+    )
+    working["sector_regime_fit_score"] = pd.to_numeric(
+        working["sector_regime_fit_score"], errors="coerce"
+    )
+
+    warning_message: Optional[str] = None
+    missing_columns = [
+        column
+        for column in ["stock_rsi_regime_score", "sector_regime_fit_score"]
+        if column not in available_columns
+    ]
+    if missing_columns:
+        warning_message = (
+            f"Market regime cache for {evaluation_date.isoformat()} is missing {', '.join(missing_columns)}. "
+            "Unavailable values are shown as N/A and the default regime filters are relaxed."
+        )
+
+    return (
+        working[
+            ["ticker", "stock_rsi_regime_score", "sector_regime_fit_score"]
+        ].drop_duplicates(subset=["ticker"], keep="first"),
+        warning_message,
+    )
+
+
+def _enrich_company_universe_with_market_regime(
+    company_df: pd.DataFrame,
+    evaluation_date: date,
+) -> tuple[pd.DataFrame, Optional[str]]:
+    enriched = company_df.copy()
+    for column in ["stock_rsi_regime_score", "sector_regime_fit_score"]:
+        if column not in enriched.columns:
+            enriched[column] = np.nan
+    if enriched.empty:
+        return enriched, None
+
+    regime_df, warning_message = _load_market_regime_company_metrics_for_date(
+        evaluation_date
+    )
+    if regime_df.empty:
+        return enriched, warning_message
+
+    merged = enriched.drop(
+        columns=[
+            column
+            for column in ["stock_rsi_regime_score", "sector_regime_fit_score"]
+            if column in enriched.columns
+        ]
+    ).merge(regime_df, on="ticker", how="left")
+    return merged, warning_message
+
+
 def _market_cap_bucket_from_usd(value: object) -> str:
     market_cap_num = pd.to_numeric(value, errors="coerce")
     if pd.isna(market_cap_num) or float(market_cap_num) < 0:
@@ -2620,6 +2733,28 @@ def _sign_label(value: object) -> str:
     if pd.isna(numeric_value):
         return "N/A"
     return "Positive" if float(numeric_value) > 0 else "Negative"
+
+
+def _filter_by_optional_numeric_range(
+    df: pd.DataFrame,
+    *,
+    column: str,
+    range_value: tuple[float, float],
+    min_value: float = 0.0,
+    max_value: float = 100.0,
+) -> tuple[pd.DataFrame, bool]:
+    if column not in df.columns:
+        return df.copy(), False
+    numeric_series = pd.to_numeric(df[column], errors="coerce")
+    if not numeric_series.notna().any():
+        return df.copy(), False
+    if (
+        abs(float(range_value[0]) - float(min_value)) < 1e-9
+        and abs(float(range_value[1]) - float(max_value)) < 1e-9
+    ):
+        return df.copy(), False
+    filtered = df[numeric_series.between(float(range_value[0]), float(range_value[1]), inclusive="both")]
+    return filtered.copy(), True
 
 
 def _prepare_company_drilldown_universe(
@@ -2708,19 +2843,27 @@ def _prepare_company_drilldown_universe(
     working["ai_disruption_risk"] = ai_disruption_risk
     working["thematic"] = thematic_display
     working["thematic_memberships"] = thematic_membership_values
+    working["stock_rsi_regime_score"] = np.nan
+    working["sector_regime_fit_score"] = np.nan
     return working, None
 
 
 def build_company_drilldown_context(
     report_df: pd.DataFrame,
     *,
+    evaluation_date: date,
     selected_sector: str,
     selected_mode: str,
     selected_key: str,
-) -> tuple[str, Optional[pd.DataFrame], list[str], list[str], Optional[str]]:
+) -> tuple[str, Optional[pd.DataFrame], list[str], list[str], Optional[str], Optional[str]]:
     company_universe, error_message = _prepare_company_drilldown_universe(report_df)
     if error_message:
-        return "", None, [], [], error_message
+        return "", None, [], [], error_message, None
+    assert company_universe is not None
+    company_universe, regime_warning = _enrich_company_universe_with_market_regime(
+        company_universe,
+        evaluation_date,
+    )
     if selected_mode == "sector":
         title = f"Companies in Sector: {selected_key}"
         default_sectors = [selected_key]
@@ -2729,7 +2872,7 @@ def build_company_drilldown_context(
         title = f"Companies in {selected_sector} / {selected_key}"
         default_sectors = [selected_sector]
         default_industries = [selected_key]
-    return title, company_universe, default_sectors, default_industries, None
+    return title, company_universe, default_sectors, default_industries, None, regime_warning
 
 
 def _annotate_company_technical_trend(
@@ -2830,36 +2973,48 @@ def _company_filter_presets() -> dict[str, dict[str, object]]:
         "Strong and Up": {
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
+            "rsi_regime_range": (70.0, 100.0),
+            "sector_regime_fit_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
             "trend_dir": TREND_FILTER_LABELS["up"],
         },
         "Strong and Stable": {
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
+            "rsi_regime_range": (70.0, 100.0),
+            "sector_regime_fit_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
             "trend_dir": TREND_FILTER_LABELS["flat"],
         },
         "Strong and Down": {
             "fund_range": (50.0, 100.0),
             "tech_range": (60.0, 100.0),
+            "rsi_regime_range": (70.0, 100.0),
+            "sector_regime_fit_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
             "trend_dir": TREND_FILTER_LABELS["down"],
         },
         "Weak and Up": {
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
+            "rsi_regime_range": (70.0, 100.0),
+            "sector_regime_fit_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
             "trend_dir": TREND_FILTER_LABELS["up"],
         },
         "Weak and Stable": {
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
+            "rsi_regime_range": (70.0, 100.0),
+            "sector_regime_fit_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
             "trend_dir": TREND_FILTER_LABELS["flat"],
         },
         "Weak and Down": {
             "fund_range": (50.0, 100.0),
             "tech_range": (0.0, 60.0),
+            "rsi_regime_range": (70.0, 100.0),
+            "sector_regime_fit_range": (60.0, 100.0),
             "fund_momentum_range": (60.0, 100.0),
             "trend_dir": TREND_FILTER_LABELS["down"],
         },
@@ -2871,6 +3026,12 @@ def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
         return
     st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(preset["fund_range"])  # type: ignore[arg-type]
     st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(preset["tech_range"])  # type: ignore[arg-type]
+    st.session_state[f"{prefix}_drilldown_filter_rsi_regime_range"] = tuple(  # type: ignore[arg-type]
+        preset["rsi_regime_range"]
+    )
+    st.session_state[f"{prefix}_drilldown_filter_sector_regime_fit_range"] = tuple(  # type: ignore[arg-type]
+        preset["sector_regime_fit_range"]
+    )
     st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(  # type: ignore[arg-type]
         preset["fund_momentum_range"]
     )
@@ -2893,6 +3054,8 @@ def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
 def _resolve_company_filter_preset(
     fund_range: tuple[float, float],
     tech_range: tuple[float, float],
+    rsi_regime_range: tuple[float, float],
+    sector_regime_fit_range: tuple[float, float],
     fund_momentum_range: tuple[float, float],
     trend_dir: str,
 ) -> str:
@@ -2900,6 +3063,8 @@ def _resolve_company_filter_preset(
         if (
             tuple(preset["fund_range"]) == tuple(fund_range)
             and tuple(preset["tech_range"]) == tuple(tech_range)
+            and tuple(preset["rsi_regime_range"]) == tuple(rsi_regime_range)
+            and tuple(preset["sector_regime_fit_range"]) == tuple(sector_regime_fit_range)
             and tuple(preset["fund_momentum_range"]) == tuple(fund_momentum_range)
             and str(preset["trend_dir"]) == trend_dir
         ):
@@ -2917,6 +3082,8 @@ def _sync_drilldown_filter_defaults(
     default_cap_buckets: Optional[list[str]] = None,
     default_fund_range: tuple[float, float] = (0.0, 100.0),
     default_tech_range: tuple[float, float] = (0.0, 100.0),
+    default_rsi_regime_range: tuple[float, float] = (0.0, 100.0),
+    default_sector_regime_fit_range: tuple[float, float] = (0.0, 100.0),
     default_fund_momentum_range: tuple[float, float] = (0.0, 100.0),
     default_tech_trend_dir: str = "All",
     default_rel_strength: str = "All",
@@ -2936,6 +3103,8 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_default_cap"] = default_cap_list
     st.session_state[f"{prefix}_drilldown_filter_default_fund_range"] = tuple(default_fund_range)
     st.session_state[f"{prefix}_drilldown_filter_default_tech_range"] = tuple(default_tech_range)
+    st.session_state[f"{prefix}_drilldown_filter_default_rsi_regime_range"] = tuple(default_rsi_regime_range)
+    st.session_state[f"{prefix}_drilldown_filter_default_sector_regime_fit_range"] = tuple(default_sector_regime_fit_range)
     st.session_state[f"{prefix}_drilldown_filter_default_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_default_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_default_rel_strength"] = default_rel_strength
@@ -2949,6 +3118,8 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_cap"] = default_cap_list
     st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(default_fund_range)
     st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(default_tech_range)
+    st.session_state[f"{prefix}_drilldown_filter_rsi_regime_range"] = tuple(default_rsi_regime_range)
+    st.session_state[f"{prefix}_drilldown_filter_sector_regime_fit_range"] = tuple(default_sector_regime_fit_range)
     st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = default_rel_strength
@@ -3039,6 +3210,8 @@ def render_company_drilldown_filters(
     cap_key = f"{prefix}_drilldown_filter_cap"
     fund_range_key = f"{prefix}_drilldown_filter_fund_range"
     tech_range_key = f"{prefix}_drilldown_filter_tech_range"
+    rsi_regime_range_key = f"{prefix}_drilldown_filter_rsi_regime_range"
+    sector_regime_fit_range_key = f"{prefix}_drilldown_filter_sector_regime_fit_range"
     fund_momentum_range_key = f"{prefix}_drilldown_filter_fund_momentum_range"
     tech_trend_dir_key = f"{prefix}_drilldown_filter_tech_trend_dir"
     rel_strength_key = f"{prefix}_drilldown_filter_rel_strength"
@@ -3051,6 +3224,8 @@ def render_company_drilldown_filters(
     default_thematic_key = f"{prefix}_drilldown_filter_default_thematic"
     default_fund_range_key = f"{prefix}_drilldown_filter_default_fund_range"
     default_tech_range_key = f"{prefix}_drilldown_filter_default_tech_range"
+    default_rsi_regime_range_key = f"{prefix}_drilldown_filter_default_rsi_regime_range"
+    default_sector_regime_fit_range_key = f"{prefix}_drilldown_filter_default_sector_regime_fit_range"
     default_fund_momentum_range_key = f"{prefix}_drilldown_filter_default_fund_momentum_range"
     default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
     default_rel_strength_key = f"{prefix}_drilldown_filter_default_rel_strength"
@@ -3071,6 +3246,12 @@ def render_company_drilldown_filters(
         st.session_state[cap_key] = list(preferred_cap_default)
         st.session_state[fund_range_key] = tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0)))
         st.session_state[tech_range_key] = tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0)))
+        st.session_state[rsi_regime_range_key] = tuple(
+            st.session_state.get(default_rsi_regime_range_key, (0.0, 100.0))
+        )
+        st.session_state[sector_regime_fit_range_key] = tuple(
+            st.session_state.get(default_sector_regime_fit_range_key, (0.0, 100.0))
+        )
         st.session_state[fund_momentum_range_key] = tuple(
             st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))
         )
@@ -3095,6 +3276,14 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(cap_key, list(preferred_cap_default))
     st.session_state.setdefault(fund_range_key, tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0))))
     st.session_state.setdefault(tech_range_key, tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0))))
+    st.session_state.setdefault(
+        rsi_regime_range_key,
+        tuple(st.session_state.get(default_rsi_regime_range_key, (0.0, 100.0))),
+    )
+    st.session_state.setdefault(
+        sector_regime_fit_range_key,
+        tuple(st.session_state.get(default_sector_regime_fit_range_key, (0.0, 100.0))),
+    )
     st.session_state.setdefault(
         fund_momentum_range_key,
         tuple(st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))),
@@ -3231,15 +3420,7 @@ div.st-key-{btn_key} button {{
             cap_options = list(CAP_BUCKET_ORDER)
             selected_caps = st.multiselect("Market cap bucket", options=cap_options, key=cap_key)
 
-        middle_layout = [1, 1]
-        if include_fundamental_momentum_filter:
-            middle_layout.append(1)
-        if include_technical_trend_filter:
-            middle_layout.append(1)
-        if include_beta_filter:
-            middle_layout.append(1)
-        filter_cols_middle = st.columns(middle_layout)
-        next_middle_col = 0
+        filter_cols_middle = st.columns([1, 1, 1, 1])
         trend_filter_value = "All"
         with filter_cols_middle[0]:
             fundamental_range = st.slider(
@@ -3249,8 +3430,7 @@ div.st-key-{btn_key} button {{
                 step=0.5,
                 key=fund_range_key,
             )
-        next_middle_col += 1
-        with filter_cols_middle[next_middle_col]:
+        with filter_cols_middle[1]:
             technical_range = st.slider(
                 "Technical score range",
                 min_value=0.0,
@@ -3258,9 +3438,34 @@ div.st-key-{btn_key} button {{
                 step=0.5,
                 key=tech_range_key,
             )
-        next_middle_col += 1
+        with filter_cols_middle[2]:
+            rsi_regime_range = st.slider(
+                "RSI Regime Score range",
+                min_value=0.0,
+                max_value=100.0,
+                step=0.5,
+                key=rsi_regime_range_key,
+            )
+        with filter_cols_middle[3]:
+            sector_regime_fit_range = st.slider(
+                "Sector Regime Fit range",
+                min_value=0.0,
+                max_value=100.0,
+                step=0.5,
+                key=sector_regime_fit_range_key,
+            )
+
+        detail_layout: list[float] = []
         if include_fundamental_momentum_filter:
-            with filter_cols_middle[next_middle_col]:
+            detail_layout.append(1)
+        if include_technical_trend_filter:
+            detail_layout.append(1)
+        if include_beta_filter:
+            detail_layout.append(1)
+        filter_cols_detail = st.columns(detail_layout) if detail_layout else []
+        next_detail_col = 0
+        if include_fundamental_momentum_filter:
+            with filter_cols_detail[next_detail_col]:
                 fundamental_momentum_range = st.slider(
                     "Fundamental momentum range",
                     min_value=0.0,
@@ -3268,19 +3473,19 @@ div.st-key-{btn_key} button {{
                     step=0.5,
                     key=fund_momentum_range_key,
                 )
-            next_middle_col += 1
+            next_detail_col += 1
         else:
             fundamental_momentum_range = (0.0, 100.0)
         if include_technical_trend_filter:
-            with filter_cols_middle[next_middle_col]:
+            with filter_cols_detail[next_detail_col]:
                 trend_filter_value = st.selectbox(
                     "Technical trend filter",
                     options=TREND_FILTER_OPTIONS,
                     key=tech_trend_dir_key,
                 )
-            next_middle_col += 1
+            next_detail_col += 1
         if include_beta_filter:
-            with filter_cols_middle[next_middle_col]:
+            with filter_cols_detail[next_detail_col]:
                 beta_range = st.slider(
                     "Beta range",
                     min_value=0.0,
@@ -3288,7 +3493,6 @@ div.st-key-{btn_key} button {{
                     step=0.1,
                     key=beta_range_key,
                 )
-            next_middle_col += 1
         else:
             beta_range = (0.0, 5.0)
 
@@ -3359,6 +3563,8 @@ div.st-key-{btn_key} button {{
             st.session_state[active_preset_key] = _resolve_company_filter_preset(
                 tuple(fundamental_range),
                 tuple(technical_range),
+                tuple(rsi_regime_range),
+                tuple(sector_regime_fit_range),
                 tuple(fundamental_momentum_range),
                 str(trend_filter_value),
             )
@@ -3390,6 +3596,16 @@ div.st-key-{btn_key} button {{
         filtered = filtered[filtered["fundamental_total_score"].between(fund_min, fund_max, inclusive="both")]
     if not _is_full_numeric_range(tuple(technical_range), min_value=0.0, max_value=100.0):
         filtered = filtered[filtered["general_technical_score"].between(tech_min, tech_max, inclusive="both")]
+    filtered, _ = _filter_by_optional_numeric_range(
+        filtered,
+        column="stock_rsi_regime_score",
+        range_value=tuple(rsi_regime_range),
+    )
+    filtered, _ = _filter_by_optional_numeric_range(
+        filtered,
+        column="sector_regime_fit_score",
+        range_value=tuple(sector_regime_fit_range),
+    )
     if include_fundamental_momentum_filter and "fundamental_momentum" in filtered.columns:
         if (
             filtered["fundamental_momentum"].notna().any()
@@ -3438,6 +3654,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Fundamental Score",
                 "Fundamental Momentum",
                 "Technical Score",
+                "RSI Regime Score",
+                "Sector Regime Fit",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -3461,6 +3679,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["rel_strength"] = "N/A"
     if "rel_volume" not in sorted_df.columns:
         sorted_df["rel_volume"] = "N/A"
+    if "stock_rsi_regime_score" not in sorted_df.columns:
+        sorted_df["stock_rsi_regime_score"] = np.nan
+    if "sector_regime_fit_score" not in sorted_df.columns:
+        sorted_df["sector_regime_fit_score"] = np.nan
     if "ai_revenue_exposure" not in sorted_df.columns:
         sorted_df["ai_revenue_exposure"] = "none"
     if "ai_disruption_risk" not in sorted_df.columns:
@@ -3475,6 +3697,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "fundamental_total_score",
         "fundamental_momentum",
         "general_technical_score",
+        "stock_rsi_regime_score",
+        "sector_regime_fit_score",
         "rel_strength",
         "rel_volume",
         "ai_revenue_exposure",
@@ -3489,6 +3713,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "fundamental_total_score": "Fundamental Score",
         "fundamental_momentum": "Fundamental Momentum",
         "general_technical_score": "Technical Score",
+        "stock_rsi_regime_score": "RSI Regime Score",
+        "sector_regime_fit_score": "Sector Regime Fit",
         "rel_strength": "Rel Strength",
         "rel_volume": "Rel Volume",
         "ai_revenue_exposure": "AI Revenue Exposure",
@@ -3515,6 +3741,12 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
         )
     display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(
+        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+    )
+    display_df["RSI Regime Score"] = display_df["RSI Regime Score"].map(
+        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+    )
+    display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
     )
     display_df["Rel Strength"] = display_df["Rel Strength"].fillna("N/A")
@@ -3591,7 +3823,13 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
     if centered_columns:
         styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
 
-    for score_column in ["Fundamental Score", "Fundamental Momentum", "Technical Score"]:
+    for score_column in [
+        "Fundamental Score",
+        "Fundamental Momentum",
+        "Technical Score",
+        "RSI Regime Score",
+        "Sector Regime Fit",
+    ]:
         if score_column in display_df.columns:
             styler = styler.applymap(_score_color_css, subset=[score_column])
     for sign_column in ["Rel Strength", "Rel Volume"]:
@@ -4385,8 +4623,9 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
     selected_mode = st.session_state.get("fundamental_selected_mode")
     if selected_key and selected_mode:
         company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
-        details_title, company_universe, default_sectors, default_industries, details_error = build_company_drilldown_context(
+        details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context(
             report_df,
+            evaluation_date=selected_eod,
             selected_sector=selected_sector,
             selected_mode=selected_mode,
             selected_key=selected_key,
@@ -4415,11 +4654,15 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 default_cap_buckets=["Large", "Mega"],
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
+                default_rsi_regime_range=(70.0, 100.0),
+                default_sector_regime_fit_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),
                 default_tech_trend_dir="All",
             )
             st.markdown("---")
             st.caption(details_title)
+            if regime_warning:
+                st.caption(regime_warning)
             filtered_companies = render_company_drilldown_filters(
                 company_universe,
                 prefix="fundamental",
@@ -4615,8 +4858,9 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     selected_mode = st.session_state.get("technical_selected_mode")
     if selected_key and selected_mode:
         company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
-        details_title, company_universe, default_sectors, default_industries, details_error = build_company_drilldown_context(
+        details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context(
             report_df,
+            evaluation_date=selected_eod,
             selected_sector=selected_sector,
             selected_mode=selected_mode,
             selected_key=selected_key,
@@ -4645,11 +4889,15 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 default_cap_buckets=["Large", "Mega"],
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
+                default_rsi_regime_range=(70.0, 100.0),
+                default_sector_regime_fit_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),
                 default_tech_trend_dir="All",
             )
             st.markdown("---")
             st.caption(details_title)
+            if regime_warning:
+                st.caption(regime_warning)
             filtered_companies = render_company_drilldown_filters(
                 company_universe,
                 prefix="technical",
@@ -6469,6 +6717,8 @@ def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.Dat
         "beta",
         "fundamental_total_score",
         "general_technical_score",
+        "stock_rsi_regime_score",
+        "sector_regime_fit_score",
         "fundamental_momentum",
         "rs_monthly",
         "obvm_monthly",
@@ -6531,6 +6781,8 @@ def _build_thematics_company_universe(
                 "beta",
                 "fundamental_total_score",
                 "general_technical_score",
+                "stock_rsi_regime_score",
+                "sector_regime_fit_score",
                 "fundamental_momentum",
                 "rs_monthly",
                 "obvm_monthly",
@@ -6568,6 +6820,10 @@ def _build_thematics_company_universe(
     )
     if error_message or company_universe is None:
         return pd.DataFrame(), False
+    company_universe, _ = _enrich_company_universe_with_market_regime(
+        company_universe,
+        reference_date,
+    )
 
     performance_df, anchor_missing = _compute_company_return_metrics(scope_tickers, price_lookup, reference_date)
     if not performance_df.empty:
@@ -6686,6 +6942,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "3M",
                 "YTD",
                 "TS",
+                "RSI Regime",
+                "Sector Regime Fit",
                 "FS",
                 "Mom. FS",
                 "Rel Strength",
@@ -6702,6 +6960,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
     ).copy()
     sorted_df["company"] = sorted_df["company"].fillna("").astype(str).str.strip()
     sorted_df["company"] = sorted_df["company"].where(sorted_df["company"].str.len() > 0, sorted_df["ticker"].map(_base_ticker_symbol))
+    if "stock_rsi_regime_score" not in sorted_df.columns:
+        sorted_df["stock_rsi_regime_score"] = np.nan
+    if "sector_regime_fit_score" not in sorted_df.columns:
+        sorted_df["sector_regime_fit_score"] = np.nan
 
     display_df = pd.DataFrame(
         {
@@ -6717,6 +6979,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
             "YTD": pd.to_numeric(sorted_df["ytd_perf"], errors="coerce"),
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
+            "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
+            "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
             "FS": pd.to_numeric(sorted_df["fundamental_total_score"], errors="coerce"),
             "Mom. FS": pd.to_numeric(sorted_df["fundamental_momentum"], errors="coerce"),
             "Rel Strength": sorted_df["rel_strength"].fillna("N/A"),
@@ -7496,7 +7760,11 @@ def _build_thematics_hierarchy_styler(
     centered_columns = [column for column in display_df.columns if column != name_column]
     if centered_columns:
         styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
-    score_columns = [column for column in ["TS", "FS", "Mom. FS"] if column in display_df.columns]
+    score_columns = [
+        column
+        for column in ["TS", "RSI Regime", "Sector Regime Fit", "FS", "Mom. FS"]
+        if column in display_df.columns
+    ]
     if score_columns:
         styler = styler.set_properties(subset=score_columns, **{"text-align": "center", "white-space": "nowrap"})
 
@@ -7616,7 +7884,7 @@ def _build_thematics_company_styler(
     for perf_column in ["1W", "1M", "3M", "YTD"]:
         if perf_column in display_df.columns:
             styler = styler.applymap(_style_positive_negative_value, subset=[perf_column])
-    for score_column in ["TS", "FS", "Mom. FS"]:
+    for score_column in ["TS", "RSI Regime", "Sector Regime Fit", "FS", "Mom. FS"]:
         if score_column in display_df.columns:
             styler = styler.applymap(_score_color_css, subset=[score_column])
     for sign_column in ["Rel Strength", "Rel Volume"]:
@@ -7631,6 +7899,8 @@ def _build_thematics_company_styler(
             "1M": _format_percent_value,
             "3M": _format_percent_value,
             "YTD": _format_percent_value,
+            "RSI Regime": _format_numeric_value,
+            "Sector Regime Fit": _format_numeric_value,
         },
         na_rep="N/A",
     )
@@ -7897,6 +8167,8 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 default_cap_buckets=["Large", "Mega"],
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
+                default_rsi_regime_range=(70.0, 100.0),
+                default_sector_regime_fit_range=(60.0, 100.0),
                 default_fund_momentum_range=(60.0, 100.0),
                 default_tech_trend_dir="All",
                 default_rel_strength="All",
@@ -7907,6 +8179,9 @@ def render_thematics_tab(config: ReportConfig) -> None:
             )
             st.markdown("---")
             st.caption(f"Companies in thematic basket: {selected_basket}")
+            _, regime_warning = _load_market_regime_company_metrics_for_date(reference_date)
+            if regime_warning:
+                st.caption(regime_warning)
             filtered_companies = render_company_drilldown_filters(
                 company_universe,
                 prefix="thematics",
