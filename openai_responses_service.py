@@ -4,9 +4,12 @@ import json
 import math
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -14,6 +17,10 @@ API_TEMPLATES_DIR = DATA_DIR / "api_templates"
 PROMPT_STORE_DIR = DATA_DIR / "prompt_store"
 RESPONSE_OUTPUT_DIR = DATA_DIR / "response_output"
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+OPENAI_REQUEST_TIMEOUT_SECONDS = 60
+OPENAI_POLL_INTERVAL_SECONDS = 2.0
+OPENAI_POLL_MAX_SECONDS = 600
 
 DEFAULT_TEMPLATE_PAYLOAD: dict[str, Any] = {
     "name": "",
@@ -28,7 +35,13 @@ DEFAULT_TEMPLATE_PAYLOAD: dict[str, Any] = {
     "tool_choice": "auto",
     "temperature": 1.0,
     "top_p": 1.0,
-    "max_output_tokens": 1200,
+    "max_output_tokens": "",
+    "reasoning": {
+        "effort": "",
+    },
+    "text": {
+        "verbosity": "",
+    },
     "store": True,
     "parallel_tool_calls": True,
     "metadata": [],
@@ -114,6 +127,16 @@ def save_output_text(text: str, preferred_name: str = "") -> Path:
     safe_name = sanitize_storage_name(preferred_name, fallback=fallback)
     path = RESPONSE_OUTPUT_DIR / f"{safe_name}.txt"
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+def save_response_raw_json(response_data: Mapping[str, Any], preferred_name: str = "") -> Path:
+    ensure_api_storage_dirs()
+    fallback = datetime.now().strftime("%Y%m%d_%H%M%S") + "_raw"
+    base_name = f"{preferred_name}_raw" if str(preferred_name).strip() else ""
+    safe_name = sanitize_storage_name(base_name, fallback=fallback)
+    path = RESPONSE_OUTPUT_DIR / f"{safe_name}.json"
+    path.write_text(json.dumps(response_data, indent=2, ensure_ascii=True), encoding="utf-8")
     return path
 
 
@@ -338,6 +361,18 @@ def build_responses_payload(template_payload: Mapping[str, Any]) -> dict[str, An
     if max_output_tokens not in ("", None):
         payload["max_output_tokens"] = int(max_output_tokens)
 
+    reasoning_config = template_payload.get("reasoning", {})
+    if isinstance(reasoning_config, Mapping):
+        reasoning_effort = str(_clean_cell_value(reasoning_config.get("effort"))).strip().lower()
+        if reasoning_effort:
+            payload["reasoning"] = {"effort": reasoning_effort}
+
+    text_config = template_payload.get("text", {})
+    if isinstance(text_config, Mapping):
+        verbosity = str(_clean_cell_value(text_config.get("verbosity"))).strip().lower()
+        if verbosity:
+            payload["text"] = {"verbosity": verbosity}
+
     tool_choice = str(_clean_cell_value(template_payload.get("tool_choice"))).strip()
     if tool_choice:
         payload["tool_choice"] = tool_choice
@@ -396,6 +431,126 @@ def extract_response_output_text(response: Any) -> str:
     return ""
 
 
+def _load_json_response(request: urllib_request.Request, *, timeout_seconds: int | float) -> dict[str, Any]:
+    try:
+        with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+            raw_body = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        detail = error_body or exc.reason or "unknown error"
+        raise RuntimeError(
+            f"OpenAI Responses API request failed with HTTP {exc.code}: {detail}"
+        ) from exc
+    except urllib_error.URLError as exc:
+        detail = getattr(exc, "reason", exc)
+        raise RuntimeError(f"OpenAI Responses API request failed: {detail}") from exc
+
+    if not raw_body.strip():
+        raise RuntimeError("The OpenAI Responses API returned an empty response body.")
+
+    try:
+        response_data = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("The OpenAI Responses API returned invalid JSON.") from exc
+
+    if not isinstance(response_data, dict):
+        raise RuntimeError("The OpenAI Responses API returned an unexpected payload shape.")
+
+    return response_data
+
+
+def create_response(payload: Mapping[str, Any], api_key: str) -> dict[str, Any]:
+    request_payload = dict(payload)
+    request_payload["background"] = True
+    request_body = json.dumps(request_payload).encode("utf-8")
+    request = urllib_request.Request(
+        OPENAI_RESPONSES_URL,
+        data=request_body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    return _load_json_response(request, timeout_seconds=OPENAI_REQUEST_TIMEOUT_SECONDS)
+
+
+def retrieve_response(response_id: str, api_key: str) -> dict[str, Any]:
+    request = urllib_request.Request(
+        f"{OPENAI_RESPONSES_URL}/{response_id}",
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    return _load_json_response(request, timeout_seconds=OPENAI_REQUEST_TIMEOUT_SECONDS)
+
+
+def _is_retryable_timeout_error(exc: BaseException) -> bool:
+    message = str(exc).strip().lower()
+    if "timed out" in message:
+        return True
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, RuntimeError) and "timed out" in message:
+        return True
+    return False
+
+
+def _wait_for_terminal_response(initial_response: Mapping[str, Any], api_key: str) -> dict[str, Any]:
+    response_data = dict(initial_response)
+    response_id = str(response_data.get("id") or "").strip()
+    if not response_id:
+        return response_data
+
+    deadline = time.monotonic() + OPENAI_POLL_MAX_SECONDS
+    terminal_statuses = {"completed", "failed", "cancelled", "incomplete"}
+    last_timeout_error = ""
+
+    while str(response_data.get("status") or "").strip().lower() not in terminal_statuses:
+        if time.monotonic() >= deadline:
+            detail_suffix = f" Last transport timeout: {last_timeout_error}" if last_timeout_error else ""
+            raise RuntimeError(
+                f"OpenAI Responses API polling timed out after {OPENAI_POLL_MAX_SECONDS} seconds.{detail_suffix}"
+            )
+        time.sleep(OPENAI_POLL_INTERVAL_SECONDS)
+        try:
+            response_data = retrieve_response(response_id, api_key)
+            last_timeout_error = ""
+        except Exception as exc:
+            if _is_retryable_timeout_error(exc) and time.monotonic() < deadline:
+                last_timeout_error = str(exc).strip()
+                continue
+            raise
+
+    return response_data
+
+
+def _raise_for_terminal_response_issues(response: Mapping[str, Any]) -> None:
+    status = str(response.get("status") or "").strip().lower()
+    if status == "completed":
+        return
+
+    if status == "incomplete":
+        incomplete_details = response.get("incomplete_details")
+        reason = ""
+        if isinstance(incomplete_details, Mapping):
+            reason = str(incomplete_details.get("reason") or "").strip()
+        if reason:
+            raise RuntimeError(f"The Responses API run ended incomplete: {reason}.")
+        raise RuntimeError("The Responses API run ended incomplete.")
+
+    error_payload = response.get("error")
+    if isinstance(error_payload, Mapping):
+        message = str(error_payload.get("message") or "").strip()
+        if message:
+            raise RuntimeError(f"The Responses API run failed: {message}")
+
+    if status:
+        raise RuntimeError(f"The Responses API run ended with status '{status}'.")
+
+
 def run_responses_request(template_payload: Mapping[str, Any]) -> tuple[dict[str, Any], Any, str]:
     api_key = os.environ.get(OPENAI_API_KEY_ENV, "").strip()
     if not api_key:
@@ -403,16 +558,12 @@ def run_responses_request(template_payload: Mapping[str, Any]) -> tuple[dict[str
             f"Set the {OPENAI_API_KEY_ENV} environment variable before triggering a request."
         )
 
-    try:
-        from openai import OpenAI
-    except ImportError as exc:  # pragma: no cover - depends on local environment
-        raise RuntimeError(
-            "The openai package is not installed. Run `pip install -r requirements.txt` first."
-        ) from exc
-
     payload = build_responses_payload(template_payload)
-    client = OpenAI(api_key=api_key)
-    response = client.responses.create(**payload)
+    initial_response = create_response(payload, api_key)
+    response = _wait_for_terminal_response(initial_response, api_key)
+    default_output_name = str(template_payload.get("default_output_name", "") or "").strip()
+    save_response_raw_json(response, default_output_name)
+    _raise_for_terminal_response_issues(response)
     output_text = extract_response_output_text(response)
     if not output_text:
         raise RuntimeError("The Responses API call completed but returned no final text output.")

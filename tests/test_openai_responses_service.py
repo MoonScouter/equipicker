@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from pathlib import Path
@@ -24,6 +25,12 @@ class OpenAIResponsesServiceTests(unittest.TestCase):
                 "temperature": 0.3,
                 "top_p": 0.9,
                 "max_output_tokens": 700,
+                "reasoning": {
+                    "effort": "medium",
+                },
+                "text": {
+                    "verbosity": "high",
+                },
                 "store": True,
                 "parallel_tool_calls": True,
                 "metadata": [{"key": "workspace", "value": "equipilot"}],
@@ -64,6 +71,8 @@ class OpenAIResponsesServiceTests(unittest.TestCase):
         self.assertEqual(payload["input"], "Summarize the latest filing.")
         self.assertEqual(payload["metadata"], {"workspace": "equipilot"})
         self.assertEqual(payload["include"], ["file_search_call.results"])
+        self.assertEqual(payload["reasoning"]["effort"], "medium")
+        self.assertEqual(payload["text"]["verbosity"], "high")
 
         tools = {tool["type"]: tool for tool in payload["tools"]}
         self.assertEqual(tools["web_search"]["filters"]["allowed_domains"], ["sec.gov", "investor.nvidia.com"])
@@ -72,6 +81,25 @@ class OpenAIResponsesServiceTests(unittest.TestCase):
         self.assertEqual(tools["file_search"]["ranking_options"]["score_threshold"], 0.25)
         self.assertEqual(tools["file_search"]["filters"]["type"], "and")
         self.assertEqual(len(tools["file_search"]["filters"]["filters"]), 2)
+
+    def test_build_responses_payload_omits_blank_max_output_tokens_and_reasoning(self) -> None:
+        payload = service.build_responses_payload(
+            {
+                "model": "gpt-5",
+                "user_text": "hello",
+                "max_output_tokens": "",
+                "reasoning": {
+                    "effort": "",
+                },
+                "text": {
+                    "verbosity": "",
+                },
+            }
+        )
+
+        self.assertNotIn("max_output_tokens", payload)
+        self.assertNotIn("reasoning", payload)
+        self.assertNotIn("text", payload)
 
     def test_build_file_search_filters_supports_array_and_boolean_types(self) -> None:
         filters = service.build_file_search_filters(
@@ -87,6 +115,34 @@ class OpenAIResponsesServiceTests(unittest.TestCase):
         self.assertEqual(filters["type"], "or")
         self.assertEqual(filters["filters"][0]["value"], True)
         self.assertEqual(filters["filters"][1]["value"], ["AI", "Semis"])
+
+    def test_build_file_search_filters_defaults_blank_value_type_to_string(self) -> None:
+        filters = service.build_file_search_filters(
+            {
+                "type": "and",
+                "rows": [
+                    {"key": "company_ticker", "type": "eq", "value_type": "", "value": "AAPL"},
+                ],
+            }
+        )
+
+        self.assertEqual(filters["type"], "eq")
+        self.assertEqual(filters["key"], "company_ticker")
+        self.assertEqual(filters["value"], "AAPL")
+
+    def test_build_file_search_tool_accepts_comma_separated_vector_store_ids(self) -> None:
+        tool, include = service.build_file_search_tool(
+            {
+                "enabled": True,
+                "vector_store_ids": "vs_123, vs_456",
+                "max_num_results": 5,
+                "include_results": True,
+            }
+        )
+
+        self.assertEqual(tool["vector_store_ids"], ["vs_123", "vs_456"])
+        self.assertEqual(tool["max_num_results"], 5)
+        self.assertEqual(include, ["file_search_call.results"])
 
     def test_template_and_prompt_documents_round_trip(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -109,6 +165,17 @@ class OpenAIResponsesServiceTests(unittest.TestCase):
                 self.assertTrue(fallback_path.name.endswith(".txt"))
                 self.assertRegex(fallback_path.stem, r"^\d{8}_\d{6}$")
                 self.assertEqual(custom_path.read_text(encoding="utf-8"), "hello world")
+
+    def test_save_response_raw_json_uses_custom_name_or_datetime_fallback(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            with patch.object(service, "RESPONSE_OUTPUT_DIR", Path(tmp_dir)):
+                custom_path = service.save_response_raw_json({"output_text": "hello"}, "manual_name")
+                fallback_path = service.save_response_raw_json({"output_text": "second"}, "")
+
+                self.assertEqual(custom_path.name, "manual_name_raw.json")
+                self.assertTrue(fallback_path.name.endswith("_raw.json"))
+                self.assertRegex(fallback_path.stem, r"^\d{8}_\d{6}_raw$")
+                self.assertEqual(json.loads(custom_path.read_text(encoding="utf-8"))["output_text"], "hello")
 
     def test_extract_response_output_text_prefers_output_text_and_falls_back_to_message_content(self) -> None:
         class FakeResponse:
@@ -138,6 +205,95 @@ class OpenAIResponsesServiceTests(unittest.TestCase):
                         "developer_text": "You are helpful.",
                     }
                 )
+
+    def test_run_responses_request_posts_json_without_openai_sdk(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            with patch.object(service, "RESPONSE_OUTPUT_DIR", Path(tmp_dir)):
+                with patch.dict(os.environ, {service.OPENAI_API_KEY_ENV: "sk-test"}, clear=True):
+                    with patch(
+                        "openai_responses_service.create_response",
+                        return_value={"id": "resp_123", "status": "in_progress"},
+                    ) as mocked_create:
+                        with patch(
+                            "openai_responses_service.retrieve_response",
+                            return_value={"id": "resp_123", "status": "completed", "output_text": "ok"},
+                        ) as mocked_retrieve:
+                            with patch("openai_responses_service.time.sleep", return_value=None):
+                                payload, response, output_text = service.run_responses_request(
+                                    {
+                                        "model": "gpt-5",
+                                        "default_output_name": "manual_name",
+                                        "user_text": "hello",
+                                    }
+                                )
+
+                self.assertEqual(payload["model"], "gpt-5")
+                self.assertEqual(response["output_text"], "ok")
+                self.assertEqual(output_text, "ok")
+                self.assertEqual(mocked_create.call_count, 1)
+                self.assertEqual(mocked_retrieve.call_count, 1)
+                self.assertTrue((Path(tmp_dir) / "manual_name_raw.json").exists())
+
+    def test_run_responses_request_raises_incomplete_reason(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            with patch.object(service, "RESPONSE_OUTPUT_DIR", Path(tmp_dir)):
+                with patch.dict(os.environ, {service.OPENAI_API_KEY_ENV: "sk-test"}, clear=True):
+                    with patch(
+                        "openai_responses_service.create_response",
+                        return_value={"id": "resp_123", "status": "in_progress"},
+                    ):
+                        with patch(
+                            "openai_responses_service.retrieve_response",
+                            return_value={
+                                "id": "resp_123",
+                                "status": "incomplete",
+                                "incomplete_details": {"reason": "max_output_tokens"},
+                            },
+                        ):
+                            with patch("openai_responses_service.time.sleep", return_value=None):
+                                with self.assertRaisesRegex(RuntimeError, "max_output_tokens"):
+                                    service.run_responses_request(
+                                        {
+                                            "model": "gpt-5",
+                                            "default_output_name": "manual_name",
+                                            "user_text": "hello",
+                                        }
+                                    )
+
+                self.assertTrue((Path(tmp_dir) / "manual_name_raw.json").exists())
+
+    def test_wait_for_terminal_response_returns_completed_response(self) -> None:
+        with patch(
+            "openai_responses_service.retrieve_response",
+            return_value={"id": "resp_123", "status": "completed", "output_text": "done"},
+        ) as mocked_retrieve:
+            with patch("openai_responses_service.time.sleep", return_value=None):
+                response = service._wait_for_terminal_response(
+                    {"id": "resp_123", "status": "in_progress"},
+                    "sk-test",
+                )
+
+        self.assertEqual(response["status"], "completed")
+        self.assertEqual(response["output_text"], "done")
+        self.assertEqual(mocked_retrieve.call_count, 1)
+
+    def test_wait_for_terminal_response_retries_after_timeout(self) -> None:
+        with patch(
+            "openai_responses_service.retrieve_response",
+            side_effect=[
+                RuntimeError("OpenAI Responses API request failed: The read operation timed out"),
+                {"id": "resp_123", "status": "completed", "output_text": "done"},
+            ],
+        ) as mocked_retrieve:
+            with patch("openai_responses_service.time.sleep", return_value=None):
+                response = service._wait_for_terminal_response(
+                    {"id": "resp_123", "status": "in_progress"},
+                    "sk-test",
+                )
+
+        self.assertEqual(response["status"], "completed")
+        self.assertEqual(response["output_text"], "done")
+        self.assertEqual(mocked_retrieve.call_count, 2)
 
 
 if __name__ == "__main__":
