@@ -669,7 +669,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "name": "AI",
                     "parent": "",
                     "is_parent": True,
-                    "children": ["AI Infrastructure", "AI Silicon"],
+                    "children": ["AI Infrastructure", "AI Silicon", "AI Cloud Platforms"],
                     "tickers": [],
                     "is_ai_super_parent": True,
                     "is_ai_group_child": False,
@@ -701,6 +701,24 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "is_ai_super_parent": False,
                     "is_ai_group_child": True,
                 },
+                "AI Cloud Platforms": {
+                    "name": "AI Cloud Platforms",
+                    "parent": "AI",
+                    "is_parent": True,
+                    "children": ["AI Cloud Platforms: Core"],
+                    "tickers": [],
+                    "is_ai_super_parent": False,
+                    "is_ai_group_child": True,
+                },
+                "AI Cloud Platforms: Core": {
+                    "name": "AI Cloud Platforms: Core",
+                    "parent": "AI Cloud Platforms",
+                    "is_parent": False,
+                    "children": [],
+                    "tickers": [],
+                    "is_ai_super_parent": False,
+                    "is_ai_group_child": False,
+                },
                 "Utilities Basket": {
                     "name": "Utilities Basket",
                     "parent": "",
@@ -719,6 +737,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 {"name": "AI Infrastructure", "beta": 1.0},
                 {"name": "AI Infra: Power Generation", "beta": 1.0},
                 {"name": "AI Silicon", "beta": 1.0},
+                {"name": "AI Cloud Platforms", "beta": 1.0},
+                {"name": "AI Cloud Platforms: Core", "beta": 1.0},
                 {"name": "Utilities Basket", "beta": 1.0},
             ]
         )
@@ -732,12 +752,23 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         ai_layers = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "ai_layers")[0]["Name"].tolist()
         ai_sub_layers = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "ai_sub_layers")[0]["Name"].tolist()
 
-        self.assertEqual(all_names, ["AI", "AI Infrastructure", "AI Infra: Power Generation", "AI Silicon", "Utilities Basket"])
+        self.assertEqual(
+            all_names,
+            [
+                "AI",
+                "AI Infrastructure",
+                "AI Infra: Power Generation",
+                "AI Silicon",
+                "AI Cloud Platforms",
+                "AI Cloud Platforms: Core",
+                "Utilities Basket",
+            ],
+        )
         self.assertEqual(ai_vs_rest, ["AI", "Utilities Basket"])
-        self.assertEqual(ai_layers_vs_rest, ["AI Infrastructure", "AI Silicon", "Utilities Basket"])
-        self.assertEqual(ai_sub_layers_vs_rest, ["AI Infra: Power Generation", "Utilities Basket"])
-        self.assertEqual(ai_layers, ["AI Infrastructure", "AI Silicon"])
-        self.assertEqual(ai_sub_layers, ["AI Infra: Power Generation"])
+        self.assertEqual(ai_layers_vs_rest, ["AI Infrastructure", "AI Silicon", "AI Cloud Platforms", "Utilities Basket"])
+        self.assertEqual(ai_sub_layers_vs_rest, ["AI Infra: Power Generation", "AI Cloud Platforms: Core", "Utilities Basket"])
+        self.assertEqual(ai_layers, ["AI Infrastructure", "AI Silicon", "AI Cloud Platforms"])
+        self.assertEqual(ai_sub_layers, ["AI Infra: Power Generation", "AI Cloud Platforms: Core"])
 
     def test_thematics_selected_basket_is_cleared_when_hidden(self) -> None:
         self.assertEqual(

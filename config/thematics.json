@@ -308,6 +308,28 @@
       "description": "Hyperscalers and AI-native cloud platforms monetizing compute, storage, and AI-as-a-service at scale.",
       "tier": 1,
       "value_chain_layer": 3,
+      "is_parent": true,
+      "sub_baskets": [
+        "AI Cloud Platforms: Core"
+      ],
+      "article_narrative": "These are the biggest buyers and sellers of AI compute. Their capex drives demand through the rest of the stack while their platforms monetize enterprise AI adoption.",
+      "tickers": [
+        "MSFT",
+        "AMZN",
+        "GOOG",
+        "META",
+        "ORCL",
+        "SNOW",
+        "MDB",
+        "CRWV",
+        "NBIS"
+      ]
+    },
+    "AI Cloud Platforms: Core": {
+      "description": "Core hyperscalers and AI-native cloud platforms monetizing compute, storage, and AI-as-a-service at scale.",
+      "tier": 1,
+      "value_chain_layer": 3.1,
+      "parent": "AI Cloud Platforms",
       "article_narrative": "These are the biggest buyers and sellers of AI compute. Their capex drives demand through the rest of the stack while their platforms monetize enterprise AI adoption.",
       "tickers": [
         "MSFT",
