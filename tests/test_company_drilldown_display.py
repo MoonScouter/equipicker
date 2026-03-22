@@ -9,10 +9,12 @@ from equipilot_app import (
     TREND_SYMBOL_DOWN,
     TREND_SYMBOL_UP,
     _annotate_company_technical_trend,
+    _build_all_thematics_company_universe,
     _build_thematics_basket_metrics,
     _build_thematics_basket_table_frame,
     _build_thematics_company_universe,
     _build_company_drilldown_styler,
+    _default_sector_regime_fit_range_for_company_scope,
     _enrich_company_universe_with_market_regime,
     _filter_thematics_basket_table_for_view,
     _filter_by_optional_numeric_range,
@@ -22,6 +24,7 @@ from equipilot_app import (
     _normalize_thematics_selected_basket,
     _prepare_company_drilldown_universe,
     apply_trend_symbols_to_table,
+    build_company_drilldown_context,
     format_thematics_company_display,
     format_company_drilldown_display,
 )
@@ -217,7 +220,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         )
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertEqual(rendered.iloc[0]["Company"], "High Tech")
-        self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "72.0")
+        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Score"]))
+        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Momentum"]))
+        self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 72.0)
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "82.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "74.0")
 
@@ -261,7 +266,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             ],
         )
         self.assertEqual(rendered.iloc[0]["Company"], "Alpha Inc")
-        self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "85.0")
+        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Score"]))
+        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Momentum"]))
+        self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 85.0)
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "76.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "68.0")
 
@@ -401,7 +408,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         rendered = format_company_drilldown_display(company_df, sort_by="technical")
 
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
-        self.assertEqual(rendered.iloc[0]["Technical Score"], f"90.0 {TREND_SYMBOL_UP}")
+        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Technical Score"]))
+        self.assertAlmostEqual(float(rendered.iloc[0]["Technical Score"]), 90.0)
 
     def test_thematics_company_display_appends_score_trend_symbols(self) -> None:
         company_df = pd.DataFrame(
@@ -510,6 +518,66 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             all(tuple(preset["sector_regime_fit_range"]) == (60.0, 100.0) for preset in presets.values())
         )
 
+    def test_company_scope_sector_regime_fit_defaults_match_show_all_and_selected_modes(self) -> None:
+        self.assertEqual(
+            _default_sector_regime_fit_range_for_company_scope("show_all"),
+            (60.0, 100.0),
+        )
+        self.assertEqual(
+            _default_sector_regime_fit_range_for_company_scope("selected"),
+            (0.0, 100.0),
+        )
+        self.assertEqual(
+            _default_sector_regime_fit_range_for_company_scope("thematic"),
+            (0.0, 100.0),
+        )
+
+    def test_build_company_drilldown_context_all_mode_returns_full_universe_without_default_scope_filters(self) -> None:
+        report_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 10_000_000_000,
+                    "fundamental_total_score": 80.0,
+                    "general_technical_score": 82.0,
+                },
+                {
+                    "ticker": "BBB.US",
+                    "company": "Beta",
+                    "sector": "Industrials",
+                    "industry": "Machinery",
+                    "market_cap": 8_000_000_000,
+                    "fundamental_total_score": 75.0,
+                    "general_technical_score": 79.0,
+                },
+            ]
+        )
+        empty_regime_df = pd.DataFrame(columns=["ticker", "stock_rsi_regime_score", "sector_regime_fit_score"])
+
+        _load_market_regime_company_metrics_for_date.clear()
+        with patch(
+            "equipilot_app._load_market_regime_company_metrics_for_date",
+            return_value=(empty_regime_df, None),
+        ):
+            title, company_universe, default_sectors, default_industries, error, warning = build_company_drilldown_context(
+                report_df,
+                evaluation_date=date(2026, 3, 13),
+                selected_sector="All sectors",
+                selected_mode="all",
+                selected_key="__all__",
+            )
+
+        self.assertEqual(title, "All companies")
+        self.assertIsNone(error)
+        self.assertIsNone(warning)
+        assert company_universe is not None
+        self.assertEqual(sorted(company_universe["ticker"].tolist()), ["AAA.US", "BBB.US"])
+        self.assertEqual(default_sectors, [])
+        self.assertEqual(default_industries, [])
+
     def test_compute_company_return_metrics_uses_exact_anchor_and_prior_targets(self) -> None:
         price_lookup = {
             "AAA.US": {
@@ -595,6 +663,78 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         thematic_by_ticker = company_universe.set_index("ticker")["thematic"].to_dict()
         self.assertEqual(thematic_by_ticker["AAA.US"], "Child A")
         self.assertEqual(thematic_by_ticker["BBB.US"], "Child B")
+
+    def test_build_all_thematics_company_universe_deduplicates_tickers_and_preserves_memberships(self) -> None:
+        catalog = {
+            "items": {
+                "AI": {
+                    "name": "AI",
+                    "is_ai_super_parent": True,
+                    "tickers": ["AAA.US", "BBB.US"],
+                },
+                "Basket A": {
+                    "name": "Basket A",
+                    "tickers": ["AAA.US", "BBB.US"],
+                },
+                "Basket B": {
+                    "name": "Basket B",
+                    "tickers": ["AAA.US"],
+                },
+            }
+        }
+        report_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha",
+                    "sector": "Tech",
+                    "industry": "Software",
+                    "market_cap": 10_000_000_000,
+                    "beta": 1.2,
+                    "fundamental_total_score": 80.0,
+                    "general_technical_score": 82.0,
+                    "fundamental_momentum": 70.0,
+                    "rs_monthly": 0.5,
+                    "obvm_monthly": 0.4,
+                },
+                {
+                    "ticker": "BBB.US",
+                    "company": "Beta",
+                    "sector": "Tech",
+                    "industry": "Hardware",
+                    "market_cap": 8_000_000_000,
+                    "beta": 0.9,
+                    "fundamental_total_score": 75.0,
+                    "general_technical_score": 79.0,
+                    "fundamental_momentum": 68.0,
+                    "rs_monthly": -0.2,
+                    "obvm_monthly": 0.3,
+                },
+            ]
+        )
+        price_lookup = {
+            "AAA.US": {
+                "dates": [date(2026, 3, 6), date(2026, 3, 13)],
+                "closes": [100.0, 110.0],
+            },
+            "BBB.US": {
+                "dates": [date(2026, 3, 6), date(2026, 3, 13)],
+                "closes": [200.0, 220.0],
+            },
+        }
+
+        company_universe, anchor_missing = _build_all_thematics_company_universe(
+            catalog,
+            report_df,
+            price_lookup,
+            date(2026, 3, 13),
+        )
+
+        self.assertFalse(anchor_missing)
+        self.assertEqual(sorted(company_universe["ticker"].tolist()), ["AAA.US", "BBB.US"])
+        memberships_by_ticker = company_universe.set_index("ticker")["thematic_memberships"].to_dict()
+        self.assertEqual(memberships_by_ticker["AAA.US"], ["Basket A", "Basket B"])
+        self.assertEqual(memberships_by_ticker["BBB.US"], ["Basket A"])
 
     def test_build_thematics_basket_metrics_computes_breadth_and_average_scores(self) -> None:
         catalog = {
