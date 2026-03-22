@@ -2,6 +2,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -10,6 +11,7 @@ from equipilot_app import (
     get_latest_indices_cache_date,
     get_latest_prices_cache_date,
     get_report_select_import_state,
+    invalidate_prices_cache_views,
 )
 
 
@@ -258,6 +260,14 @@ class HomeImportCheckTests(unittest.TestCase):
 
         self.assertTrue(state["weekly_prices_check_passed"])
         self.assertTrue(state["overall_ready"])
+
+    def test_invalidate_prices_cache_views_clears_raw_and_lookup_caches(self) -> None:
+        with patch("equipilot_app.load_prices_cache_file.clear") as clear_prices_cache_file:
+            with patch("equipilot_app.build_price_history_lookup.clear") as clear_price_history_lookup:
+                invalidate_prices_cache_views()
+
+        clear_prices_cache_file.assert_called_once_with()
+        clear_price_history_lookup.assert_called_once_with()
 
     def test_evaluate_home_import_checks_passes_when_weekly_date_plus_four_days_covers_selected_date(self) -> None:
         selected_date = date(2026, 3, 10)

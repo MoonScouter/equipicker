@@ -454,6 +454,11 @@ def build_price_history_lookup(path_str: str) -> dict[str, dict[str, list[object
     return lookup
 
 
+def invalidate_prices_cache_views() -> None:
+    load_prices_cache_file.clear()
+    build_price_history_lookup.clear()
+
+
 def _price_close_for_target(
     price_entry: Optional[dict[str, list[object]]],
     target_date: date,
@@ -5806,7 +5811,7 @@ def render_home_prices_import_subtab() -> None:
                     scope=scope_key,
                     manual_tickers=requested_tickers,
                 )
-                load_prices_cache_file.clear()
+                invalidate_prices_cache_views()
             except Exception as exc:  # pragma: no cover - UI feedback
                 st.error(f"{frequency.capitalize()} prices import failed: {exc}")
             else:
