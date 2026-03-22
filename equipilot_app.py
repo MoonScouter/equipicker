@@ -2542,6 +2542,7 @@ def render_pdf_like_table(
 def _clear_drilldown_selection(prefix: str) -> None:
     st.session_state.pop(f"{prefix}_selected_key", None)
     st.session_state.pop(f"{prefix}_selected_mode", None)
+    st.session_state.pop(f"{prefix}_show_all_companies", None)
     for suffix in (
         "signature",
         "default_sector",
@@ -2566,6 +2567,18 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "ticker",
     ):
         st.session_state.pop(f"{prefix}_drilldown_filter_{suffix}", None)
+
+
+def _handle_show_all_company_toggle(prefix: str) -> None:
+    if bool(st.session_state.get(f"{prefix}_show_all_companies", False)):
+        st.session_state.pop(f"{prefix}_selected_key", None)
+        st.session_state.pop(f"{prefix}_selected_mode", None)
+
+
+def _default_sector_regime_fit_range_for_company_scope(scope_kind: str) -> tuple[float, float]:
+    if scope_kind == "show_all":
+        return (60.0, 100.0)
+    return (0.0, 100.0)
 
 
 def _sync_drilldown_signature(prefix: str, signature: tuple[str, ...]) -> None:
@@ -2869,6 +2882,8 @@ def build_company_drilldown_context(
         company_universe,
         evaluation_date,
     )
+    if selected_mode == "all":
+        return "All companies", company_universe, [], [], None, regime_warning
     if selected_mode == "sector":
         title = f"Companies in Sector: {selected_key}"
         default_sectors = [selected_key]
@@ -3728,26 +3743,6 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
 
     display_df = sorted_df[display_columns].rename(columns=rename_map)
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
-    display_df["Fundamental Score"] = display_df["Fundamental Score"].map(
-        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-    )
-    if sort_by == "technical" and "technical_trend_symbol" in sorted_df.columns:
-        trend_symbols = sorted_df["technical_trend_symbol"].fillna("").astype(str)
-        rendered_scores: list[str] = []
-        for numeric_value, trend_symbol in zip(display_df["Technical Score"], trend_symbols):
-            if pd.isna(numeric_value):
-                rendered_scores.append("N/A")
-                continue
-            suffix = f" {trend_symbol}" if trend_symbol else ""
-            rendered_scores.append(f"{float(numeric_value):.1f}{suffix}")
-        display_df["Technical Score"] = rendered_scores
-    else:
-        display_df["Technical Score"] = display_df["Technical Score"].map(
-            lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-        )
-    display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(
-        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-    )
     display_df["RSI Regime Score"] = display_df["RSI Regime Score"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
     )
@@ -3827,6 +3822,13 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
         styler = styler.set_properties(subset=usable_left_columns, **{"text-align": "left"})
     if centered_columns:
         styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
+
+    numeric_formatters = {}
+    for column in ["Fundamental Score", "Fundamental Momentum", "Technical Score"]:
+        if column in display_df.columns:
+            numeric_formatters[column] = lambda value: f"{float(value):.1f}" if pd.notna(value) else "N/A"
+    if numeric_formatters:
+        styler = styler.format(numeric_formatters)
 
     for score_column in [
         "Fundamental Score",
@@ -4548,12 +4550,21 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         )
 
     sector_options = ["All sectors"] + sorted(report_df["sector"].fillna("Unspecified").unique().tolist())
-    selected_sector = st.selectbox(
-        "Sector view",
-        options=sector_options,
-        index=0,
-        key="fundamental_scoring_sector_select",
-    )
+    sector_col, show_all_col = st.columns([1.4, 1.0])
+    with sector_col:
+        selected_sector = st.selectbox(
+            "Sector view",
+            options=sector_options,
+            index=0,
+            key="fundamental_scoring_sector_select",
+        )
+    with show_all_col:
+        st.checkbox(
+            "Show all companies",
+            key="fundamental_show_all_companies",
+            on_change=_handle_show_all_company_toggle,
+            args=("fundamental",),
+        )
     t_start = time.perf_counter()
     table_df = get_fundamental_table_for_sector(str(source_path), selected_sector)
     _perf_mark(timings, "build table", t_start)
@@ -4621,19 +4632,23 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
     if selected_row_index is not None:
         selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
         selected_mode = "sector" if selected_sector == "All sectors" else "industry"
+        st.session_state["fundamental_show_all_companies"] = False
         st.session_state["fundamental_selected_key"] = selected_key
         st.session_state["fundamental_selected_mode"] = selected_mode
 
+    show_all_companies = bool(st.session_state.get("fundamental_show_all_companies", False))
     selected_key = st.session_state.get("fundamental_selected_key")
     selected_mode = st.session_state.get("fundamental_selected_mode")
-    if selected_key and selected_mode:
+    scope_mode = "all" if show_all_companies else str(selected_mode) if selected_key and selected_mode else ""
+    scope_key = "__all__" if show_all_companies else str(selected_key or "")
+    if scope_mode:
         company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
         details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context(
             report_df,
             evaluation_date=selected_eod,
             selected_sector=selected_sector,
-            selected_mode=selected_mode,
-            selected_key=selected_key,
+            selected_mode=scope_mode,
+            selected_key=scope_key,
         )
         if details_error:
             st.warning(details_error)
@@ -4648,8 +4663,8 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 selected_eod.isoformat(),
                 previous_eod.isoformat(),
                 selected_sector,
-                selected_mode,
-                selected_key,
+                scope_mode,
+                scope_key,
             )
             _sync_drilldown_filter_defaults(
                 "fundamental",
@@ -4660,7 +4675,9 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
                 default_rsi_regime_range=(70.0, 100.0),
-                default_sector_regime_fit_range=(60.0, 100.0),
+                default_sector_regime_fit_range=_default_sector_regime_fit_range_for_company_scope(
+                    "show_all" if scope_mode == "all" else "selected"
+                ),
                 default_fund_momentum_range=(60.0, 100.0),
                 default_tech_trend_dir="All",
             )
@@ -4791,12 +4808,21 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         )
 
     sector_options = ["All sectors"] + sorted(report_df["sector"].fillna("Unspecified").unique().tolist())
-    selected_sector = st.selectbox(
-        "Sector view",
-        options=sector_options,
-        index=0,
-        key="technical_scoring_sector_select",
-    )
+    sector_col, show_all_col = st.columns([1.4, 1.0])
+    with sector_col:
+        selected_sector = st.selectbox(
+            "Sector view",
+            options=sector_options,
+            index=0,
+            key="technical_scoring_sector_select",
+        )
+    with show_all_col:
+        st.checkbox(
+            "Show all companies",
+            key="technical_show_all_companies",
+            on_change=_handle_show_all_company_toggle,
+            args=("technical",),
+        )
     t_start = time.perf_counter()
     table_df = get_technical_table_for_sector(str(source_path), selected_sector)
     _perf_mark(timings, "build table", t_start)
@@ -4856,19 +4882,23 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     if selected_row_index is not None:
         selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
         selected_mode = "sector" if selected_sector == "All sectors" else "industry"
+        st.session_state["technical_show_all_companies"] = False
         st.session_state["technical_selected_key"] = selected_key
         st.session_state["technical_selected_mode"] = selected_mode
 
+    show_all_companies = bool(st.session_state.get("technical_show_all_companies", False))
     selected_key = st.session_state.get("technical_selected_key")
     selected_mode = st.session_state.get("technical_selected_mode")
-    if selected_key and selected_mode:
+    scope_mode = "all" if show_all_companies else str(selected_mode) if selected_key and selected_mode else ""
+    scope_key = "__all__" if show_all_companies else str(selected_key or "")
+    if scope_mode:
         company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
         details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context(
             report_df,
             evaluation_date=selected_eod,
             selected_sector=selected_sector,
-            selected_mode=selected_mode,
-            selected_key=selected_key,
+            selected_mode=scope_mode,
+            selected_key=scope_key,
         )
         if details_error:
             st.warning(details_error)
@@ -4883,8 +4913,8 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 selected_eod.isoformat(),
                 previous_eod.isoformat(),
                 selected_sector,
-                selected_mode,
-                selected_key,
+                scope_mode,
+                scope_key,
             )
             _sync_drilldown_filter_defaults(
                 "technical",
@@ -4895,7 +4925,9 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
                 default_rsi_regime_range=(70.0, 100.0),
-                default_sector_regime_fit_range=(60.0, 100.0),
+                default_sector_regime_fit_range=_default_sector_regime_fit_range_for_company_scope(
+                    "show_all" if scope_mode == "all" else "selected"
+                ),
                 default_fund_momentum_range=(60.0, 100.0),
                 default_tech_trend_dir="All",
             )
@@ -6759,19 +6791,32 @@ def _thematic_memberships_for_scope(
     return memberships
 
 
-def _build_thematics_company_universe(
-    basket_name: str,
-    catalog: dict[str, object],
+def _all_thematic_memberships(catalog: dict[str, object]) -> dict[str, list[str]]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict):
+        return {}
+
+    memberships: dict[str, list[str]] = {}
+    for basket_name, basket in items.items():
+        if not isinstance(basket, dict):
+            continue
+        if bool(basket.get("is_ai_super_parent", False)):
+            continue
+        for ticker_value in basket.get("tickers", []):
+            ticker_str = str(ticker_value)
+            membership_list = memberships.setdefault(ticker_str, [])
+            if basket_name not in membership_list:
+                membership_list.append(str(basket_name))
+    return memberships
+
+
+def _build_thematics_company_universe_from_scope(
+    scope_tickers: list[str],
+    thematic_memberships: dict[str, list[str]],
     report_df: Optional[pd.DataFrame],
     price_lookup: dict[str, dict[str, list[object]]],
     reference_date: date,
 ) -> tuple[pd.DataFrame, bool]:
-    items = catalog.get("items", {})
-    if not isinstance(items, dict) or basket_name not in items:
-        return pd.DataFrame(), False
-
-    basket = items[basket_name]
-    scope_tickers = list(basket.get("tickers", []))
     base_df = pd.DataFrame({"ticker": scope_tickers})
     current_report = _prepare_thematics_report_frame(report_df)
     if not current_report.empty:
@@ -6799,9 +6844,7 @@ def _build_thematics_company_universe(
 
     if "company" not in base_df.columns:
         base_df["company"] = ""
-    base_df["company"] = (
-        base_df["company"].fillna("").astype(str).str.strip()
-    )
+    base_df["company"] = base_df["company"].fillna("").astype(str).str.strip()
     base_df["company"] = base_df["company"].where(base_df["company"].str.len() > 0, base_df["ticker"].map(_base_ticker_symbol))
     base_df["sector"] = base_df.get("sector", pd.Series(index=base_df.index)).fillna("Unspecified")
     base_df["industry"] = base_df.get("industry", pd.Series(index=base_df.index)).fillna("Unspecified")
@@ -6817,11 +6860,10 @@ def _build_thematics_company_universe(
         if required_numeric not in base_df.columns:
             base_df[required_numeric] = np.nan
 
-    memberships = _thematic_memberships_for_scope(basket_name, catalog)
     company_universe, error_message = _prepare_company_drilldown_universe(
         base_df,
         include_beta=True,
-        thematic_memberships=memberships,
+        thematic_memberships=thematic_memberships,
     )
     if error_message or company_universe is None:
         return pd.DataFrame(), False
@@ -6837,6 +6879,48 @@ def _build_thematics_company_universe(
         for metric_name in ["anchor_close", "1w_perf", "1m_perf", "3m_perf", "ytd_perf"]:
             company_universe[metric_name] = np.nan
     return company_universe, anchor_missing
+
+
+def _build_thematics_company_universe(
+    basket_name: str,
+    catalog: dict[str, object],
+    report_df: Optional[pd.DataFrame],
+    price_lookup: dict[str, dict[str, list[object]]],
+    reference_date: date,
+) -> tuple[pd.DataFrame, bool]:
+    items = catalog.get("items", {})
+    if not isinstance(items, dict) or basket_name not in items:
+        return pd.DataFrame(), False
+
+    basket = items[basket_name]
+    scope_tickers = list(basket.get("tickers", []))
+    memberships = _thematic_memberships_for_scope(basket_name, catalog)
+    return _build_thematics_company_universe_from_scope(
+        scope_tickers,
+        memberships,
+        report_df,
+        price_lookup,
+        reference_date,
+    )
+
+
+def _build_all_thematics_company_universe(
+    catalog: dict[str, object],
+    report_df: Optional[pd.DataFrame],
+    price_lookup: dict[str, dict[str, list[object]]],
+    reference_date: date,
+) -> tuple[pd.DataFrame, bool]:
+    memberships = _all_thematic_memberships(catalog)
+    scope_tickers = sorted(memberships.keys())
+    if not scope_tickers:
+        return pd.DataFrame(), False
+    return _build_thematics_company_universe_from_scope(
+        scope_tickers,
+        memberships,
+        report_df,
+        price_lookup,
+        reference_date,
+    )
 
 
 def _build_thematics_basket_metrics(
@@ -7204,9 +7288,15 @@ def _handle_thematics_basket_checkbox_change(state_prefix: str, basket_name: str
     checked = bool(st.session_state.get(checkbox_state_key))
     if checked:
         st.session_state[selected_key] = basket_name
+        st.session_state[f"{state_prefix}_show_all_companies"] = False
     elif st.session_state.get(selected_key) == basket_name:
         st.session_state[selected_key] = None
     st.session_state[focus_key] = basket_name
+
+
+def _handle_thematics_show_all_company_toggle(state_prefix: str) -> None:
+    if bool(st.session_state.get(f"{state_prefix}_show_all_companies", False)):
+        st.session_state[f"{state_prefix}_selected_basket"] = None
 
 
 def _render_thematics_basket_table(
@@ -7988,6 +8078,7 @@ def _render_thematics_basket_table_v2(
         return
     basket_name = str(meta_df.iloc[selected_index]["basket_name"])
     if st.session_state.get("thematics_impl_selected_basket") != basket_name:
+        st.session_state["thematics_impl_show_all_companies"] = False
         st.session_state["thematics_impl_selected_basket"] = basket_name
         st.rerun()
 
@@ -8140,27 +8231,47 @@ def render_thematics_tab(config: ReportConfig) -> None:
             st.warning(warning_message)
 
         view_mode = _render_thematics_view_mode_controls("thematics_impl")
+        st.checkbox(
+            "Show all companies",
+            key="thematics_impl_show_all_companies",
+            on_change=_handle_thematics_show_all_company_toggle,
+            args=("thematics_impl",),
+        )
         _render_thematics_basket_table(basket_metrics_df, catalog, view_mode=view_mode)
 
+        show_all_companies = bool(st.session_state.get("thematics_impl_show_all_companies", False))
         selected_basket = st.session_state.get("thematics_impl_selected_basket")
-        if selected_basket:
-            company_universe, company_anchor_missing = _build_thematics_company_universe(
-                str(selected_basket),
-                catalog,
-                current_report_df,
-                price_lookup,
-                reference_date,
-            )
+        if show_all_companies or selected_basket:
+            if show_all_companies:
+                company_scope = "show_all"
+                company_scope_name = "All thematic companies"
+                company_universe, company_anchor_missing = _build_all_thematics_company_universe(
+                    catalog,
+                    current_report_df,
+                    price_lookup,
+                    reference_date,
+                )
+            else:
+                company_scope = "selected"
+                company_scope_name = str(selected_basket)
+                company_universe, company_anchor_missing = _build_thematics_company_universe(
+                    str(selected_basket),
+                    catalog,
+                    current_report_df,
+                    price_lookup,
+                    reference_date,
+                )
             if company_anchor_missing:
                 st.warning(
-                    f"Some companies in {selected_basket} do not have an exact anchor close for {reference_date.isoformat()}; affected rows show N/A performance."
+                    f"Some companies in {company_scope_name} do not have an exact anchor close for {reference_date.isoformat()}; affected rows show N/A performance."
                 )
             if previous_ready and previous_report_df is not None and not company_universe.empty:
                 company_universe = _annotate_company_score_trends(company_universe, previous_report_df, threshold=5.0)
             filter_signature = (
                 reference_date.isoformat(),
                 previous_eod.isoformat(),
-                str(selected_basket),
+                company_scope,
+                company_scope_name,
                 "trend_on" if previous_ready and previous_report_df is not None else "trend_off",
             )
             _sync_drilldown_filter_defaults(
@@ -8173,7 +8284,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 default_fund_range=(50.0, 100.0),
                 default_tech_range=(60.0, 100.0),
                 default_rsi_regime_range=(70.0, 100.0),
-                default_sector_regime_fit_range=(60.0, 100.0),
+                default_sector_regime_fit_range=_default_sector_regime_fit_range_for_company_scope(company_scope),
                 default_fund_momentum_range=(60.0, 100.0),
                 default_tech_trend_dir="All",
                 default_rel_strength="All",
@@ -8183,7 +8294,10 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 default_beta_range=(0.0, 5.0),
             )
             st.markdown("---")
-            st.caption(f"Companies in thematic basket: {selected_basket}")
+            if show_all_companies:
+                st.caption("Companies across all thematic baskets")
+            else:
+                st.caption(f"Companies in thematic basket: {selected_basket}")
             _, regime_warning = _load_market_regime_company_metrics_for_date(reference_date)
             if regime_warning:
                 st.caption(regime_warning)
@@ -8215,6 +8329,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 )
             if st.button("Hide thematic company list", key="thematics_hide_company_list"):
                 st.session_state["thematics_impl_selected_basket"] = None
+                st.session_state["thematics_impl_show_all_companies"] = False
                 st.rerun()
     with lens_tab:
         _render_thematics_lens_tab(catalog, current_report_df)
