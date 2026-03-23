@@ -3753,7 +3753,12 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     display_df["Rel Volume"] = display_df["Rel Volume"].fillna("N/A")
     display_df["AI Revenue Exposure"] = display_df["AI Revenue Exposure"].fillna("none")
     display_df["AI Disruption Risk"] = display_df["AI Disruption Risk"].fillna("none")
-    return display_df.reset_index(drop=True)
+    display_df = display_df.reset_index(drop=True)
+    if "technical_trend_symbol" in sorted_df.columns:
+        display_df.attrs["technical_trend_symbols"] = (
+            sorted_df["technical_trend_symbol"].fillna("").astype(str).tolist()
+        )
+    return display_df
 
 
 def _style_ai_exposure_value(value: object) -> str:
@@ -3829,6 +3834,25 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
             numeric_formatters[column] = lambda value: f"{float(value):.1f}" if pd.notna(value) else "N/A"
     if numeric_formatters:
         styler = styler.format(numeric_formatters)
+
+    trend_symbols = display_df.attrs.get("technical_trend_symbols", [])
+    if trend_symbols and "Technical Score" in display_df.columns:
+        for row_index, trend_symbol in enumerate(trend_symbols):
+            if not trend_symbol:
+                continue
+            styler = styler.format(
+                {
+                    "Technical Score": (
+                        lambda value, symbol=trend_symbol: _render_thematics_score_with_symbol(
+                            float(value),
+                            symbol,
+                        )
+                        if pd.notna(value)
+                        else "N/A"
+                    )
+                },
+                subset=pd.IndexSlice[[row_index], ["Technical Score"]],
+            )
 
     for score_column in [
         "Fundamental Score",

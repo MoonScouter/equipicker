@@ -410,6 +410,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Technical Score"]))
         self.assertAlmostEqual(float(rendered.iloc[0]["Technical Score"]), 90.0)
+        self.assertEqual(rendered.attrs.get("technical_trend_symbols", [""])[0], TREND_SYMBOL_UP)
+        html = _build_company_drilldown_styler(rendered).to_html()
+        self.assertIn(f"90.0 {TREND_SYMBOL_UP}", html)
 
     def test_thematics_company_display_appends_score_trend_symbols(self) -> None:
         company_df = pd.DataFrame(
