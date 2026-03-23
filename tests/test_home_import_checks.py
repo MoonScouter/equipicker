@@ -20,7 +20,18 @@ class HomeImportCheckTests(unittest.TestCase):
         pd.DataFrame(rows).to_excel(path, index=False)
 
     def _write_prices_cache(self, path: Path, rows: list[dict[str, object]]) -> None:
-        pd.DataFrame(rows).to_json(path, orient="records", lines=True)
+        normalized_rows: list[dict[str, object]] = []
+        for row in rows:
+            updated = dict(row)
+            has_legacy_price_schema = all(
+                key in updated
+                for key in ["adjusted_high", "adjusted_low", "rs", "obvm"]
+            )
+            if has_legacy_price_schema:
+                updated.setdefault("rsi_14", 50.0)
+                updated.setdefault("rsi_divergence_flag", "none")
+            normalized_rows.append(updated)
+        pd.DataFrame(normalized_rows).to_json(path, orient="records", lines=True)
 
     def test_report_select_state_detects_existing_repo_snapshot(self) -> None:
         state = get_report_select_import_state(date(2026, 3, 6))
@@ -264,10 +275,12 @@ class HomeImportCheckTests(unittest.TestCase):
     def test_invalidate_prices_cache_views_clears_raw_and_lookup_caches(self) -> None:
         with patch("equipilot_app.load_prices_cache_file.clear") as clear_prices_cache_file:
             with patch("equipilot_app.build_price_history_lookup.clear") as clear_price_history_lookup:
-                invalidate_prices_cache_views()
+                with patch("equipilot_app._load_company_divergence_metrics_for_date.clear") as clear_divergence_metrics:
+                    invalidate_prices_cache_views()
 
         clear_prices_cache_file.assert_called_once_with()
         clear_price_history_lookup.assert_called_once_with()
+        clear_divergence_metrics.assert_called_once_with()
 
     def test_evaluate_home_import_checks_passes_when_weekly_date_plus_four_days_covers_selected_date(self) -> None:
         selected_date = date(2026, 3, 10)
@@ -304,12 +317,24 @@ class HomeImportCheckTests(unittest.TestCase):
                 }],
             )
 
-            state = evaluate_home_import_checks(
-                selected_date,
-                cache_paths=[indices_path],
-                daily_price_cache_paths=[daily_path],
-                weekly_price_cache_paths=[weekly_path],
-            )
+            with patch(
+                "equipilot_app.get_report_select_import_state",
+                return_value={
+                    "selected_date": selected_date,
+                    "report_select_exists": True,
+                    "report_select_path": Path("report_select_2026-03-10.xlsx"),
+                    "report_select_candidates": (
+                        Path("report_select_2026-03-10.xlsx"),
+                        Path("report_select_2026-03-10.csv"),
+                    ),
+                },
+            ):
+                state = evaluate_home_import_checks(
+                    selected_date,
+                    cache_paths=[indices_path],
+                    daily_price_cache_paths=[daily_path],
+                    weekly_price_cache_paths=[weekly_path],
+                )
 
         self.assertTrue(state["weekly_prices_check_passed"])
         self.assertTrue(state["overall_ready"])

@@ -1,6 +1,7 @@
 """Helpers for importing and storing yearly daily/weekly prices caches."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Iterable, Literal, Sequence
@@ -15,6 +16,52 @@ from equipicker_connect import CACHE_DIR, make_engine, run_query_to_df
 
 PricesFrequency = Literal["daily", "weekly"]
 RSI_PERIOD = 14
+DIVERGENCE_OB_LEVEL = 70.0
+DIVERGENCE_OS_LEVEL = 30.0
+DIVERGENCE_SAME_SWING_TOLERANCE_PCT = 0.001
+
+
+@dataclass(frozen=True)
+class DivergenceSettings:
+    pivot_window_l: int
+    pivot_window_r: int
+    min_bars_between_same_type_pivots: int
+    min_pivot_move_pct: float
+    max_pivot_pair_span: int
+    max_age_pivot2_from_last: int
+
+
+@dataclass(frozen=True)
+class PivotPoint:
+    index: int
+    price: float
+    rsi: float
+    confirmation_index: int
+
+
+DIVERGENCE_SETTINGS_BY_FREQUENCY: dict[PricesFrequency, DivergenceSettings] = {
+    "daily": DivergenceSettings(
+        pivot_window_l=3,
+        pivot_window_r=3,
+        min_bars_between_same_type_pivots=4,
+        min_pivot_move_pct=0.01,
+        max_pivot_pair_span=60,
+        max_age_pivot2_from_last=60,
+    ),
+    "weekly": DivergenceSettings(
+        pivot_window_l=2,
+        pivot_window_r=2,
+        min_bars_between_same_type_pivots=3,
+        min_pivot_move_pct=0.01,
+        max_pivot_pair_span=30,
+        max_age_pivot2_from_last=30,
+    ),
+}
+
+DIVERGENCE_SEED_HISTORY_ROWS: dict[PricesFrequency, int] = {
+    "daily": 144,
+    "weekly": 81,
+}
 
 PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "ticker",
@@ -25,6 +72,7 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "rs",
     "obvm",
     "rsi_14",
+    "rsi_divergence_flag",
 )
 PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS)
 PRICE_TICKER_ENDPOINT = (
@@ -71,6 +119,16 @@ def _validate_frequency(frequency: PricesFrequency) -> PricesFrequency:
     if frequency not in {"daily", "weekly"}:
         raise ValueError(f"Unsupported prices frequency: {frequency}")
     return frequency
+
+
+def divergence_settings_for_frequency(frequency: PricesFrequency) -> DivergenceSettings:
+    validated_frequency = _validate_frequency(frequency)
+    return DIVERGENCE_SETTINGS_BY_FREQUENCY[validated_frequency]
+
+
+def divergence_seed_history_rows(frequency: PricesFrequency) -> int:
+    validated_frequency = _validate_frequency(frequency)
+    return DIVERGENCE_SEED_HISTORY_ROWS[validated_frequency]
 
 
 def prices_cache_path(frequency: PricesFrequency, cache_year: int) -> Path:
@@ -167,6 +225,15 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     numeric_columns = ["adjusted_close", "adjusted_high", "adjusted_low", "rs", "obvm", "rsi_14"]
     for column in numeric_columns:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
+    divergence_series = working_df["rsi_divergence_flag"].where(
+        working_df["rsi_divergence_flag"].notna(),
+        pd.NA,
+    )
+    working_df["rsi_divergence_flag"] = divergence_series.astype("string").str.strip().str.lower()
+    working_df.loc[
+        ~working_df["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
+        "rsi_divergence_flag",
+    ] = pd.NA
 
     working_df = working_df[
         working_df["ticker"].astype(str).str.len() > 0
@@ -295,12 +362,215 @@ def compute_wilder_rsi(close_series: pd.Series, period: int = RSI_PERIOD) -> pd.
     return pd.Series(rsi_values, index=close_series.index)
 
 
+def _is_price_pivot_candidate(price_series: pd.Series, index: int, *, left_window: int, right_window: int, kind: str) -> bool:
+    window = pd.to_numeric(
+        price_series.iloc[index - left_window:index + right_window + 1],
+        errors="coerce",
+    )
+    if window.isna().any():
+        return False
+    value = float(price_series.iloc[index])
+    if kind == "high":
+        return value >= float(window.max())
+    return value <= float(window.min())
+
+
+def _relative_same_type_move(candidate_price: float, previous_price: float, *, kind: str) -> float:
+    if previous_price == 0:
+        return float("inf")
+    if kind == "high":
+        return (candidate_price / previous_price) - 1.0
+    return (previous_price / candidate_price) - 1.0
+
+
+def _find_price_pivots(
+    price_series: pd.Series,
+    rsi_series: pd.Series,
+    *,
+    kind: Literal["high", "low"],
+    settings: DivergenceSettings,
+) -> list[PivotPoint]:
+    pivots: list[PivotPoint] = []
+    last_pivot_index: int | None = None
+    last_pivot_price: float | None = None
+    series_length = len(price_series)
+    if series_length <= settings.pivot_window_l + settings.pivot_window_r:
+        return pivots
+
+    for index in range(settings.pivot_window_l, series_length - settings.pivot_window_r):
+        rsi_value = pd.to_numeric(rsi_series.iloc[index], errors="coerce")
+        price_value = pd.to_numeric(price_series.iloc[index], errors="coerce")
+        if pd.isna(rsi_value) or pd.isna(price_value):
+            continue
+        if not _is_price_pivot_candidate(
+            price_series,
+            index,
+            left_window=settings.pivot_window_l,
+            right_window=settings.pivot_window_r,
+            kind=kind,
+        ):
+            continue
+
+        candidate_price = float(price_value)
+        candidate_rsi = float(rsi_value)
+        candidate = PivotPoint(
+            index=index,
+            price=candidate_price,
+            rsi=candidate_rsi,
+            confirmation_index=index + settings.pivot_window_r,
+        )
+        if last_pivot_index is None or last_pivot_price is None:
+            pivots.append(candidate)
+            last_pivot_index = index
+            last_pivot_price = candidate_price
+            continue
+
+        relative_move = _relative_same_type_move(candidate_price, last_pivot_price, kind=kind)
+        is_same_swing_update = 0.0 < relative_move < DIVERGENCE_SAME_SWING_TOLERANCE_PCT
+        if (index - last_pivot_index) < settings.min_bars_between_same_type_pivots:
+            if is_same_swing_update:
+                pivots[-1] = candidate
+                last_pivot_index = index
+                last_pivot_price = candidate_price
+            continue
+
+        if relative_move >= settings.min_pivot_move_pct:
+            pivots.append(candidate)
+            last_pivot_index = index
+            last_pivot_price = candidate_price
+            continue
+
+        if is_same_swing_update:
+            pivots[-1] = candidate
+            last_pivot_index = index
+            last_pivot_price = candidate_price
+
+    return pivots
+
+
+def _build_active_divergence_series(
+    *,
+    pivots: list[PivotPoint],
+    settings: DivergenceSettings,
+    row_count: int,
+    anchor_threshold: float,
+    anchor_cmp,
+    anchor_break_cmp,
+    price_divergence_cmp,
+    rsi_divergence_cmp,
+    prefer_more_extreme_cmp,
+) -> list[tuple[int, int] | None]:
+    events: dict[int, list[PivotPoint]] = {}
+    for pivot in pivots:
+        if pivot.confirmation_index >= row_count:
+            continue
+        events.setdefault(pivot.confirmation_index, []).append(pivot)
+
+    active_by_row: list[tuple[int, int] | None] = [None] * row_count
+    anchor: PivotPoint | None = None
+    best_divergence: tuple[PivotPoint, PivotPoint] | None = None
+    for row_index in range(row_count):
+        for pivot in events.get(row_index, []):
+            if anchor is None:
+                if anchor_cmp(pivot.rsi, anchor_threshold):
+                    anchor = pivot
+                best_divergence = None
+                continue
+
+            if (pivot.index - anchor.index) > settings.max_pivot_pair_span:
+                anchor = pivot if anchor_cmp(pivot.rsi, anchor_threshold) else None
+                best_divergence = None
+                continue
+
+            if anchor_break_cmp(pivot.rsi, anchor.rsi):
+                anchor = pivot if anchor_cmp(pivot.rsi, anchor_threshold) else None
+                best_divergence = None
+                continue
+
+            if price_divergence_cmp(pivot.price, anchor.price) and rsi_divergence_cmp(pivot.rsi, anchor.rsi):
+                if best_divergence is None or prefer_more_extreme_cmp(pivot.price, best_divergence[1].price):
+                    best_divergence = (anchor, pivot)
+
+        if best_divergence is None:
+            active_by_row[row_index] = None
+            continue
+
+        pivot2 = best_divergence[1]
+        if (row_index - pivot2.index) > settings.max_age_pivot2_from_last:
+            active_by_row[row_index] = None
+            continue
+
+        active_by_row[row_index] = (pivot2.index, pivot2.confirmation_index)
+
+    return active_by_row
+
+
+def compute_rsi_divergence_flags(
+    price_df: pd.DataFrame,
+    *,
+    frequency: PricesFrequency,
+    rsi_column: str = "rsi_14",
+) -> pd.Series:
+    settings = divergence_settings_for_frequency(frequency)
+    working_df = price_df.reset_index(drop=True).copy()
+    row_count = len(working_df)
+    if row_count == 0:
+        return pd.Series(dtype=object)
+
+    highs = pd.to_numeric(working_df.get("adjusted_high"), errors="coerce")
+    lows = pd.to_numeric(working_df.get("adjusted_low"), errors="coerce")
+    rsi_values = pd.to_numeric(working_df.get(rsi_column), errors="coerce")
+
+    pivot_highs = _find_price_pivots(highs, rsi_values, kind="high", settings=settings)
+    pivot_lows = _find_price_pivots(lows, rsi_values, kind="low", settings=settings)
+
+    bearish_active = _build_active_divergence_series(
+        pivots=pivot_highs,
+        settings=settings,
+        row_count=row_count,
+        anchor_threshold=DIVERGENCE_OB_LEVEL,
+        anchor_cmp=lambda current, threshold: current > threshold,
+        anchor_break_cmp=lambda current, anchor: current > anchor,
+        price_divergence_cmp=lambda current, anchor: current > anchor,
+        rsi_divergence_cmp=lambda current, anchor: current < anchor,
+        prefer_more_extreme_cmp=lambda current, previous: current > previous,
+    )
+    bullish_active = _build_active_divergence_series(
+        pivots=pivot_lows,
+        settings=settings,
+        row_count=row_count,
+        anchor_threshold=DIVERGENCE_OS_LEVEL,
+        anchor_cmp=lambda current, threshold: current < threshold,
+        anchor_break_cmp=lambda current, anchor: current < anchor,
+        price_divergence_cmp=lambda current, anchor: current < anchor,
+        rsi_divergence_cmp=lambda current, anchor: current > anchor,
+        prefer_more_extreme_cmp=lambda current, previous: current < previous,
+    )
+
+    divergence_flags = np.full(row_count, "none", dtype=object)
+    for row_index in range(row_count):
+        bullish_state = bullish_active[row_index]
+        bearish_state = bearish_active[row_index]
+        if bullish_state is None and bearish_state is None:
+            continue
+        if bullish_state is not None and bearish_state is None:
+            divergence_flags[row_index] = "positive"
+            continue
+        if bearish_state is not None and bullish_state is None:
+            divergence_flags[row_index] = "negative"
+            continue
+        assert bullish_state is not None and bearish_state is not None
+        divergence_flags[row_index] = "positive" if bullish_state > bearish_state else "negative"
+
+    return pd.Series(divergence_flags, index=price_df.index, dtype=object)
+
+
 def _build_rsi_seed_history(
     existing_df: pd.DataFrame,
     target_df: pd.DataFrame,
     selected_tickers: Sequence[object],
     *,
-    period: int = RSI_PERIOD,
+    lookback_rows: int = RSI_PERIOD,
 ) -> pd.DataFrame:
     normalized_existing_df = _canonicalize_prices_df(existing_df)
     normalized_target_df = _canonicalize_prices_df(target_df)
@@ -340,7 +610,7 @@ def _build_rsi_seed_history(
         ].copy()
         if ticker_history.empty:
             continue
-        seed_parts.append(ticker_history.sort_values("_existing_date").tail(period))
+        seed_parts.append(ticker_history.sort_values("_existing_date").tail(lookback_rows))
 
     if not seed_parts:
         return empty_prices_cache_df()
@@ -352,10 +622,12 @@ def _build_rsi_seed_history(
 def enrich_prices_with_rsi(
     target_df: pd.DataFrame,
     *,
+    frequency: PricesFrequency = "daily",
     selected_tickers: Sequence[object] | None = None,
     seed_history_df: pd.DataFrame | None = None,
     period: int = RSI_PERIOD,
 ) -> pd.DataFrame:
+    validated_frequency = _validate_frequency(frequency)
     normalized_target_df = _canonicalize_prices_df(target_df)
     if normalized_target_df.empty:
         return normalized_target_df
@@ -382,20 +654,27 @@ def enrich_prices_with_rsi(
         return normalized_target_df
 
     working_df["rsi_14"] = np.nan
+    working_df["rsi_divergence_flag"] = "none"
     for ticker, group in working_df.groupby("ticker", sort=False):
         if ticker not in impacted_set:
             continue
         rsi_series = compute_wilder_rsi(group["adjusted_close"], period=period)
         working_df.loc[group.index, "rsi_14"] = rsi_series.to_numpy()
+        divergence_series = compute_rsi_divergence_flags(
+            group.assign(rsi_14=rsi_series),
+            frequency=validated_frequency,
+            rsi_column="rsi_14",
+        )
+        working_df.loc[group.index, "rsi_divergence_flag"] = divergence_series.to_numpy()
 
     impacted_rsi_df = working_df.loc[
         working_df["ticker"].isin(impacted_set),
-        ["ticker", "date", "rsi_14"],
+        ["ticker", "date", "rsi_14", "rsi_divergence_flag"],
     ].copy()
     impacted_rsi_df = impacted_rsi_df.drop_duplicates(subset=["ticker", "date"], keep="last")
 
     preserved_df = normalized_target_df.loc[~normalized_target_df["ticker"].isin(impacted_set)].copy()
-    updated_impacted_df = impacted_target_df.drop(columns="rsi_14").merge(
+    updated_impacted_df = impacted_target_df.drop(columns=["rsi_14", "rsi_divergence_flag"], errors="ignore").merge(
         impacted_rsi_df,
         on=["ticker", "date"],
         how="left",
@@ -446,18 +725,26 @@ def import_prices_cache(
     )
     previous_year_seed_df = empty_prices_cache_df()
     previous_year_cache_file = prices_cache_path(frequency, resolved_year - 1)
+    seed_lookback_rows = divergence_seed_history_rows(frequency)
     if previous_year_cache_file.exists():
         previous_year_seed_df = _build_rsi_seed_history(
             load_prices_cache(previous_year_cache_file),
             final_df,
             requested_tickers,
+            lookback_rows=seed_lookback_rows,
         )
-    current_year_seed_df = _build_rsi_seed_history(existing_df, final_df, requested_tickers)
+    current_year_seed_df = _build_rsi_seed_history(
+        existing_df,
+        final_df,
+        requested_tickers,
+        lookback_rows=seed_lookback_rows,
+    )
     seed_history_df = _canonicalize_prices_df(
         pd.concat([previous_year_seed_df, current_year_seed_df], ignore_index=True)
     )
     final_df = enrich_prices_with_rsi(
         final_df,
+        frequency=frequency,
         selected_tickers=requested_tickers,
         seed_history_df=seed_history_df,
     )

@@ -16,7 +16,9 @@ from equipilot_app import (
     _build_company_drilldown_styler,
     _default_sector_regime_fit_range_for_company_scope,
     _enrich_company_universe_with_market_regime,
+    _enrich_company_universe_with_rsi_divergence,
     _filter_thematics_basket_table_for_view,
+    _filter_by_optional_label_value,
     _filter_by_optional_numeric_range,
     _company_filter_presets,
     _compute_company_return_metrics,
@@ -212,6 +214,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Technical Score",
                 "RSI Regime Score",
                 "Sector Regime Fit",
+                "RSI Divergence (D)",
+                "RSI Divergence (W)",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -225,6 +229,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 72.0)
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "82.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "74.0")
+        self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
+        self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
 
     def test_fundamental_display_now_includes_company_and_momentum(self) -> None:
         company_df = pd.DataFrame(
@@ -259,6 +265,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Technical Score",
                 "RSI Regime Score",
                 "Sector Regime Fit",
+                "RSI Divergence (D)",
+                "RSI Divergence (W)",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -271,6 +279,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 85.0)
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "76.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "68.0")
+        self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
+        self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
 
     def test_fundamental_and_technical_display_include_ai_and_signal_fields(self) -> None:
         company_df = pd.DataFrame(
@@ -286,6 +296,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "general_technical_score": 91.0,
                     "stock_rsi_regime_score": 84.0,
                     "sector_regime_fit_score": 72.0,
+                    "rsi_divergence_daily_flag": "positive",
+                    "rsi_divergence_weekly_flag": "negative",
                     "rel_strength": "Positive",
                     "rel_volume": "Negative",
                     "ai_revenue_exposure": "direct",
@@ -308,6 +320,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             "Technical Score",
             "RSI Regime Score",
             "Sector Regime Fit",
+            "RSI Divergence (D)",
+            "RSI Divergence (W)",
             "Rel Strength",
             "Rel Volume",
             "AI Revenue Exposure",
@@ -317,6 +331,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(technical_rendered.columns.tolist(), expected_columns)
         self.assertEqual(fundamental_rendered.iloc[0]["RSI Regime Score"], "84.0")
         self.assertEqual(fundamental_rendered.iloc[0]["Sector Regime Fit"], "72.0")
+        self.assertEqual(fundamental_rendered.iloc[0]["RSI Divergence (D)"], "Positive")
+        self.assertEqual(fundamental_rendered.iloc[0]["RSI Divergence (W)"], "Negative")
         self.assertEqual(fundamental_rendered.iloc[0]["Rel Strength"], "Positive")
         self.assertEqual(fundamental_rendered.iloc[0]["AI Revenue Exposure"], "direct")
         self.assertEqual(technical_rendered.iloc[0]["AI Disruption Risk"], "low")
@@ -335,6 +351,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "Technical Score": "91.0",
                     "RSI Regime Score": "84.0",
                     "Sector Regime Fit": "72.0",
+                    "RSI Divergence (D)": "Positive",
+                    "RSI Divergence (W)": "None",
                     "Rel Strength": "Positive",
                     "Rel Volume": "Negative",
                     "AI Revenue Exposure": "indirect",
@@ -348,6 +366,66 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertIn("#15803D", html)
         self.assertIn("#B42318", html)
         self.assertIn("#B45309", html)
+
+    def test_enrich_company_universe_merges_daily_and_weekly_divergence_flags(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "AAA.US", "company": "Alpha"},
+                {"ticker": "BBB.US", "company": "Beta"},
+            ]
+        )
+        divergence_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "rsi_divergence_daily_flag": "positive",
+                    "rsi_divergence_weekly_flag": "negative",
+                }
+            ]
+        )
+
+        with patch(
+            "equipilot_app._load_company_divergence_metrics_for_date",
+            return_value=divergence_df,
+        ):
+            enriched = _enrich_company_universe_with_rsi_divergence(
+                company_df,
+                date(2026, 3, 13),
+            )
+
+        by_ticker = enriched.set_index("ticker")
+        self.assertEqual(by_ticker.loc["AAA.US", "rsi_divergence_daily_flag"], "positive")
+        self.assertEqual(by_ticker.loc["AAA.US", "rsi_divergence_weekly_flag"], "negative")
+        self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "rsi_divergence_daily_flag"]))
+        self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "rsi_divergence_weekly_flag"]))
+
+    def test_optional_label_filter_handles_positive_negative_and_none(self) -> None:
+        df = pd.DataFrame(
+            [
+                {"ticker": "AAA.US", "rsi_divergence_daily_flag": "positive"},
+                {"ticker": "BBB.US", "rsi_divergence_daily_flag": "negative"},
+                {"ticker": "CCC.US", "rsi_divergence_daily_flag": "none"},
+                {"ticker": "DDD.US", "rsi_divergence_daily_flag": pd.NA},
+            ]
+        )
+
+        positive_filtered, positive_applied = _filter_by_optional_label_value(
+            df,
+            column="rsi_divergence_daily_flag",
+            selected_value="Positive",
+            label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
+        )
+        none_filtered, none_applied = _filter_by_optional_label_value(
+            df,
+            column="rsi_divergence_daily_flag",
+            selected_value="None",
+            label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
+        )
+
+        self.assertTrue(positive_applied)
+        self.assertEqual(positive_filtered["ticker"].tolist(), ["AAA.US"])
+        self.assertTrue(none_applied)
+        self.assertEqual(none_filtered["ticker"].tolist(), ["CCC.US"])
 
     def test_annotate_company_technical_trend_builds_symbol_and_direction(self) -> None:
         company_df = pd.DataFrame(
@@ -464,6 +542,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "TS",
                 "RSI Regime",
                 "Sector Regime Fit",
+                "RSI Divergence (D)",
+                "RSI Divergence (W)",
                 "FS",
                 "Mom. FS",
                 "Rel Strength",
@@ -475,6 +555,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(str(rendered.iloc[0]["TS"]).strip(), f"81.0 {TREND_SYMBOL_UP}")
         self.assertAlmostEqual(float(rendered.iloc[0]["RSI Regime"]), 74.0)
         self.assertAlmostEqual(float(rendered.iloc[0]["Sector Regime Fit"]), 66.0)
+        self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
+        self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
         self.assertEqual(str(rendered.iloc[0]["FS"]).strip(), f"76.0 {TREND_SYMBOL_DOWN}")
         self.assertEqual(str(rendered.iloc[0]["Mom. FS"]).strip(), "68.0")
 
