@@ -8,10 +8,13 @@ import pandas as pd
 
 from prices_service import (
     build_prices_cache_dataframe,
+    compute_rsi_divergence_flags,
     compute_wilder_rsi,
+    divergence_seed_history_rows,
     enrich_prices_with_rsi,
     fetch_prices_history,
     get_price_history_query,
+    import_prices_cache,
     intersect_ticker_universe,
     normalize_price_tickers,
     parse_manual_price_tickers,
@@ -34,6 +37,31 @@ class _DummyEngine:
 
 
 class PricesServiceTests(unittest.TestCase):
+    @staticmethod
+    def _build_divergence_frame(
+        highs: list[float],
+        lows: list[float],
+        rsi_values: list[float],
+        *,
+        ticker: str = "AAA.US",
+    ) -> pd.DataFrame:
+        rows: list[dict[str, object]] = []
+        for idx, (high_value, low_value, rsi_value) in enumerate(zip(highs, lows, rsi_values), start=1):
+            close_value = (high_value + low_value) / 2.0
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "date": f"2026-01-{idx:02d}",
+                    "adjusted_close": close_value,
+                    "adjusted_high": high_value,
+                    "adjusted_low": low_value,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                    "rsi_14": rsi_value,
+                }
+            )
+        return pd.DataFrame(rows)
+
     def test_normalize_price_tickers_adds_suffix_and_deduplicates(self) -> None:
         normalized = normalize_price_tickers(["aapl", "AAPL.US", "brk.b", " msft "])
 
@@ -224,6 +252,7 @@ class PricesServiceTests(unittest.TestCase):
                     "rs": 3.0,
                     "obvm": 4.0,
                     "rsi_14": 42.0,
+                    "rsi_divergence_flag": "negative",
                 }
                 for day in range(1, 17)
             ]
@@ -237,6 +266,12 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(aapl_rsi.iloc[14], 100.0)
         self.assertEqual(aapl_rsi.iloc[15], 100.0)
         self.assertTrue((msft_rsi == 42.0).all())
+        self.assertTrue(
+            (
+                result.loc[result["ticker"] == "MSFT.US", "rsi_divergence_flag"]
+                == "negative"
+            ).all()
+        )
 
     def test_enrich_prices_with_rsi_can_use_seed_history_for_early_rows(self) -> None:
         seed_history_df = pd.DataFrame(
@@ -283,6 +318,143 @@ class PricesServiceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["rsi_14"].tolist(), [100.0, 100.0])
+        self.assertEqual(result["rsi_divergence_flag"].tolist(), ["none", "none"])
+
+    def test_compute_rsi_divergence_flags_detects_bearish_daily_divergence(self) -> None:
+        highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 12, 10, 9, 8, 8]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 58, 56, 54, 74, 55, 54, 53, 54, 56, 58, 60, 66, 58, 55, 52, 50, 49]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertTrue((flags.iloc[:17] == "none").all())
+        self.assertEqual(flags.iloc[17], "negative")
+        self.assertEqual(flags.iloc[18], "negative")
+        self.assertEqual(flags.iloc[19], "negative")
+
+    def test_compute_rsi_divergence_flags_detects_bullish_daily_divergence(self) -> None:
+        lows = [12, 11, 10, 9, 10, 11, 6, 11, 12, 11, 10, 9, 8, 7, 5, 8, 10, 11, 12, 12]
+        highs = [value + 4 for value in lows]
+        rsi_values = [50, 48, 45, 42, 44, 46, 26, 44, 45, 46, 44, 42, 40, 38, 34, 40, 44, 46, 48, 49]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertTrue((flags.iloc[:17] == "none").all())
+        self.assertEqual(flags.iloc[17], "positive")
+        self.assertEqual(flags.iloc[18], "positive")
+        self.assertEqual(flags.iloc[19], "positive")
+
+    def test_compute_rsi_divergence_flags_uses_weekly_defaults(self) -> None:
+        highs = [8, 9, 10, 12, 10, 9, 11, 13, 18, 12, 10, 9]
+        lows = [value - 4 for value in highs]
+        rsi_values = [48, 50, 52, 74, 58, 56, 57, 60, 66, 58, 55, 52]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="weekly")
+
+        self.assertTrue((flags.iloc[:10] == "none").all())
+        self.assertEqual(flags.iloc[10], "negative")
+        self.assertEqual(flags.iloc[11], "negative")
+
+    def test_compute_rsi_divergence_flags_keeps_same_anchor_only_when_new_high_is_more_extreme(self) -> None:
+        highs = [
+            8, 9, 10, 11, 10, 9, 14, 9, 8, 9,
+            10, 11, 12, 13, 17, 12, 10, 9, 8, 9,
+            10, 11, 12, 13, 16, 12, 10, 9, 8, 8,
+        ] + [8] * 50
+        lows = [value - 4 for value in highs]
+        rsi_values = [
+            50, 52, 55, 58, 56, 54, 74, 55, 54, 53,
+            54, 56, 58, 60, 66, 58, 55, 52, 50, 51,
+            52, 54, 56, 58, 68, 56, 54, 52, 50, 49,
+        ] + [48] * 50
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertEqual(flags.iloc[74], "negative")
+        self.assertEqual(flags.iloc[75], "none")
+
+    def test_compute_rsi_divergence_flags_resets_when_rsi_breaks_anchor(self) -> None:
+        highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 12, 10, 9, 10, 11, 12, 13, 18, 12, 10, 9]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 58, 56, 54, 74, 55, 54, 53, 54, 56, 58, 60, 66, 58, 55, 52, 54, 56, 58, 60, 76, 60, 56, 52]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertEqual(flags.iloc[17], "negative")
+        self.assertEqual(flags.iloc[24], "negative")
+        self.assertEqual(flags.iloc[25], "none")
+
+    def test_compute_rsi_divergence_flags_expires_after_max_active_age(self) -> None:
+        highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 12, 10, 9, 8, 8] + [8] * 58
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 58, 56, 54, 74, 55, 54, 53, 54, 56, 58, 60, 66, 58, 55, 52, 50, 49] + [48] * 58
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertEqual(flags.iloc[74], "negative")
+        self.assertEqual(flags.iloc[75], "none")
+
+    def test_compute_rsi_divergence_flags_rejects_candidates_beyond_pair_span(self) -> None:
+        highs = [8, 9, 10, 11, 10, 9, 14] + [9] * 60 + [10, 11, 12, 13, 17, 12, 10, 9]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 58, 56, 54, 74] + [52] * 60 + [54, 56, 58, 60, 66, 58, 55, 52]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertTrue((flags == "none").all())
+
+    def test_import_prices_cache_uses_frequency_specific_divergence_seed_history_lengths(self) -> None:
+        build_seed_calls: list[int] = []
+
+        def fake_build_seed_history(existing_df, target_df, selected_tickers, *, lookback_rows):
+            del existing_df, target_df, selected_tickers
+            build_seed_calls.append(int(lookback_rows))
+            return pd.DataFrame()
+
+        fetched_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": "2026-01-01",
+                    "adjusted_close": 10.0,
+                    "adjusted_high": 11.0,
+                    "adjusted_low": 9.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }
+            ]
+        )
+
+        with patch("prices_service.resolve_all_price_tickers", return_value=["AAPL.US"]), patch(
+            "prices_service.fetch_prices_history",
+            return_value=fetched_df,
+        ), patch(
+            "prices_service.save_prices_cache",
+            side_effect=lambda df, frequency, cache_year: Path(f"{frequency}_{cache_year}.jsonl"),
+        ), patch(
+            "prices_service._build_rsi_seed_history",
+            side_effect=fake_build_seed_history,
+        ), patch(
+            "prices_service.prices_cache_path",
+            side_effect=lambda frequency, cache_year: Path(f"{frequency}_{cache_year}.jsonl"),
+        ), patch("pathlib.Path.exists", return_value=False):
+            import_prices_cache("daily", date(2026, 1, 1), scope="all", cache_year=2026)
+            import_prices_cache("weekly", date(2026, 1, 1), scope="all", cache_year=2026)
+
+        self.assertEqual(
+            build_seed_calls,
+            [
+                divergence_seed_history_rows("daily"),
+                divergence_seed_history_rows("weekly"),
+            ],
+        )
 
     def test_save_and_load_prices_cache_round_trip_jsonl(self) -> None:
         df = pd.DataFrame(
@@ -295,6 +467,7 @@ class PricesServiceTests(unittest.TestCase):
                 "rs": 1.5,
                 "obvm": 2.5,
                 "rsi_14": 75.0,
+                "rsi_divergence_flag": "negative",
             }]
         )
         with TemporaryDirectory() as tmp_dir:
@@ -306,6 +479,7 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(loaded["ticker"].tolist(), ["AAPL.US"])
         self.assertEqual(loaded["date"].tolist(), ["2026-02-10"])
         self.assertEqual(loaded["rsi_14"].tolist(), [75.0])
+        self.assertEqual(loaded["rsi_divergence_flag"].tolist(), ["negative"])
 
 
 if __name__ == "__main__":

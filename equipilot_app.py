@@ -113,6 +113,7 @@ TREND_FILTER_LABELS = {
 }
 TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["flat"], TREND_FILTER_LABELS["down"]]
 SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
+DIVERGENCE_FILTER_OPTIONS = ["All", "Positive", "Negative", "None"]
 AI_REVENUE_FILTER_OPTIONS = ["All", "direct", "indirect", "none"]
 AI_DISRUPTION_FILTER_OPTIONS = ["All", "high", "medium", "low", "none"]
 MARKET_TREND_THRESHOLD = 3.0
@@ -440,7 +441,17 @@ def build_thematics_catalog(path_str: str) -> dict[str, object]:
 
 @st.cache_data(show_spinner=False)
 def build_price_history_lookup(path_str: str) -> dict[str, dict[str, list[object]]]:
-    normalized_prices = normalize_prices_cache_for_check(load_prices_cache_file(path_str))
+    loaded_prices = load_prices_cache_file(path_str)
+    if loaded_prices.empty:
+        return {}
+    normalized_prices = loaded_prices[["ticker", "date", "adjusted_close"]].copy()
+    normalized_prices["ticker"] = normalized_prices["ticker"].fillna("").astype(str).str.strip().str.upper()
+    normalized_prices["date"] = pd.to_datetime(normalized_prices["date"], errors="coerce").dt.date
+    normalized_prices["adjusted_close"] = pd.to_numeric(normalized_prices["adjusted_close"], errors="coerce")
+    normalized_prices = normalized_prices.dropna(subset=["date"]).drop_duplicates(
+        subset=["ticker", "date"],
+        keep="last",
+    )
     lookup: dict[str, dict[str, list[object]]] = {}
     if normalized_prices.empty:
         return lookup
@@ -457,6 +468,7 @@ def build_price_history_lookup(path_str: str) -> dict[str, dict[str, list[object
 def invalidate_prices_cache_views() -> None:
     load_prices_cache_file.clear()
     build_price_history_lookup.clear()
+    _load_company_divergence_metrics_for_date.clear()
 
 
 def _price_close_for_target(
@@ -593,17 +605,32 @@ def normalize_indices_cache_for_comparison(cache_df: pd.DataFrame) -> pd.DataFra
 
 def normalize_prices_cache_for_check(cache_df: pd.DataFrame) -> pd.DataFrame:
     missing_columns = sorted(PRICE_CACHE_REQUIRED_COLUMNS.difference(cache_df.columns))
+    if "rsi_divergence_flag" in cache_df.columns:
+        divergence_raw = cache_df["rsi_divergence_flag"]
+        if divergence_raw.isna().all():
+            missing_columns.append("rsi_divergence_flag")
     if missing_columns:
         raise ValueError(
             "Prices cache missing required columns: "
-            f"{', '.join(missing_columns)}"
+            f"{', '.join(sorted(set(missing_columns)))}"
         )
 
     working_df = cache_df[list(PRICE_CACHE_COLUMNS)].copy()
     working_df["ticker"] = working_df["ticker"].fillna("").astype(str).str.strip().str.upper()
     working_df["date"] = pd.to_datetime(working_df["date"], errors="coerce").dt.date
-    for column in PRICE_CACHE_COLUMNS[2:]:
+    for column in ["adjusted_close", "adjusted_high", "adjusted_low", "rs", "obvm", "rsi_14"]:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
+    working_df["rsi_divergence_flag"] = (
+        working_df["rsi_divergence_flag"]
+        .where(working_df["rsi_divergence_flag"].notna(), pd.NA)
+        .astype("string")
+        .str.strip()
+        .str.lower()
+    )
+    working_df.loc[
+        ~working_df["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
+        "rsi_divergence_flag",
+    ] = pd.NA
     working_df = working_df[working_df["ticker"].astype(str).str.len() > 0]
     working_df = working_df.dropna(subset=["date"]).drop_duplicates(
         subset=["ticker", "date"], keep="last"
@@ -2553,6 +2580,8 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "default_sector_regime_fit_range",
         "default_fund_momentum_range",
         "default_tech_trend_dir",
+        "default_daily_rsi_divergence",
+        "default_weekly_rsi_divergence",
         "active_preset",
         "pending_reset",
         "sector",
@@ -2564,6 +2593,8 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "sector_regime_fit_range",
         "fund_momentum_range",
         "tech_trend_dir",
+        "daily_rsi_divergence",
+        "weekly_rsi_divergence",
         "ticker",
     ):
         st.session_state.pop(f"{prefix}_drilldown_filter_{suffix}", None)
@@ -2623,6 +2654,80 @@ def _empty_market_regime_company_metrics() -> pd.DataFrame:
     return pd.DataFrame(
         columns=["ticker", "stock_rsi_regime_score", "sector_regime_fit_score"]
     )
+
+
+def _empty_company_divergence_metrics() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=["ticker", "rsi_divergence_daily_flag", "rsi_divergence_weekly_flag"]
+    )
+
+
+def _latest_divergence_flags_for_frequency(
+    frequency: str,
+    evaluation_date: date,
+) -> pd.DataFrame:
+    parts: list[pd.DataFrame] = []
+    for cache_path in list_prices_cache_paths(frequency):
+        loaded = load_prices_cache(cache_path)
+        if loaded.empty:
+            continue
+        parts.append(loaded)
+    if not parts:
+        return pd.DataFrame(columns=["ticker", "rsi_divergence_flag"])
+
+    working = pd.concat(parts, ignore_index=True)
+    if working.empty:
+        return pd.DataFrame(columns=["ticker", "rsi_divergence_flag"])
+
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["rsi_divergence_flag"] = (
+        working.get("rsi_divergence_flag", pd.Series(index=working.index, dtype=object))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    working.loc[
+        ~working["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
+        "rsi_divergence_flag",
+    ] = pd.NA
+    working = working[
+        (working["ticker"].astype(str).str.len() > 0)
+        & working["date"].notna()
+        & (working["date"] <= evaluation_date)
+    ]
+    if working.empty:
+        return pd.DataFrame(columns=["ticker", "rsi_divergence_flag"])
+    return (
+        working.sort_values(["ticker", "date"], kind="stable")
+        .drop_duplicates(subset=["ticker"], keep="last")
+        .loc[:, ["ticker", "rsi_divergence_flag"]]
+        .reset_index(drop=True)
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _load_company_divergence_metrics_for_date(
+    evaluation_date: date,
+) -> pd.DataFrame:
+    daily_df = _latest_divergence_flags_for_frequency("daily", evaluation_date).rename(
+        columns={"rsi_divergence_flag": "rsi_divergence_daily_flag"}
+    )
+    weekly_df = _latest_divergence_flags_for_frequency("weekly", evaluation_date).rename(
+        columns={"rsi_divergence_flag": "rsi_divergence_weekly_flag"}
+    )
+    if daily_df.empty and weekly_df.empty:
+        return _empty_company_divergence_metrics()
+    if daily_df.empty:
+        daily_df = pd.DataFrame(columns=["ticker", "rsi_divergence_daily_flag"])
+    if weekly_df.empty:
+        weekly_df = pd.DataFrame(columns=["ticker", "rsi_divergence_weekly_flag"])
+    merged = daily_df.merge(weekly_df, on="ticker", how="outer")
+    for column in ["rsi_divergence_daily_flag", "rsi_divergence_weekly_flag"]:
+        if column not in merged.columns:
+            merged[column] = pd.NA
+    return merged.drop_duplicates(subset=["ticker"], keep="last").reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -2728,6 +2833,31 @@ def _enrich_company_universe_with_market_regime(
     return merged, warning_message
 
 
+def _enrich_company_universe_with_rsi_divergence(
+    company_df: pd.DataFrame,
+    evaluation_date: date,
+) -> pd.DataFrame:
+    enriched = company_df.copy()
+    for column in ["rsi_divergence_daily_flag", "rsi_divergence_weekly_flag"]:
+        if column not in enriched.columns:
+            enriched[column] = pd.NA
+    if enriched.empty:
+        return enriched
+
+    divergence_df = _load_company_divergence_metrics_for_date(evaluation_date)
+    if divergence_df.empty:
+        return enriched
+
+    merged = enriched.drop(
+        columns=[
+            column
+            for column in ["rsi_divergence_daily_flag", "rsi_divergence_weekly_flag"]
+            if column in enriched.columns
+        ]
+    ).merge(divergence_df, on="ticker", how="left")
+    return merged
+
+
 def _market_cap_bucket_from_usd(value: object) -> str:
     market_cap_num = pd.to_numeric(value, errors="coerce")
     if pd.isna(market_cap_num) or float(market_cap_num) < 0:
@@ -2751,6 +2881,36 @@ def _sign_label(value: object) -> str:
     if pd.isna(numeric_value):
         return "N/A"
     return "Positive" if float(numeric_value) > 0 else "Negative"
+
+
+def _format_divergence_flag(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    label = str(value).strip().lower()
+    if label == "positive":
+        return "Positive"
+    if label == "negative":
+        return "Negative"
+    if label == "none":
+        return "None"
+    return "N/A"
+
+
+def _filter_by_optional_label_value(
+    df: pd.DataFrame,
+    *,
+    column: str,
+    selected_value: str,
+    label_map: dict[str, str],
+) -> tuple[pd.DataFrame, bool]:
+    normalized_selected = str(selected_value or "").strip()
+    if normalized_selected == "All" or column not in df.columns:
+        return df.copy(), False
+    target_value = label_map.get(normalized_selected)
+    if target_value is None:
+        return df.copy(), False
+    filtered = df[df[column].fillna("__na__").astype(str).str.lower() == target_value.lower()]
+    return filtered.copy(), True
 
 
 def _filter_by_optional_numeric_range(
@@ -2863,6 +3023,8 @@ def _prepare_company_drilldown_universe(
     working["thematic_memberships"] = thematic_membership_values
     working["stock_rsi_regime_score"] = np.nan
     working["sector_regime_fit_score"] = np.nan
+    working["rsi_divergence_daily_flag"] = pd.NA
+    working["rsi_divergence_weekly_flag"] = pd.NA
     return working, None
 
 
@@ -2879,6 +3041,10 @@ def build_company_drilldown_context(
         return "", None, [], [], error_message, None
     assert company_universe is not None
     company_universe, regime_warning = _enrich_company_universe_with_market_regime(
+        company_universe,
+        evaluation_date,
+    )
+    company_universe = _enrich_company_universe_with_rsi_divergence(
         company_universe,
         evaluation_date,
     )
@@ -3056,6 +3222,14 @@ def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
         preset["fund_momentum_range"]
     )
     st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = str(preset["trend_dir"])
+    st.session_state[f"{prefix}_drilldown_filter_daily_rsi_divergence"] = st.session_state.get(
+        f"{prefix}_drilldown_filter_default_daily_rsi_divergence",
+        "All",
+    )
+    st.session_state[f"{prefix}_drilldown_filter_weekly_rsi_divergence"] = st.session_state.get(
+        f"{prefix}_drilldown_filter_default_weekly_rsi_divergence",
+        "All",
+    )
     # Presets are intended to be one-click snapshots of thresholds, not text/cap filters.
     st.session_state[f"{prefix}_drilldown_filter_thematic"] = list(
         st.session_state.get(f"{prefix}_drilldown_filter_default_thematic", [])
@@ -3106,6 +3280,8 @@ def _sync_drilldown_filter_defaults(
     default_sector_regime_fit_range: tuple[float, float] = (0.0, 100.0),
     default_fund_momentum_range: tuple[float, float] = (0.0, 100.0),
     default_tech_trend_dir: str = "All",
+    default_daily_rsi_divergence: str = "All",
+    default_weekly_rsi_divergence: str = "All",
     default_rel_strength: str = "All",
     default_rel_volume: str = "All",
     default_ai_revenue_exposure: str = "All",
@@ -3127,6 +3303,8 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_default_sector_regime_fit_range"] = tuple(default_sector_regime_fit_range)
     st.session_state[f"{prefix}_drilldown_filter_default_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_default_tech_trend_dir"] = default_tech_trend_dir
+    st.session_state[f"{prefix}_drilldown_filter_default_daily_rsi_divergence"] = default_daily_rsi_divergence
+    st.session_state[f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"] = default_weekly_rsi_divergence
     st.session_state[f"{prefix}_drilldown_filter_default_rel_strength"] = default_rel_strength
     st.session_state[f"{prefix}_drilldown_filter_default_rel_volume"] = default_rel_volume
     st.session_state[f"{prefix}_drilldown_filter_default_ai_revenue_exposure"] = default_ai_revenue_exposure
@@ -3142,6 +3320,8 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_sector_regime_fit_range"] = tuple(default_sector_regime_fit_range)
     st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(default_fund_momentum_range)
     st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = default_tech_trend_dir
+    st.session_state[f"{prefix}_drilldown_filter_daily_rsi_divergence"] = default_daily_rsi_divergence
+    st.session_state[f"{prefix}_drilldown_filter_weekly_rsi_divergence"] = default_weekly_rsi_divergence
     st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = default_rel_strength
     st.session_state[f"{prefix}_drilldown_filter_rel_volume"] = default_rel_volume
     st.session_state[f"{prefix}_drilldown_filter_ai_revenue_exposure"] = default_ai_revenue_exposure
@@ -3234,6 +3414,8 @@ def render_company_drilldown_filters(
     sector_regime_fit_range_key = f"{prefix}_drilldown_filter_sector_regime_fit_range"
     fund_momentum_range_key = f"{prefix}_drilldown_filter_fund_momentum_range"
     tech_trend_dir_key = f"{prefix}_drilldown_filter_tech_trend_dir"
+    daily_rsi_divergence_key = f"{prefix}_drilldown_filter_daily_rsi_divergence"
+    weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_weekly_rsi_divergence"
     rel_strength_key = f"{prefix}_drilldown_filter_rel_strength"
     rel_volume_key = f"{prefix}_drilldown_filter_rel_volume"
     ai_revenue_exposure_key = f"{prefix}_drilldown_filter_ai_revenue_exposure"
@@ -3248,6 +3430,8 @@ def render_company_drilldown_filters(
     default_sector_regime_fit_range_key = f"{prefix}_drilldown_filter_default_sector_regime_fit_range"
     default_fund_momentum_range_key = f"{prefix}_drilldown_filter_default_fund_momentum_range"
     default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
+    default_daily_rsi_divergence_key = f"{prefix}_drilldown_filter_default_daily_rsi_divergence"
+    default_weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"
     default_rel_strength_key = f"{prefix}_drilldown_filter_default_rel_strength"
     default_rel_volume_key = f"{prefix}_drilldown_filter_default_rel_volume"
     default_ai_revenue_exposure_key = f"{prefix}_drilldown_filter_default_ai_revenue_exposure"
@@ -3276,6 +3460,8 @@ def render_company_drilldown_filters(
             st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))
         )
         st.session_state[tech_trend_dir_key] = st.session_state.get(default_tech_trend_dir_key, "All")
+        st.session_state[daily_rsi_divergence_key] = st.session_state.get(default_daily_rsi_divergence_key, "All")
+        st.session_state[weekly_rsi_divergence_key] = st.session_state.get(default_weekly_rsi_divergence_key, "All")
         st.session_state[rel_strength_key] = st.session_state.get(default_rel_strength_key, "All")
         st.session_state[rel_volume_key] = st.session_state.get(default_rel_volume_key, "All")
         st.session_state[ai_revenue_exposure_key] = st.session_state.get(default_ai_revenue_exposure_key, "All")
@@ -3311,6 +3497,14 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(
         tech_trend_dir_key,
         st.session_state.get(default_tech_trend_dir_key, "All"),
+    )
+    st.session_state.setdefault(
+        daily_rsi_divergence_key,
+        st.session_state.get(default_daily_rsi_divergence_key, "All"),
+    )
+    st.session_state.setdefault(
+        weekly_rsi_divergence_key,
+        st.session_state.get(default_weekly_rsi_divergence_key, "All"),
     )
     st.session_state.setdefault(
         rel_strength_key,
@@ -3516,7 +3710,7 @@ div.st-key-{btn_key} button {{
         else:
             beta_range = (0.0, 5.0)
 
-        bottom_layout: list[float] = []
+        bottom_layout: list[float] = [1, 1]
         if include_rel_strength_filter:
             bottom_layout.append(1)
         if include_rel_volume_filter:
@@ -3526,10 +3720,26 @@ div.st-key-{btn_key} button {{
         bottom_layout.append(1.4)
         filter_cols_bottom = st.columns(bottom_layout)
         next_bottom_col = 0
+        daily_rsi_divergence_value = "All"
+        weekly_rsi_divergence_value = "All"
         rel_strength_value = "All"
         rel_volume_value = "All"
         ai_revenue_exposure_value = "All"
         ai_disruption_risk_value = "All"
+        with filter_cols_bottom[next_bottom_col]:
+            daily_rsi_divergence_value = st.selectbox(
+                "Daily RSI Divergence",
+                options=DIVERGENCE_FILTER_OPTIONS,
+                key=daily_rsi_divergence_key,
+            )
+        next_bottom_col += 1
+        with filter_cols_bottom[next_bottom_col]:
+            weekly_rsi_divergence_value = st.selectbox(
+                "Weekly RSI Divergence",
+                options=DIVERGENCE_FILTER_OPTIONS,
+                key=weekly_rsi_divergence_key,
+            )
+        next_bottom_col += 1
         if include_rel_strength_filter:
             with filter_cols_bottom[next_bottom_col]:
                 rel_strength_value = st.selectbox(
@@ -3626,6 +3836,18 @@ div.st-key-{btn_key} button {{
         column="sector_regime_fit_score",
         range_value=tuple(sector_regime_fit_range),
     )
+    filtered, _ = _filter_by_optional_label_value(
+        filtered,
+        column="rsi_divergence_daily_flag",
+        selected_value=daily_rsi_divergence_value,
+        label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
+    )
+    filtered, _ = _filter_by_optional_label_value(
+        filtered,
+        column="rsi_divergence_weekly_flag",
+        selected_value=weekly_rsi_divergence_value,
+        label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
+    )
     if include_fundamental_momentum_filter and "fundamental_momentum" in filtered.columns:
         if (
             filtered["fundamental_momentum"].notna().any()
@@ -3676,6 +3898,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Technical Score",
                 "RSI Regime Score",
                 "Sector Regime Fit",
+                "RSI Divergence (D)",
+                "RSI Divergence (W)",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -3703,6 +3927,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["stock_rsi_regime_score"] = np.nan
     if "sector_regime_fit_score" not in sorted_df.columns:
         sorted_df["sector_regime_fit_score"] = np.nan
+    if "rsi_divergence_daily_flag" not in sorted_df.columns:
+        sorted_df["rsi_divergence_daily_flag"] = pd.NA
+    if "rsi_divergence_weekly_flag" not in sorted_df.columns:
+        sorted_df["rsi_divergence_weekly_flag"] = pd.NA
     if "ai_revenue_exposure" not in sorted_df.columns:
         sorted_df["ai_revenue_exposure"] = "none"
     if "ai_disruption_risk" not in sorted_df.columns:
@@ -3719,6 +3947,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "general_technical_score",
         "stock_rsi_regime_score",
         "sector_regime_fit_score",
+        "rsi_divergence_daily_flag",
+        "rsi_divergence_weekly_flag",
         "rel_strength",
         "rel_volume",
         "ai_revenue_exposure",
@@ -3735,6 +3965,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "general_technical_score": "Technical Score",
         "stock_rsi_regime_score": "RSI Regime Score",
         "sector_regime_fit_score": "Sector Regime Fit",
+        "rsi_divergence_daily_flag": "RSI Divergence (D)",
+        "rsi_divergence_weekly_flag": "RSI Divergence (W)",
         "rel_strength": "Rel Strength",
         "rel_volume": "Rel Volume",
         "ai_revenue_exposure": "AI Revenue Exposure",
@@ -3749,6 +3981,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
     )
+    display_df["RSI Divergence (D)"] = display_df["RSI Divergence (D)"].map(_format_divergence_flag)
+    display_df["RSI Divergence (W)"] = display_df["RSI Divergence (W)"].map(_format_divergence_flag)
     display_df["Rel Strength"] = display_df["Rel Strength"].fillna("N/A")
     display_df["Rel Volume"] = display_df["Rel Volume"].fillna("N/A")
     display_df["AI Revenue Exposure"] = display_df["AI Revenue Exposure"].fillna("none")
@@ -3866,6 +4100,9 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
     for sign_column in ["Rel Strength", "Rel Volume"]:
         if sign_column in display_df.columns:
             styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
+    for divergence_column in ["RSI Divergence (D)", "RSI Divergence (W)"]:
+        if divergence_column in display_df.columns:
+            styler = styler.applymap(_style_sign_label_value, subset=[divergence_column])
     if "AI Revenue Exposure" in display_df.columns:
         styler = styler.applymap(_style_ai_exposure_value, subset=["AI Revenue Exposure"])
     if "AI Disruption Risk" in display_df.columns:
@@ -5801,7 +6038,7 @@ def render_home_prices_import_subtab() -> None:
         "Import yearly daily or weekly ticker price history used by thematic and market-regime workflows.",
     )
     st.caption(
-        "Each prices import also recomputes `rsi_14` for that frequency. Specific-ticker imports refresh RSI only for the selected tickers."
+        "Each prices import also recomputes `rsi_14` and `rsi_divergence_flag` for that frequency. Specific-ticker imports refresh both indicators only for the selected tickers."
     )
     today_local = date.today()
     cache_year = today_local.year
@@ -6895,6 +7132,10 @@ def _build_thematics_company_universe_from_scope(
         company_universe,
         reference_date,
     )
+    company_universe = _enrich_company_universe_with_rsi_divergence(
+        company_universe,
+        reference_date,
+    )
 
     performance_df, anchor_missing = _compute_company_return_metrics(scope_tickers, price_lookup, reference_date)
     if not performance_df.empty:
@@ -7057,6 +7298,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "TS",
                 "RSI Regime",
                 "Sector Regime Fit",
+                "RSI Divergence (D)",
+                "RSI Divergence (W)",
                 "FS",
                 "Mom. FS",
                 "Rel Strength",
@@ -7077,6 +7320,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["stock_rsi_regime_score"] = np.nan
     if "sector_regime_fit_score" not in sorted_df.columns:
         sorted_df["sector_regime_fit_score"] = np.nan
+    if "rsi_divergence_daily_flag" not in sorted_df.columns:
+        sorted_df["rsi_divergence_daily_flag"] = pd.NA
+    if "rsi_divergence_weekly_flag" not in sorted_df.columns:
+        sorted_df["rsi_divergence_weekly_flag"] = pd.NA
 
     display_df = pd.DataFrame(
         {
@@ -7094,6 +7341,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
             "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
             "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
+            "RSI Divergence (D)": sorted_df["rsi_divergence_daily_flag"].map(_format_divergence_flag),
+            "RSI Divergence (W)": sorted_df["rsi_divergence_weekly_flag"].map(_format_divergence_flag),
             "FS": pd.to_numeric(sorted_df["fundamental_total_score"], errors="coerce"),
             "Mom. FS": pd.to_numeric(sorted_df["fundamental_momentum"], errors="coerce"),
             "Rel Strength": sorted_df["rel_strength"].fillna("N/A"),
@@ -8009,6 +8258,9 @@ def _build_thematics_company_styler(
     for sign_column in ["Rel Strength", "Rel Volume"]:
         if sign_column in display_df.columns:
             styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
+    for divergence_column in ["RSI Divergence (D)", "RSI Divergence (W)"]:
+        if divergence_column in display_df.columns:
+            styler = styler.applymap(_style_sign_label_value, subset=[divergence_column])
 
     styler = styler.format(
         {
