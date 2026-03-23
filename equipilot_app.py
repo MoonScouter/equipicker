@@ -8354,7 +8354,7 @@ def _render_thematics_basket_table_v2(
         return
     basket_name = str(meta_df.iloc[selected_index]["basket_name"])
     if st.session_state.get("thematics_impl_selected_basket") != basket_name:
-        st.session_state["thematics_impl_show_all_companies"] = False
+        st.session_state["thematics_impl_pending_show_all_companies_reset"] = True
         st.session_state["thematics_impl_selected_basket"] = basket_name
         st.rerun()
 
@@ -8507,6 +8507,8 @@ def render_thematics_tab(config: ReportConfig) -> None:
             st.warning(warning_message)
 
         view_mode = _render_thematics_view_mode_controls("thematics_impl")
+        if st.session_state.pop("thematics_impl_pending_show_all_companies_reset", False):
+            st.session_state["thematics_impl_show_all_companies"] = False
         st.checkbox(
             "Show all companies",
             key="thematics_impl_show_all_companies",
