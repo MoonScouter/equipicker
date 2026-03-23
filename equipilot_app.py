@@ -114,6 +114,7 @@ TREND_FILTER_LABELS = {
 TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["flat"], TREND_FILTER_LABELS["down"]]
 SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
 DIVERGENCE_FILTER_OPTIONS = ["All", "Positive", "Negative", "None"]
+SHORT_TERM_FLOW_FILTER_OPTIONS = ["All", "Positive", "Negative", "Neutral"]
 AI_REVENUE_FILTER_OPTIONS = ["All", "direct", "indirect", "none"]
 AI_DISRUPTION_FILTER_OPTIONS = ["All", "high", "medium", "low", "none"]
 MARKET_TREND_THRESHOLD = 3.0
@@ -2906,6 +2907,19 @@ def _format_divergence_flag(value: object) -> str:
     return "N/A"
 
 
+def _format_short_term_flow_flag(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    label = str(value).strip().lower()
+    if label == "positive":
+        return "Positive"
+    if label == "negative":
+        return "Negative"
+    if label == "neutral":
+        return "Neutral"
+    return "N/A"
+
+
 def _filter_by_optional_label_value(
     df: pd.DataFrame,
     *,
@@ -2979,6 +2993,9 @@ def _prepare_company_drilldown_universe(
         selected_columns.append("rs_monthly")
     if "obvm_monthly" in report_df.columns:
         selected_columns.append("obvm_monthly")
+    for short_term_column in ["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]:
+        if short_term_column in report_df.columns:
+            selected_columns.append(short_term_column)
     if include_beta and "beta" in report_df.columns:
         selected_columns.append("beta")
 
@@ -3006,6 +3023,11 @@ def _prepare_company_drilldown_universe(
         working["obvm_monthly"] = pd.to_numeric(working["obvm_monthly"], errors="coerce")
     else:
         working["obvm_monthly"] = np.nan
+    for short_term_column in ["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]:
+        if short_term_column in working.columns:
+            working[short_term_column] = pd.to_numeric(working[short_term_column], errors="coerce")
+        else:
+            working[short_term_column] = np.nan
     if "beta" in working.columns:
         working["beta"] = pd.to_numeric(working["beta"], errors="coerce")
     else:
@@ -3013,6 +3035,21 @@ def _prepare_company_drilldown_universe(
     working["market_cap_bucket"] = working["market_cap"].apply(_market_cap_bucket_from_usd)
     working["rel_strength"] = working["rs_monthly"].map(_sign_label)
     working["rel_volume"] = working["obvm_monthly"].map(_sign_label)
+    working["short_term_flow"] = pd.NA
+    short_term_valid_mask = working[["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]].notna().all(axis=1)
+    short_term_positive_mask = (
+        short_term_valid_mask
+        & (working["rs_daily"] >= working["rs_sma20"])
+        & (working["obvm_daily"] >= working["obvm_sma20"])
+    )
+    short_term_negative_mask = (
+        short_term_valid_mask
+        & (working["rs_daily"] < working["rs_sma20"])
+        & (working["obvm_daily"] < working["obvm_sma20"])
+    )
+    working.loc[short_term_valid_mask, "short_term_flow"] = "neutral"
+    working.loc[short_term_positive_mask, "short_term_flow"] = "positive"
+    working.loc[short_term_negative_mask, "short_term_flow"] = "negative"
 
     ai_lookup = build_ai_exposure_lookup(str(THEMATICS_CONFIG_PATH)) if THEMATICS_CONFIG_PATH.exists() else {}
     ai_revenue_exposure: list[str] = []
@@ -3240,6 +3277,10 @@ def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
         f"{prefix}_drilldown_filter_default_weekly_rsi_divergence",
         "All",
     )
+    st.session_state[f"{prefix}_drilldown_filter_short_term_flow"] = st.session_state.get(
+        f"{prefix}_drilldown_filter_default_short_term_flow",
+        "All",
+    )
     # Presets are intended to be one-click snapshots of thresholds, not text/cap filters.
     st.session_state[f"{prefix}_drilldown_filter_thematic"] = list(
         st.session_state.get(f"{prefix}_drilldown_filter_default_thematic", [])
@@ -3292,6 +3333,7 @@ def _sync_drilldown_filter_defaults(
     default_tech_trend_dir: str = "All",
     default_daily_rsi_divergence: str = "All",
     default_weekly_rsi_divergence: str = "All",
+    default_short_term_flow: str = "All",
     default_rel_strength: str = "All",
     default_rel_volume: str = "All",
     default_ai_revenue_exposure: str = "All",
@@ -3315,6 +3357,7 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_default_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_default_daily_rsi_divergence"] = default_daily_rsi_divergence
     st.session_state[f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"] = default_weekly_rsi_divergence
+    st.session_state[f"{prefix}_drilldown_filter_default_short_term_flow"] = default_short_term_flow
     st.session_state[f"{prefix}_drilldown_filter_default_rel_strength"] = default_rel_strength
     st.session_state[f"{prefix}_drilldown_filter_default_rel_volume"] = default_rel_volume
     st.session_state[f"{prefix}_drilldown_filter_default_ai_revenue_exposure"] = default_ai_revenue_exposure
@@ -3332,6 +3375,7 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_daily_rsi_divergence"] = default_daily_rsi_divergence
     st.session_state[f"{prefix}_drilldown_filter_weekly_rsi_divergence"] = default_weekly_rsi_divergence
+    st.session_state[f"{prefix}_drilldown_filter_short_term_flow"] = default_short_term_flow
     st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = default_rel_strength
     st.session_state[f"{prefix}_drilldown_filter_rel_volume"] = default_rel_volume
     st.session_state[f"{prefix}_drilldown_filter_ai_revenue_exposure"] = default_ai_revenue_exposure
@@ -3426,6 +3470,7 @@ def render_company_drilldown_filters(
     tech_trend_dir_key = f"{prefix}_drilldown_filter_tech_trend_dir"
     daily_rsi_divergence_key = f"{prefix}_drilldown_filter_daily_rsi_divergence"
     weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_weekly_rsi_divergence"
+    short_term_flow_key = f"{prefix}_drilldown_filter_short_term_flow"
     rel_strength_key = f"{prefix}_drilldown_filter_rel_strength"
     rel_volume_key = f"{prefix}_drilldown_filter_rel_volume"
     ai_revenue_exposure_key = f"{prefix}_drilldown_filter_ai_revenue_exposure"
@@ -3442,6 +3487,7 @@ def render_company_drilldown_filters(
     default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
     default_daily_rsi_divergence_key = f"{prefix}_drilldown_filter_default_daily_rsi_divergence"
     default_weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"
+    default_short_term_flow_key = f"{prefix}_drilldown_filter_default_short_term_flow"
     default_rel_strength_key = f"{prefix}_drilldown_filter_default_rel_strength"
     default_rel_volume_key = f"{prefix}_drilldown_filter_default_rel_volume"
     default_ai_revenue_exposure_key = f"{prefix}_drilldown_filter_default_ai_revenue_exposure"
@@ -3472,6 +3518,7 @@ def render_company_drilldown_filters(
         st.session_state[tech_trend_dir_key] = st.session_state.get(default_tech_trend_dir_key, "All")
         st.session_state[daily_rsi_divergence_key] = st.session_state.get(default_daily_rsi_divergence_key, "All")
         st.session_state[weekly_rsi_divergence_key] = st.session_state.get(default_weekly_rsi_divergence_key, "All")
+        st.session_state[short_term_flow_key] = st.session_state.get(default_short_term_flow_key, "All")
         st.session_state[rel_strength_key] = st.session_state.get(default_rel_strength_key, "All")
         st.session_state[rel_volume_key] = st.session_state.get(default_rel_volume_key, "All")
         st.session_state[ai_revenue_exposure_key] = st.session_state.get(default_ai_revenue_exposure_key, "All")
@@ -3515,6 +3562,10 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(
         weekly_rsi_divergence_key,
         st.session_state.get(default_weekly_rsi_divergence_key, "All"),
+    )
+    st.session_state.setdefault(
+        short_term_flow_key,
+        st.session_state.get(default_short_term_flow_key, "All"),
     )
     st.session_state.setdefault(
         rel_strength_key,
@@ -3720,7 +3771,7 @@ div.st-key-{btn_key} button {{
         else:
             beta_range = (0.0, 5.0)
 
-        bottom_layout: list[float] = [1, 1]
+        bottom_layout: list[float] = [1, 1, 1]
         if include_rel_strength_filter:
             bottom_layout.append(1)
         if include_rel_volume_filter:
@@ -3732,6 +3783,7 @@ div.st-key-{btn_key} button {{
         next_bottom_col = 0
         daily_rsi_divergence_value = "All"
         weekly_rsi_divergence_value = "All"
+        short_term_flow_value = "All"
         rel_strength_value = "All"
         rel_volume_value = "All"
         ai_revenue_exposure_value = "All"
@@ -3748,6 +3800,13 @@ div.st-key-{btn_key} button {{
                 "Weekly RSI Divergence",
                 options=DIVERGENCE_FILTER_OPTIONS,
                 key=weekly_rsi_divergence_key,
+            )
+        next_bottom_col += 1
+        with filter_cols_bottom[next_bottom_col]:
+            short_term_flow_value = st.selectbox(
+                "Short Term Flow",
+                options=SHORT_TERM_FLOW_FILTER_OPTIONS,
+                key=short_term_flow_key,
             )
         next_bottom_col += 1
         if include_rel_strength_filter:
@@ -3858,6 +3917,12 @@ div.st-key-{btn_key} button {{
         selected_value=weekly_rsi_divergence_value,
         label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
     )
+    filtered, _ = _filter_by_optional_label_value(
+        filtered,
+        column="short_term_flow",
+        selected_value=short_term_flow_value,
+        label_map={"Positive": "positive", "Negative": "negative", "Neutral": "neutral"},
+    )
     if include_fundamental_momentum_filter and "fundamental_momentum" in filtered.columns:
         if (
             filtered["fundamental_momentum"].notna().any()
@@ -3908,6 +3973,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Technical Score",
                 "RSI Regime Score",
                 "Sector Regime Fit",
+                "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
                 "Rel Strength",
@@ -3941,6 +4007,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["rsi_divergence_daily_flag"] = pd.NA
     if "rsi_divergence_weekly_flag" not in sorted_df.columns:
         sorted_df["rsi_divergence_weekly_flag"] = pd.NA
+    if "short_term_flow" not in sorted_df.columns:
+        sorted_df["short_term_flow"] = pd.NA
     if "ai_revenue_exposure" not in sorted_df.columns:
         sorted_df["ai_revenue_exposure"] = "none"
     if "ai_disruption_risk" not in sorted_df.columns:
@@ -3957,6 +4025,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "general_technical_score",
         "stock_rsi_regime_score",
         "sector_regime_fit_score",
+        "short_term_flow",
         "rsi_divergence_daily_flag",
         "rsi_divergence_weekly_flag",
         "rel_strength",
@@ -3975,6 +4044,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         "general_technical_score": "Technical Score",
         "stock_rsi_regime_score": "RSI Regime Score",
         "sector_regime_fit_score": "Sector Regime Fit",
+        "short_term_flow": "Short Term Flow",
         "rsi_divergence_daily_flag": "RSI Divergence (D)",
         "rsi_divergence_weekly_flag": "RSI Divergence (W)",
         "rel_strength": "Rel Strength",
@@ -3991,6 +4061,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(
         lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
     )
+    display_df["Short Term Flow"] = display_df["Short Term Flow"].map(_format_short_term_flow_flag)
     display_df["RSI Divergence (D)"] = display_df["RSI Divergence (D)"].map(_format_divergence_flag)
     display_df["RSI Divergence (W)"] = display_df["RSI Divergence (W)"].map(_format_divergence_flag)
     display_df["Rel Strength"] = display_df["Rel Strength"].fillna("N/A")
@@ -4060,6 +4131,7 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
         "Company",
         "Sector",
         "Industry",
+        "Short Term Flow",
         "Rel Strength",
         "Rel Volume",
         "AI Revenue Exposure",
@@ -4107,7 +4179,7 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
     ]:
         if score_column in display_df.columns:
             styler = styler.applymap(_score_color_css, subset=[score_column])
-    for sign_column in ["Rel Strength", "Rel Volume"]:
+    for sign_column in ["Short Term Flow", "Rel Strength", "Rel Volume"]:
         if sign_column in display_df.columns:
             styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
     for divergence_column in ["RSI Divergence (D)", "RSI Divergence (W)"]:
@@ -7030,6 +7102,10 @@ def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.Dat
         "stock_rsi_regime_score",
         "sector_regime_fit_score",
         "fundamental_momentum",
+        "rs_daily",
+        "rs_sma20",
+        "obvm_daily",
+        "obvm_sma20",
         "rs_monthly",
         "obvm_monthly",
     ]:
@@ -7107,6 +7183,10 @@ def _build_thematics_company_universe_from_scope(
                 "stock_rsi_regime_score",
                 "sector_regime_fit_score",
                 "fundamental_momentum",
+                "rs_daily",
+                "rs_sma20",
+                "obvm_daily",
+                "obvm_sma20",
                 "rs_monthly",
                 "obvm_monthly",
             ]
@@ -7310,6 +7390,7 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "TS",
                 "RSI Regime",
                 "Sector Regime Fit",
+                "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
                 "FS",
@@ -7332,6 +7413,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["stock_rsi_regime_score"] = np.nan
     if "sector_regime_fit_score" not in sorted_df.columns:
         sorted_df["sector_regime_fit_score"] = np.nan
+    if "short_term_flow" not in sorted_df.columns:
+        sorted_df["short_term_flow"] = pd.NA
     if "rsi_divergence_daily_flag" not in sorted_df.columns:
         sorted_df["rsi_divergence_daily_flag"] = pd.NA
     if "rsi_divergence_weekly_flag" not in sorted_df.columns:
@@ -7353,6 +7436,7 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
             "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
             "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
+            "Short Term Flow": sorted_df["short_term_flow"].map(_format_short_term_flow_flag),
             "RSI Divergence (D)": sorted_df["rsi_divergence_daily_flag"].map(_format_divergence_flag),
             "RSI Divergence (W)": sorted_df["rsi_divergence_weekly_flag"].map(_format_divergence_flag),
             "FS": pd.to_numeric(sorted_df["fundamental_total_score"], errors="coerce"),
@@ -8240,6 +8324,7 @@ def _build_thematics_company_styler(
         "Company",
         "Sector",
         "Industry",
+        "Short Term Flow",
         "Rel Strength",
         "Rel Volume",
         "AI Revenue Exposure",
@@ -8267,7 +8352,7 @@ def _build_thematics_company_styler(
     for score_column in ["TS", "RSI Regime", "Sector Regime Fit", "FS", "Mom. FS"]:
         if score_column in display_df.columns:
             styler = styler.applymap(_score_color_css, subset=[score_column])
-    for sign_column in ["Rel Strength", "Rel Volume"]:
+    for sign_column in ["Short Term Flow", "Rel Strength", "Rel Volume"]:
         if sign_column in display_df.columns:
             styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
     for divergence_column in ["RSI Divergence (D)", "RSI Divergence (W)"]:

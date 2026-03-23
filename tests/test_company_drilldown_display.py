@@ -45,6 +45,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 84.0,
                     "fundamental_momentum": 77.0,
                     "general_technical_score": 88.0,
+                    "rs_daily": 12.0,
+                    "rs_sma20": 10.0,
+                    "obvm_daily": 105.0,
+                    "obvm_sma20": 100.0,
                     "rs_monthly": 1.2,
                     "obvm_monthly": -0.4,
                 },
@@ -57,6 +61,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 70.0,
                     "fundamental_momentum": 55.0,
                     "general_technical_score": 60.0,
+                    "rs_daily": 8.0,
+                    "rs_sma20": 10.0,
+                    "obvm_daily": 95.0,
+                    "obvm_sma20": 100.0,
                     "rs_monthly": -0.1,
                     "obvm_monthly": 0.3,
                 },
@@ -71,6 +79,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(prepared["fundamental_momentum"].tolist(), [77.0, 55.0])
         self.assertEqual(prepared["rel_strength"].tolist(), ["Positive", "Negative"])
         self.assertEqual(prepared["rel_volume"].tolist(), ["Negative", "Positive"])
+        self.assertEqual(prepared["short_term_flow"].tolist(), ["positive", "negative"])
         self.assertEqual(prepared["ai_revenue_exposure"].tolist(), ["none", "none"])
         self.assertEqual(prepared["ai_disruption_risk"].tolist(), ["none", "none"])
         self.assertTrue(prepared["stock_rsi_regime_score"].isna().all())
@@ -102,6 +111,47 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertIn("sector_regime_fit_score", prepared.columns)
         self.assertEqual(prepared.iloc[0]["rel_strength"], "N/A")
         self.assertEqual(prepared.iloc[0]["rel_volume"], "N/A")
+        self.assertTrue(pd.isna(prepared.iloc[0]["short_term_flow"]))
+
+    def test_prepare_company_universe_classifies_neutral_and_missing_short_term_flow(self) -> None:
+        report_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 80.0,
+                    "general_technical_score": 75.0,
+                    "rs_daily": 12.0,
+                    "rs_sma20": 10.0,
+                    "obvm_daily": 80.0,
+                    "obvm_sma20": 100.0,
+                },
+                {
+                    "ticker": "BBB.US",
+                    "company": "Beta",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 70.0,
+                    "general_technical_score": 65.0,
+                    "rs_daily": 12.0,
+                    "rs_sma20": None,
+                    "obvm_daily": 120.0,
+                    "obvm_sma20": 100.0,
+                },
+            ]
+        )
+
+        prepared, error = _prepare_company_drilldown_universe(report_df)
+
+        self.assertIsNone(error)
+        assert prepared is not None
+        by_ticker = prepared.set_index("ticker")
+        self.assertEqual(by_ticker.loc["AAA.US", "short_term_flow"], "neutral")
+        self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "short_term_flow"]))
 
     def test_enrich_company_universe_merges_regime_scores_from_market_cache(self) -> None:
         company_df = pd.DataFrame(
@@ -214,6 +264,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Technical Score",
                 "RSI Regime Score",
                 "Sector Regime Fit",
+                "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
                 "Rel Strength",
@@ -229,6 +280,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 72.0)
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "82.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "74.0")
+        self.assertEqual(rendered.iloc[0]["Short Term Flow"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
 
@@ -265,6 +317,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Technical Score",
                 "RSI Regime Score",
                 "Sector Regime Fit",
+                "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
                 "Rel Strength",
@@ -279,6 +332,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 85.0)
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "76.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "68.0")
+        self.assertEqual(rendered.iloc[0]["Short Term Flow"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
 
@@ -296,6 +350,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "general_technical_score": 91.0,
                     "stock_rsi_regime_score": 84.0,
                     "sector_regime_fit_score": 72.0,
+                    "short_term_flow": "neutral",
                     "rsi_divergence_daily_flag": "positive",
                     "rsi_divergence_weekly_flag": "negative",
                     "rel_strength": "Positive",
@@ -320,6 +375,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             "Technical Score",
             "RSI Regime Score",
             "Sector Regime Fit",
+            "Short Term Flow",
             "RSI Divergence (D)",
             "RSI Divergence (W)",
             "Rel Strength",
@@ -331,6 +387,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(technical_rendered.columns.tolist(), expected_columns)
         self.assertEqual(fundamental_rendered.iloc[0]["RSI Regime Score"], "84.0")
         self.assertEqual(fundamental_rendered.iloc[0]["Sector Regime Fit"], "72.0")
+        self.assertEqual(fundamental_rendered.iloc[0]["Short Term Flow"], "Neutral")
         self.assertEqual(fundamental_rendered.iloc[0]["RSI Divergence (D)"], "Positive")
         self.assertEqual(fundamental_rendered.iloc[0]["RSI Divergence (W)"], "Negative")
         self.assertEqual(fundamental_rendered.iloc[0]["Rel Strength"], "Positive")
@@ -351,6 +408,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "Technical Score": "91.0",
                     "RSI Regime Score": "84.0",
                     "Sector Regime Fit": "72.0",
+                    "Short Term Flow": "Neutral",
                     "RSI Divergence (D)": "Positive",
                     "RSI Divergence (W)": "None",
                     "Rel Strength": "Positive",
@@ -399,13 +457,21 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "rsi_divergence_daily_flag"]))
         self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "rsi_divergence_weekly_flag"]))
 
-    def test_optional_label_filter_handles_positive_negative_and_none(self) -> None:
+    def test_optional_label_filter_handles_positive_negative_neutral_and_none(self) -> None:
         df = pd.DataFrame(
             [
                 {"ticker": "AAA.US", "rsi_divergence_daily_flag": "positive"},
                 {"ticker": "BBB.US", "rsi_divergence_daily_flag": "negative"},
                 {"ticker": "CCC.US", "rsi_divergence_daily_flag": "none"},
                 {"ticker": "DDD.US", "rsi_divergence_daily_flag": pd.NA},
+            ]
+        )
+        short_term_df = pd.DataFrame(
+            [
+                {"ticker": "AAA.US", "short_term_flow": "positive"},
+                {"ticker": "BBB.US", "short_term_flow": "negative"},
+                {"ticker": "CCC.US", "short_term_flow": "neutral"},
+                {"ticker": "DDD.US", "short_term_flow": pd.NA},
             ]
         )
 
@@ -421,11 +487,19 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             selected_value="None",
             label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
         )
+        neutral_filtered, neutral_applied = _filter_by_optional_label_value(
+            short_term_df,
+            column="short_term_flow",
+            selected_value="Neutral",
+            label_map={"Positive": "positive", "Negative": "negative", "Neutral": "neutral"},
+        )
 
         self.assertTrue(positive_applied)
         self.assertEqual(positive_filtered["ticker"].tolist(), ["AAA.US"])
         self.assertTrue(none_applied)
         self.assertEqual(none_filtered["ticker"].tolist(), ["CCC.US"])
+        self.assertTrue(neutral_applied)
+        self.assertEqual(neutral_filtered["ticker"].tolist(), ["CCC.US"])
 
     def test_annotate_company_technical_trend_builds_symbol_and_direction(self) -> None:
         company_df = pd.DataFrame(
@@ -510,6 +584,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "general_technical_score": 81.0,
                     "stock_rsi_regime_score": 74.0,
                     "sector_regime_fit_score": 66.0,
+                    "short_term_flow": "positive",
                     "fundamental_total_score": 76.0,
                     "fundamental_momentum": 68.0,
                     "technical_trend_symbol": TREND_SYMBOL_UP,
@@ -542,6 +617,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "TS",
                 "RSI Regime",
                 "Sector Regime Fit",
+                "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
                 "FS",
@@ -555,6 +631,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(str(rendered.iloc[0]["TS"]).strip(), f"81.0 {TREND_SYMBOL_UP}")
         self.assertAlmostEqual(float(rendered.iloc[0]["RSI Regime"]), 74.0)
         self.assertAlmostEqual(float(rendered.iloc[0]["Sector Regime Fit"]), 66.0)
+        self.assertEqual(rendered.iloc[0]["Short Term Flow"], "Positive")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
         self.assertEqual(str(rendered.iloc[0]["FS"]).strip(), f"76.0 {TREND_SYMBOL_DOWN}")
