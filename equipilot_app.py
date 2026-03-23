@@ -471,6 +471,16 @@ def invalidate_prices_cache_views() -> None:
     _load_company_divergence_metrics_for_date.clear()
 
 
+def _queue_show_all_company_reset(prefix: str) -> None:
+    st.session_state[f"{prefix}_pending_show_all_companies_reset"] = True
+
+
+def _apply_pending_show_all_company_reset(prefix: str) -> None:
+    pending_key = f"{prefix}_pending_show_all_companies_reset"
+    if st.session_state.pop(pending_key, False):
+        st.session_state[f"{prefix}_show_all_companies"] = False
+
+
 def _price_close_for_target(
     price_entry: Optional[dict[str, list[object]]],
     target_date: date,
@@ -2569,7 +2579,7 @@ def render_pdf_like_table(
 def _clear_drilldown_selection(prefix: str) -> None:
     st.session_state.pop(f"{prefix}_selected_key", None)
     st.session_state.pop(f"{prefix}_selected_mode", None)
-    st.session_state.pop(f"{prefix}_show_all_companies", None)
+    _queue_show_all_company_reset(prefix)
     for suffix in (
         "signature",
         "default_sector",
@@ -4820,6 +4830,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             key="fundamental_scoring_sector_select",
         )
     with show_all_col:
+        _apply_pending_show_all_company_reset("fundamental")
         st.checkbox(
             "Show all companies",
             key="fundamental_show_all_companies",
@@ -4893,7 +4904,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
     if selected_row_index is not None:
         selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
         selected_mode = "sector" if selected_sector == "All sectors" else "industry"
-        st.session_state["fundamental_show_all_companies"] = False
+        _queue_show_all_company_reset("fundamental")
         st.session_state["fundamental_selected_key"] = selected_key
         st.session_state["fundamental_selected_mode"] = selected_mode
 
@@ -5078,6 +5089,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
             key="technical_scoring_sector_select",
         )
     with show_all_col:
+        _apply_pending_show_all_company_reset("technical")
         st.checkbox(
             "Show all companies",
             key="technical_show_all_companies",
@@ -5143,7 +5155,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     if selected_row_index is not None:
         selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
         selected_mode = "sector" if selected_sector == "All sectors" else "industry"
-        st.session_state["technical_show_all_companies"] = False
+        _queue_show_all_company_reset("technical")
         st.session_state["technical_selected_key"] = selected_key
         st.session_state["technical_selected_mode"] = selected_mode
 
@@ -7561,7 +7573,7 @@ def _handle_thematics_basket_checkbox_change(state_prefix: str, basket_name: str
     checked = bool(st.session_state.get(checkbox_state_key))
     if checked:
         st.session_state[selected_key] = basket_name
-        st.session_state[f"{state_prefix}_show_all_companies"] = False
+        _queue_show_all_company_reset(state_prefix)
     elif st.session_state.get(selected_key) == basket_name:
         st.session_state[selected_key] = None
     st.session_state[focus_key] = basket_name
@@ -8354,7 +8366,7 @@ def _render_thematics_basket_table_v2(
         return
     basket_name = str(meta_df.iloc[selected_index]["basket_name"])
     if st.session_state.get("thematics_impl_selected_basket") != basket_name:
-        st.session_state["thematics_impl_pending_show_all_companies_reset"] = True
+        _queue_show_all_company_reset("thematics_impl")
         st.session_state["thematics_impl_selected_basket"] = basket_name
         st.rerun()
 
@@ -8507,8 +8519,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
             st.warning(warning_message)
 
         view_mode = _render_thematics_view_mode_controls("thematics_impl")
-        if st.session_state.pop("thematics_impl_pending_show_all_companies_reset", False):
-            st.session_state["thematics_impl_show_all_companies"] = False
+        _apply_pending_show_all_company_reset("thematics_impl")
         st.checkbox(
             "Show all companies",
             key="thematics_impl_show_all_companies",
@@ -8607,7 +8618,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 )
             if st.button("Hide thematic company list", key="thematics_hide_company_list"):
                 st.session_state["thematics_impl_selected_basket"] = None
-                st.session_state["thematics_impl_show_all_companies"] = False
+                _queue_show_all_company_reset("thematics_impl")
                 st.rerun()
     with lens_tab:
         _render_thematics_lens_tab(catalog, current_report_df)
