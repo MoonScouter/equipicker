@@ -202,6 +202,81 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertTrue(enriched["stock_rsi_regime_score"].isna().all())
         self.assertTrue(enriched["sector_regime_fit_score"].isna().all())
 
+    def test_market_regime_company_metrics_refresh_when_cache_signature_changes(self) -> None:
+        evaluation_date = date(2026, 3, 23)
+        setup_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "stock_rsi_regime_score": 91.5,
+                    "sector_regime_fit_score": 64.0,
+                }
+            ]
+        )
+
+        _load_market_regime_company_metrics_for_date.clear()
+        with patch(
+            "equipilot_app._market_regime_company_metrics_cache_signature",
+            side_effect=["sig-missing", "sig-ready"],
+        ), patch(
+            "equipilot_app.market_cache_status",
+            side_effect=[{"ready": False}, {"ready": True}],
+        ), patch(
+            "equipilot_app.load_market_bundle",
+            return_value={"setup_readiness_df": setup_df},
+        ) as load_bundle:
+            first_df, first_warning = _load_market_regime_company_metrics_for_date(evaluation_date)
+            second_df, second_warning = _load_market_regime_company_metrics_for_date(evaluation_date)
+
+        self.assertTrue(first_df.empty)
+        assert first_warning is not None
+        self.assertIn("2026-03-23", first_warning)
+        self.assertIsNone(second_warning)
+        self.assertEqual(load_bundle.call_count, 1)
+        self.assertEqual(second_df["ticker"].tolist(), ["AAA.US"])
+        self.assertAlmostEqual(float(second_df.iloc[0]["stock_rsi_regime_score"]), 91.5)
+        self.assertAlmostEqual(float(second_df.iloc[0]["sector_regime_fit_score"]), 64.0)
+
+    def test_market_regime_company_metrics_clear_discards_stale_cached_missing_result(self) -> None:
+        evaluation_date = date(2026, 3, 23)
+        setup_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "stock_rsi_regime_score": 88.0,
+                    "sector_regime_fit_score": 61.0,
+                }
+            ]
+        )
+
+        _load_market_regime_company_metrics_for_date.clear()
+        with patch(
+            "equipilot_app._market_regime_company_metrics_cache_signature",
+            return_value="stable-sig",
+        ), patch("equipilot_app.market_cache_status", return_value={"ready": False}):
+            missing_df, missing_warning = _load_market_regime_company_metrics_for_date(evaluation_date)
+
+        self.assertTrue(missing_df.empty)
+        assert missing_warning is not None
+
+        _load_market_regime_company_metrics_for_date.clear()
+        with patch(
+            "equipilot_app._market_regime_company_metrics_cache_signature",
+            return_value="stable-sig",
+        ), patch(
+            "equipilot_app.market_cache_status",
+            return_value={"ready": True},
+        ), patch(
+            "equipilot_app.load_market_bundle",
+            return_value={"setup_readiness_df": setup_df},
+        ):
+            refreshed_df, refreshed_warning = _load_market_regime_company_metrics_for_date(evaluation_date)
+
+        self.assertIsNone(refreshed_warning)
+        self.assertEqual(refreshed_df["ticker"].tolist(), ["AAA.US"])
+        self.assertAlmostEqual(float(refreshed_df.iloc[0]["stock_rsi_regime_score"]), 88.0)
+        self.assertAlmostEqual(float(refreshed_df.iloc[0]["sector_regime_fit_score"]), 61.0)
+
     def test_optional_numeric_range_filter_relaxes_when_column_has_no_values(self) -> None:
         df = pd.DataFrame(
             [
