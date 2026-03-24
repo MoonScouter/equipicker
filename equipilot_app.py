@@ -2741,10 +2741,33 @@ def _load_company_divergence_metrics_for_date(
     return merged.drop_duplicates(subset=["ticker"], keep="last").reset_index(drop=True)
 
 
+def _market_regime_company_metrics_cache_signature(evaluation_date: date) -> str:
+    cache_key = build_market_cache_key(evaluation_date)
+    cache_state = market_cache_status(cache_key)
+    parts = [
+        cache_key,
+        "ready" if bool(cache_state.get("ready")) else "missing",
+    ]
+    for path_key in ["market_snapshot", "stock_rsi_regime", "setup_readiness"]:
+        path_value = cache_state.get(path_key)
+        path = Path(path_value) if path_value is not None else None
+        if path is None:
+            parts.extend([path_key, "", "missing"])
+            continue
+        try:
+            mtime_ns = str(path.stat().st_mtime_ns)
+        except OSError:
+            mtime_ns = "missing"
+        parts.extend([path_key, str(path), mtime_ns])
+    return "|".join(parts)
+
+
 @st.cache_data(show_spinner=False)
-def _load_market_regime_company_metrics_for_date(
+def _load_market_regime_company_metrics_for_date_cached(
     evaluation_date: date,
+    cache_signature: str,
 ) -> tuple[pd.DataFrame, Optional[str]]:
+    del cache_signature
     cache_key = build_market_cache_key(evaluation_date)
     cache_state = market_cache_status(cache_key)
     missing_warning = (
@@ -2815,6 +2838,22 @@ def _load_market_regime_company_metrics_for_date(
         ].drop_duplicates(subset=["ticker"], keep="first"),
         warning_message,
     )
+
+
+def _load_market_regime_company_metrics_for_date(
+    evaluation_date: date,
+) -> tuple[pd.DataFrame, Optional[str]]:
+    return _load_market_regime_company_metrics_for_date_cached(
+        evaluation_date,
+        _market_regime_company_metrics_cache_signature(evaluation_date),
+    )
+
+
+def _clear_market_regime_company_metrics_cache() -> None:
+    _load_market_regime_company_metrics_for_date_cached.clear()
+
+
+_load_market_regime_company_metrics_for_date.clear = _clear_market_regime_company_metrics_cache  # type: ignore[attr-defined]
 
 
 def _enrich_company_universe_with_market_regime(
@@ -6506,6 +6545,7 @@ def render_market_values_subtab(config: ReportConfig) -> None:
                 sector_families=sector_families,
                 force_recompute=True,
             )
+        _load_market_regime_company_metrics_for_date.clear()
     elif cache_state.get("ready"):
         with st.spinner("Loading Market cache..."):
             bundle = load_market_bundle(cache_key)
