@@ -6765,20 +6765,23 @@ def render_market_values_subtab(config: ReportConfig) -> None:
 
     defaults = get_default_market_anchors(available_dates, market_config)
     interval_config = market_config.get("default_intervals_days", {})
-    evaluation_date = render_report_select_date_input(
-        "Evaluation date",
-        value=defaults["evaluation_date"],
-        key="market_eval_date",
-    )
+    eval_col, prev_eval_col, rsi_col = st.columns(3)
+    with eval_col:
+        evaluation_date = render_report_select_date_input(
+            "Evaluation date",
+            value=defaults["evaluation_date"],
+            key="market_eval_date",
+        )
     previous_evaluation_candidates = sorted(entry for entry in available_dates if entry < evaluation_date)
     previous_evaluation_default = (
         previous_evaluation_candidates[-1] if previous_evaluation_candidates else evaluation_date
     )
-    previous_evaluation_date = render_report_select_date_input(
-        "vs prev evaluation date",
-        value=previous_evaluation_default,
-        key="market_prev_eval_date",
-    )
+    with prev_eval_col:
+        previous_evaluation_date = render_report_select_date_input(
+            "vs prev evaluation date",
+            value=previous_evaluation_default,
+            key="market_prev_eval_date",
+        )
     rsi_start_default = evaluation_date - timedelta(days=int(interval_config.get("rsi_window_days", 90)))
     month_default = resolve_anchor_on_or_before(
         available_dates,
@@ -6788,21 +6791,25 @@ def render_market_values_subtab(config: ReportConfig) -> None:
         available_dates,
         evaluation_date - timedelta(days=int(interval_config.get("week_offset_days", 7))),
     )
-    rsi_start_date = render_report_select_date_input(
-        "RSI regime start date",
-        value=rsi_start_default,
-        key="market_rsi_start_date",
-    )
-    month_anchor_date = render_report_select_date_input(
-        "1 month ago date",
-        value=month_default,
-        key="market_month_anchor_date",
-    )
-    week_anchor_date = render_report_select_date_input(
-        "1 week ago date",
-        value=week_default,
-        key="market_week_anchor_date",
-    )
+    with rsi_col:
+        rsi_start_date = render_report_select_date_input(
+            "RSI regime start date",
+            value=rsi_start_default,
+            key="market_rsi_start_date",
+        )
+    month_col, week_col = st.columns(2)
+    with month_col:
+        month_anchor_date = render_report_select_date_input(
+            "1 month ago date",
+            value=month_default,
+            key="market_month_anchor_date",
+        )
+    with week_col:
+        week_anchor_date = render_report_select_date_input(
+            "1 week ago date",
+            value=week_default,
+            key="market_week_anchor_date",
+        )
 
     cache_key = build_market_cache_key(evaluation_date)
     previous_cache_key = build_market_cache_key(previous_evaluation_date)
@@ -7120,7 +7127,7 @@ def render_market_tab(config: ReportConfig) -> None:
         "Deterministic market regime, sector fit, and setup-readiness layer built on report_select snapshots plus cached RSI histories.",
         "Equipilot / Market",
     )
-    values_tab, methodology_tab, ai_commentary_tab = st.tabs(["Values", "Methodology", "ai-commentary"])
+    values_tab, methodology_tab, ai_commentary_tab = st.tabs(["Values", "Methodology", "AI commentary"])
     with values_tab:
         render_market_values_subtab(config)
     with methodology_tab:
