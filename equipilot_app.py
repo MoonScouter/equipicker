@@ -7092,6 +7092,9 @@ def render_market_values_subtab(config: ReportConfig) -> None:
             ascending=False,
             kind="stable",
         )
+        sector_rsi_lt40_numeric = (
+            sector_display_df["RSI Breadth < 40"].copy() if "RSI Breadth < 40" in sector_display_df.columns else None
+        )
         if not previous_sector_display_df.empty:
             sector_display_df = apply_trend_symbols_to_table(
                 sector_display_df,
@@ -7106,7 +7109,24 @@ def render_market_values_subtab(config: ReportConfig) -> None:
                 ],
                 threshold=MARKET_TREND_THRESHOLD,
             )
-        st.dataframe(sector_display_df, width="stretch", hide_index=True)
+            if sector_rsi_lt40_numeric is not None:
+                sector_display_df["RSI Breadth < 40"] = sector_rsi_lt40_numeric
+        def _style_sector_fit_row(row: pd.Series) -> list[str]:
+            fit_flag = str(row.get("Regime Fit Flag", "")).strip().lower()
+            if fit_flag == "favored":
+                color = "background-color: #eefbf1"
+            elif fit_flag == "avoid":
+                color = "background-color: #fff1f1"
+            else:
+                color = "background-color: #f8fafc"
+            return [color] * len(row)
+
+        sector_styler = sector_display_df.style.apply(_style_sector_fit_row, axis=1)
+        try:
+            sector_styler = sector_styler.hide(axis="index")
+        except Exception:
+            pass
+        st.dataframe(sector_styler, width="stretch")
 
     st.markdown("**Cache visibility**")
     render_chip_row(
