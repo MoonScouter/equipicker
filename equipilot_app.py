@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from PIL import Image
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -102,6 +103,10 @@ BANNER_CANDIDATES = [
 BANNER_SIDE_CANDIDATES = [
     BASE_DIR / "banner_equipilot_2.png",
 ]
+APP_VERSION = "1.0.0"
+_FAVICON_PATH = BASE_DIR / "blue_wings.png"
+_favicon = Image.open(_FAVICON_PATH) if _FAVICON_PATH.exists() else None
+
 CAP_BUCKET_ORDER = ["Nano", "Micro", "Small", "Mid", "Large", "Mega", "Unknown"]
 QUADRANT_BORDER_D_T_THRESHOLD = 5.0
 TREND_SYMBOL_UP = "📈"
@@ -1183,6 +1188,14 @@ def refresh_files() -> None:
     sync_editors(force=True)
 
 
+def clear_runtime_caches() -> None:
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.session_state["force_sync"] = True
+    st.session_state["header_notice"] = "Cache cleared."
+    st.rerun()
+
+
 def append_log(
     message: str,
     *,
@@ -1820,7 +1833,9 @@ def apply_theme_styles() -> None:
     st.markdown(
         """
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 :root {
+    --ep-font:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --ep-navy:#0F2747;
     --ep-sky:#2E90FA;
     --ep-sky-soft:#DAECFF;
@@ -1833,6 +1848,75 @@ def apply_theme_styles() -> None:
     --ep-surface-soft:#F8FCFF;
     --ep-border:#D9E4EE;
 }
+/* Hide Streamlit chrome — keep sidebar toggle visible */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+div[data-testid="stToolbar"] {
+    visibility: visible !important;
+}
+header[data-testid="stHeader"] [data-testid="stStatusWidget"],
+header[data-testid="stHeader"] [data-testid="stToolbarActions"],
+header[data-testid="stHeader"] [data-testid="stMainMenu"],
+header[data-testid="stHeader"] a {
+    display: none !important;
+}
+div[data-testid="stDecoration"] {display: none;}
+header[data-testid="stHeader"] {
+    background: linear-gradient(180deg, rgba(251, 253, 248, 0.96) 0%, rgba(247, 251, 255, 0.92) 100%) !important;
+    border-bottom: 1px solid rgba(217, 228, 238, 0.9) !important;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    z-index: 1000 !important;
+}
+/* Sidebar toggle button in both expanded and collapsed states */
+header[data-testid="stHeader"] button[kind="headerNoPadding"][aria-label*="sidebar" i],
+header[data-testid="stHeader"] [data-testid="collapsedControl"],
+header[data-testid="stHeader"] [data-testid="stSidebarCollapsedControl"],
+section[data-testid="stSidebar"] button[kind="headerNoPadding"][aria-label*="sidebar" i],
+section[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] button,
+section[data-testid="stSidebar"] button[aria-label*="sidebar" i] {
+    visibility: visible !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    background: linear-gradient(180deg, #EF4444 0%, #C62828 100%) !important;
+    color: #FFFFFF !important;
+    border: 1px solid rgba(255, 235, 238, 0.55) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 6px 16px rgba(198, 40, 40, 0.35) !important;
+    width: 36px !important;
+    height: 36px !important;
+    margin: 0.5rem !important;
+    opacity: 1 !important;
+    position: relative !important;
+    z-index: 1001 !important;
+}
+header[data-testid="stHeader"] button[kind="headerNoPadding"][aria-label*="sidebar" i]:hover,
+header[data-testid="stHeader"] [data-testid="collapsedControl"]:hover,
+header[data-testid="stHeader"] [data-testid="stSidebarCollapsedControl"]:hover,
+section[data-testid="stSidebar"] button[kind="headerNoPadding"][aria-label*="sidebar" i]:hover,
+section[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] button:hover,
+section[data-testid="stSidebar"] button[aria-label*="sidebar" i]:hover {
+    background: linear-gradient(180deg, #F87171 0%, #DC2626 100%) !important;
+    border-color: rgba(255, 255, 255, 0.8) !important;
+    box-shadow: 0 8px 18px rgba(220, 38, 38, 0.42) !important;
+}
+header[data-testid="stHeader"] button[kind="headerNoPadding"][aria-label*="sidebar" i] svg,
+header[data-testid="stHeader"] [data-testid="collapsedControl"] svg,
+header[data-testid="stHeader"] [data-testid="stSidebarCollapsedControl"] svg,
+section[data-testid="stSidebar"] button[kind="headerNoPadding"][aria-label*="sidebar" i] svg,
+section[data-testid="stSidebar"] [data-testid="stSidebarCollapseButton"] button svg,
+section[data-testid="stSidebar"] button[aria-label*="sidebar" i] svg {
+    fill: #FFFFFF !important;
+    stroke: #FFFFFF !important;
+}
+/* Professional font */
+html, body, [class*="css"], .stApp, .stMarkdown,
+.stSelectbox, .stMultiSelect, .stDateInput, .stTextInput,
+.stTextArea, .stNumberInput, button, input, textarea, select {
+    font-family: var(--ep-font) !important;
+}
+h1, h2, h3, h4, h5, h6 { font-family: var(--ep-font) !important; }
 .stApp {
     color: var(--ep-ink);
     background:
@@ -1934,6 +2018,7 @@ button[role="tab"][aria-selected="true"] {
     border-radius: 14px;
     padding: 0.86rem 0.95rem;
     margin-bottom: 0.72rem;
+    animation: ep-fade-in 0.35s ease-out both;
 }
 .ep-breadcrumb {
     font-size: 0.74rem;
@@ -1960,6 +2045,7 @@ button[role="tab"][aria-selected="true"] {
     padding: 0.72rem 0.86rem;
     min-height: 108px;
     box-shadow: 0 8px 20px rgba(15, 39, 71, 0.06);
+    animation: ep-fade-in 0.4s ease-out both;
 }
 .ep-kpi-label {
     font-size: 0.74rem;
@@ -2048,6 +2134,7 @@ button[role="tab"][aria-selected="true"] {
     padding: 0.8rem 0.95rem;
     margin: 0.15rem 0 0.8rem 0;
     box-shadow: 0 8px 22px rgba(15, 39, 71, 0.05);
+    animation: ep-fade-in 0.3s ease-out both;
 }
 .ep-subtab-title {
     font-size: 0.82rem;
@@ -2060,6 +2147,155 @@ button[role="tab"][aria-selected="true"] {
     margin-top: 0.2rem;
     color: #4D627F;
     font-size: 0.9rem;
+}
+/* Fade-in animation */
+@keyframes ep-fade-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+div[data-baseweb="tab-panel"] { animation: ep-fade-in 0.32s ease-out both; }
+.ep-kpi-card:nth-child(2) { animation-delay: 0.06s; }
+.ep-kpi-card:nth-child(3) { animation-delay: 0.12s; }
+.ep-kpi-card:nth-child(4) { animation-delay: 0.18s; }
+.ep-kpi-card:nth-child(5) { animation-delay: 0.24s; }
+/* Custom scrollbars - Webkit */
+.ep-log-timeline::-webkit-scrollbar,
+[data-testid="stDataFrame"]::-webkit-scrollbar {
+    width: 6px; height: 6px;
+}
+.ep-log-timeline::-webkit-scrollbar-track,
+[data-testid="stDataFrame"]::-webkit-scrollbar-track {
+    background: var(--ep-surface-soft); border-radius: 8px;
+}
+.ep-log-timeline::-webkit-scrollbar-thumb,
+[data-testid="stDataFrame"]::-webkit-scrollbar-thumb {
+    background: var(--ep-sky-soft); border-radius: 8px; border: 1px solid var(--ep-border);
+}
+.ep-log-timeline::-webkit-scrollbar-thumb:hover,
+[data-testid="stDataFrame"]::-webkit-scrollbar-thumb:hover {
+    background: var(--ep-sky);
+}
+/* Firefox scrollbar */
+.ep-log-timeline, [data-testid="stDataFrame"] {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ep-sky-soft) var(--ep-surface-soft);
+}
+/* Styled dataframes */
+[data-testid="stDataFrame"] table thead th {
+    background: linear-gradient(180deg, #0F2747 0%, #1A3A5C 100%) !important;
+    color: #FFFFFF !important;
+    font-weight: 700 !important;
+    font-size: 0.78rem !important;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    border-bottom: 2px solid var(--ep-sky) !important;
+}
+[data-testid="stDataFrame"] table tbody tr:nth-child(even) {
+    background-color: var(--ep-surface-soft) !important;
+}
+[data-testid="stDataFrame"] table tbody tr:nth-child(odd) {
+    background-color: var(--ep-surface) !important;
+}
+[data-testid="stDataFrame"] table tbody tr:hover {
+    background-color: var(--ep-sky-soft) !important;
+    transition: background-color 0.15s ease;
+}
+[data-testid="stDataFrame"] table td {
+    border-bottom: 1px solid var(--ep-border) !important;
+    font-size: 0.82rem;
+}
+/* Footer */
+.ep-footer {
+    margin-top: 2rem;
+    padding: 0.75rem 0;
+    border-top: 1px solid var(--ep-border);
+}
+.ep-footer-inner {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+.ep-footer-item {
+    font-size: 0.75rem;
+    color: var(--ep-muted);
+    font-weight: 500;
+}
+.ep-footer-disclaimer {
+    font-style: italic;
+    color: #8899AB;
+}
+.ep-footer-sep {
+    color: var(--ep-border);
+    font-size: 0.7rem;
+}
+/* Sidebar branding */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #0B1D38 0%, #0F2747 40%, #132E52 100%);
+    border-right: 1px solid rgba(46, 144, 250, 0.15);
+}
+section[data-testid="stSidebar"] .stMarkdown,
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stCaption,
+section[data-testid="stSidebar"] p {
+    color: #C8D8EB !important;
+}
+section[data-testid="stSidebar"] .stMarkdown strong {
+    color: #FFFFFF !important;
+}
+section[data-testid="stSidebar"] hr {
+    border-color: rgba(46, 144, 250, 0.2);
+}
+section[data-testid="stSidebar"] .stButton > button {
+    background: linear-gradient(110deg, var(--ep-sky) 0%, #1A6ED8 100%);
+    color: #FFFFFF;
+    border: none;
+    font-weight: 700;
+}
+section[data-testid="stSidebar"] .stButton > button:hover {
+    background: linear-gradient(110deg, #1A6ED8 0%, var(--ep-sky) 100%);
+    color: #FFFFFF;
+}
+section[data-testid="stSidebar"] .stDateInput > div,
+section[data-testid="stSidebar"] .stDateInput > div > div,
+section[data-testid="stSidebar"] .stDateInput [data-baseweb="input"],
+section[data-testid="stSidebar"] .stDateInput [data-baseweb="base-input"] {
+    background: rgba(255, 255, 255, 0.22) !important;
+    border: 1px solid rgba(160, 205, 255, 0.65) !important;
+    border-radius: 10px !important;
+    box-shadow: inset 0 0 0 1px rgba(15, 39, 71, 0.14) !important;
+}
+section[data-testid="stSidebar"] .stDateInput:hover > div,
+section[data-testid="stSidebar"] .stDateInput:hover > div > div,
+section[data-testid="stSidebar"] .stDateInput:hover [data-baseweb="input"],
+section[data-testid="stSidebar"] .stDateInput:hover [data-baseweb="base-input"] {
+    background: rgba(255, 255, 255, 0.27) !important;
+    border-color: rgba(194, 224, 255, 0.82) !important;
+}
+section[data-testid="stSidebar"] .stDateInput:focus-within > div,
+section[data-testid="stSidebar"] .stDateInput:focus-within > div > div,
+section[data-testid="stSidebar"] .stDateInput:focus-within [data-baseweb="input"],
+section[data-testid="stSidebar"] .stDateInput:focus-within [data-baseweb="base-input"] {
+    background: rgba(255, 255, 255, 0.32) !important;
+    border-color: #D6EBFF !important;
+    box-shadow: 0 0 0 3px rgba(46, 144, 250, 0.18) !important;
+}
+section[data-testid="stSidebar"] .stDateInput input {
+    color: #F8FBFF !important;
+    font-weight: 600 !important;
+    font-size: 0.88rem !important;
+}
+section[data-testid="stSidebar"] .stDateInput input::placeholder {
+    color: #DCEBFA !important;
+    opacity: 1 !important;
+}
+section[data-testid="stSidebar"] .stDateInput button {
+    color: #F8FBFF !important;
+}
+section[data-testid="stSidebar"] .stDateInput svg {
+    fill: #DCEBFA !important;
+    stroke: #DCEBFA !important;
 }</style>
         """,
         unsafe_allow_html=True,
@@ -2068,21 +2304,41 @@ button[role="tab"][aria-selected="true"] {
 
 def render_header() -> None:
     now_bucharest = datetime.now(ZoneInfo("Europe/Bucharest"))
-    st.markdown(
-        f"""
+    left_col, right_col = st.columns([3.6, 1.1])
+
+    with left_col:
+        st.markdown(
+            """
 <div class="ep-appbar">
   <div>
     <div class="ep-brand">Equipilot</div>
     <div class="ep-tagline">Professional cockpit for monthly scoring and market monitoring.</div>
   </div>
-  <div class="ep-time-wrap">
-    <div class="ep-time-label">Current time (Europe/Bucharest)</div>
-    <div class="ep-time-value">{now_bucharest:%Y-%m-%d %H:%M:%S}</div>
-  </div>
 </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with right_col:
+        button_spacer, button_col = st.columns([0.22, 0.78])
+        with button_col:
+            st.markdown('<div style="height:0.38rem;"></div>', unsafe_allow_html=True)
+            if st.button("Clear cache", key="header_clear_cache", use_container_width=True):
+                clear_runtime_caches()
+        st.markdown(
+            f"""
+<div class="ep-time-wrap">
+  <div class="ep-time-label">Current time (Europe/Bucharest)</div>
+  <div class="ep-time-value">{now_bucharest:%Y-%m-%d %H:%M:%S}</div>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    notice = st.session_state.pop("header_notice", None)
+    if notice:
+        st.success(notice)
+
     banner_path = get_banner_path()
     if banner_path:
         banner_uri = _banner_data_uri(str(banner_path))
@@ -2191,6 +2447,75 @@ def render_log_timeline(log_text: str, empty_message: str = "No log events yet."
         f'<div class="ep-log-timeline"><ul>{"".join(items)}</ul></div>',
         unsafe_allow_html=True,
     )
+
+
+def render_footer() -> None:
+    """Render professional footer bar."""
+    now_bucharest = datetime.now(ZoneInfo("Europe/Bucharest"))
+    st.markdown(
+        f"""
+<div class="ep-footer">
+  <div class="ep-footer-inner">
+    <span class="ep-footer-item">Equipilot v{APP_VERSION}</span>
+    <span class="ep-footer-sep">&middot;</span>
+    <span class="ep-footer-item ep-footer-disclaimer">For internal analytical use only. Not investment advice.</span>
+    <span class="ep-footer-sep">&middot;</span>
+    <span class="ep-footer-item">Last sync: {now_bucharest:%Y-%m-%d %H:%M} EET</span>
+  </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar(config: ReportConfig) -> ReportConfig:
+    """Render branded sidebar with logo and global config controls."""
+    with st.sidebar:
+        logo_path = BASE_DIR / "logo_1.jpg"
+        if logo_path.exists():
+            logo_uri = _banner_data_uri(str(logo_path))
+            st.markdown(
+                f"""
+<div style="text-align:center; padding:0.8rem 0 0.5rem 0;">
+    <img src="{logo_uri}" style="width:128px; border-radius:18px; box-shadow:0 10px 28px rgba(15,39,71,0.24);" />
+    <div style="font-size:1.28rem; font-weight:800; color:#FFFFFF; margin-top:0.65rem;">Equipilot</div>
+    <div style="font-size:0.8rem; color:#8BA3C1; margin-top:0.16rem;">v{APP_VERSION}</div>
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.markdown("---")
+
+        st.markdown("**Global Config**")
+        st.caption("These dates are used as defaults across all tabs.")
+
+        report_date_value = render_report_select_date_input(
+            "Report date",
+            value=config.report_date,
+            key="sidebar_report_date",
+        )
+        st.markdown(
+            '<div style="margin-top:-0.35rem; margin-bottom:0.55rem; font-size:0.72rem; font-style:italic; color:#9FB3CA;">Used only for sector pulse.</div>',
+            unsafe_allow_html=True,
+        )
+        eod_as_of_value = render_report_select_date_input(
+            "EOD as-of date",
+            value=config.eod_as_of_date or report_date_value,
+            key="sidebar_eod_as_of_date",
+        )
+
+        if st.button("Save config", key="sidebar_save_config", use_container_width=True):
+            save_report_config(
+                ReportConfig(report_date=report_date_value, eod_as_of_date=eod_as_of_value),
+                CONFIG_PATH,
+            )
+            st.success("Config saved.")
+            st.rerun()
+
+        st.markdown("---")
+        st.caption(f"Equipilot v{APP_VERSION}")
+
+    return ReportConfig(report_date=report_date_value, eod_as_of_date=eod_as_of_value)
 
 
 def run_report_select_export(anchor_date: date, run_sql: bool) -> None:
@@ -8969,7 +9294,7 @@ def render_quadrants(default_anchor: date) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Equipilot", layout="wide")
+    st.set_page_config(page_title="Equipilot", layout="wide", page_icon=_favicon, initial_sidebar_state="expanded")
     apply_theme_styles()
     force_sync = st.session_state.pop("force_sync", False)
     sync_editors(force=force_sync)
@@ -8981,6 +9306,7 @@ def main() -> None:
         st.error(f"Invalid config: {exc}")
         config = ReportConfig(report_date=date.today(), eod_as_of_date=date.fromisoformat(bucharest_today_str()))
 
+    config = render_sidebar(config)
     render_header()
 
     home_tab, indices_tab, market_tab, sector_tab, thematics_tab, trade_ideas_tab, quadrants_tab, api_tab = st.tabs(
@@ -9013,11 +9339,7 @@ def main() -> None:
     with api_tab:
         render_api_tab()
 
-    st.markdown("---")
-    st.markdown(
-        "**Shortcut tip:** "
-        "`C:/Users/razva/PycharmProjects/equipicker/equipicker/.venv/Scripts/python.exe -m streamlit run equipilot_app.py`"
-    )
+    render_footer()
 
 
 if __name__ == "__main__":
