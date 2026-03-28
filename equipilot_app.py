@@ -108,6 +108,8 @@ _FAVICON_PATH = BASE_DIR / "blue_wings.png"
 _favicon = Image.open(_FAVICON_PATH) if _FAVICON_PATH.exists() else None
 
 CAP_BUCKET_ORDER = ["Nano", "Micro", "Small", "Mid", "Large", "Mega", "Unknown"]
+COMPANY_GRID_MAX_HEIGHT = 820
+COMPANY_GRID_FAST_RENDER_THRESHOLD = 800
 QUADRANT_BORDER_D_T_THRESHOLD = 5.0
 TREND_SYMBOL_UP = "📈"
 TREND_SYMBOL_DOWN = "📉"
@@ -194,6 +196,21 @@ def _report_select_directory_signature(data_dir: Path | None = None) -> int:
         return data_dir.stat().st_mtime_ns
     except OSError:
         return 0
+
+
+def _path_cache_signature(path_value: str | Path | None) -> str:
+    if path_value is None:
+        return ""
+    path = Path(path_value)
+    try:
+        stats = path.stat()
+    except OSError:
+        return f"{path}|missing"
+    return f"{path.resolve()}|{stats.st_size}|{stats.st_mtime_ns}"
+
+
+def _paths_cache_signature(paths: list[Path]) -> str:
+    return "|".join(_path_cache_signature(path) for path in sorted(paths, key=lambda entry: str(entry)))
 
 
 @st.cache_data(show_spinner=False)
@@ -306,7 +323,8 @@ def ensure_required_columns(df: pd.DataFrame, required: set[str], path: Path) ->
 
 
 @st.cache_data(show_spinner=False)
-def load_report_select(path_str: str) -> pd.DataFrame:
+def load_report_select(path_str: str, cache_signature: str = "") -> pd.DataFrame:
+    _ = cache_signature
     path = Path(path_str)
     if path.suffix == ".csv":
         return pd.read_csv(path)
@@ -319,12 +337,14 @@ def load_indices_cache_file(path_str: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def load_prices_cache_file(path_str: str) -> pd.DataFrame:
+def load_prices_cache_file(path_str: str, cache_signature: str = "") -> pd.DataFrame:
+    _ = cache_signature
     return load_prices_cache(Path(path_str))
 
 
 @st.cache_data(show_spinner=False)
-def load_thematics_config(path_str: str) -> dict:
+def load_thematics_config(path_str: str, cache_signature: str = "") -> dict:
+    _ = cache_signature
     path = Path(path_str)
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -339,8 +359,8 @@ def _base_ticker_symbol(ticker: object) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def build_ai_exposure_lookup(path_str: str) -> dict[str, dict[str, str]]:
-    payload = load_thematics_config(path_str)
+def build_ai_exposure_lookup(path_str: str, cache_signature: str = "") -> dict[str, dict[str, str]]:
+    payload = load_thematics_config(path_str, cache_signature)
     tickers = payload.get("ai_exposure", {}).get("tickers", {})
     lookup: dict[str, dict[str, str]] = {}
     if not isinstance(tickers, dict):
@@ -366,8 +386,8 @@ def _thematics_sort_key(item: dict) -> tuple[float, str]:
 
 
 @st.cache_data(show_spinner=False)
-def build_thematics_catalog(path_str: str) -> dict[str, object]:
-    payload = load_thematics_config(path_str)
+def build_thematics_catalog(path_str: str, cache_signature: str = "") -> dict[str, object]:
+    payload = load_thematics_config(path_str, cache_signature)
     raw_thematics = payload.get("thematics", {})
     items: dict[str, dict[str, object]] = {}
     if not isinstance(raw_thematics, dict):
@@ -446,8 +466,8 @@ def build_thematics_catalog(path_str: str) -> dict[str, object]:
 
 
 @st.cache_data(show_spinner=False)
-def build_price_history_lookup(path_str: str) -> dict[str, dict[str, list[object]]]:
-    loaded_prices = load_prices_cache_file(path_str)
+def build_price_history_lookup(path_str: str, cache_signature: str = "") -> dict[str, dict[str, list[object]]]:
+    loaded_prices = load_prices_cache_file(path_str, cache_signature)
     if loaded_prices.empty:
         return {}
     normalized_prices = loaded_prices[["ticker", "date", "adjusted_close"]].copy()
@@ -485,6 +505,10 @@ def _apply_pending_show_all_company_reset(prefix: str) -> None:
     pending_key = f"{prefix}_pending_show_all_companies_reset"
     if st.session_state.pop(pending_key, False):
         st.session_state[f"{prefix}_show_all_companies"] = False
+
+
+def _bump_selection_nonce(state_key: str) -> None:
+    st.session_state[state_key] = int(st.session_state.get(state_key, 0) or 0) + 1
 
 
 def _price_close_for_target(
@@ -2618,7 +2642,9 @@ def load_report_select_for_eod(
     if resolved_path is None:
         return None, None, expected_candidates, None
     try:
-        loaded_df = normalize_report_columns(load_report_select(str(resolved_path)).copy())
+        loaded_df = normalize_report_columns(
+            load_report_select(str(resolved_path), _path_cache_signature(resolved_path)).copy()
+        )
     except Exception as exc:  # pragma: no cover - UI feedback
         return None, resolved_path, expected_candidates, str(exc)
     return loaded_df, resolved_path, expected_candidates, None
@@ -2633,6 +2659,20 @@ def _render_perf_timings(show_perf: bool, timings: list[tuple[str, float]]) -> N
         return
     joined = " | ".join(f"{label}: {duration:.1f}ms" for label, duration in timings)
     st.caption(f"Perf timings: {joined}")
+
+
+def _company_divergence_cache_signature() -> str:
+    daily_signature = _paths_cache_signature(list_prices_cache_paths("daily"))
+    weekly_signature = _paths_cache_signature(list_prices_cache_paths("weekly"))
+    return f"daily:{daily_signature}|weekly:{weekly_signature}"
+
+
+def _company_grid_height(row_count: int, *, row_height: int, min_height: int) -> int:
+    return min(COMPANY_GRID_MAX_HEIGHT, max(min_height, 72 + row_count * row_height))
+
+
+def _use_fast_company_grid_render(row_count: int) -> bool:
+    return row_count >= COMPANY_GRID_FAST_RENDER_THRESHOLD
 
 
 def validate_required_columns(
@@ -2918,7 +2958,6 @@ def _clear_drilldown_selection(prefix: str) -> None:
         "default_tech_trend_dir",
         "default_daily_rsi_divergence",
         "default_weekly_rsi_divergence",
-        "active_preset",
         "pending_reset",
         "sector",
         "industry",
@@ -2940,6 +2979,7 @@ def _handle_show_all_company_toggle(prefix: str) -> None:
     if bool(st.session_state.get(f"{prefix}_show_all_companies", False)):
         st.session_state.pop(f"{prefix}_selected_key", None)
         st.session_state.pop(f"{prefix}_selected_mode", None)
+        _bump_selection_nonce(f"{prefix}_drilldown_nonce")
 
 
 def _default_sector_regime_fit_range_for_company_scope(scope_kind: str) -> tuple[float, float]:
@@ -3328,6 +3368,7 @@ def _prepare_company_drilldown_universe(
     *,
     include_beta: bool = False,
     thematic_memberships: Optional[dict[str, list[str]]] = None,
+    thematics_config_signature: str = "",
 ) -> tuple[Optional[pd.DataFrame], Optional[str]]:
     required_columns = {
         "ticker",
@@ -3415,7 +3456,11 @@ def _prepare_company_drilldown_universe(
     working.loc[short_term_positive_mask, "short_term_flow"] = "positive"
     working.loc[short_term_negative_mask, "short_term_flow"] = "negative"
 
-    ai_lookup = build_ai_exposure_lookup(str(THEMATICS_CONFIG_PATH)) if THEMATICS_CONFIG_PATH.exists() else {}
+    ai_lookup = (
+        build_ai_exposure_lookup(str(THEMATICS_CONFIG_PATH), thematics_config_signature)
+        if THEMATICS_CONFIG_PATH.exists()
+        else {}
+    )
     ai_revenue_exposure: list[str] = []
     ai_disruption_risk: list[str] = []
     thematic_display: list[str] = []
@@ -3459,6 +3504,70 @@ def build_company_drilldown_context(
         company_universe,
         evaluation_date,
     )
+    if selected_mode == "all":
+        return "All companies", company_universe, [], [], None, regime_warning
+    if selected_mode == "sector":
+        title = f"Companies in Sector: {selected_key}"
+        default_sectors = [selected_key]
+        default_industries: list[str] = []
+    else:
+        title = f"Companies in {selected_sector} / {selected_key}"
+        default_sectors = [selected_sector]
+        default_industries = [selected_key]
+    return title, company_universe, default_sectors, default_industries, None, regime_warning
+
+
+@st.cache_data(show_spinner=False)
+def _load_prepared_company_universe_for_report_path(
+    report_path_str: str,
+    report_cache_signature: str,
+    evaluation_date: date,
+    thematics_config_signature: str,
+    market_cache_signature: str,
+    divergence_cache_signature: str,
+) -> tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
+    _ = market_cache_signature, divergence_cache_signature
+    try:
+        report_df = normalize_report_columns(load_report_select(report_path_str, report_cache_signature).copy())
+    except Exception as exc:  # pragma: no cover - defensive cache wrapper
+        return None, f"Failed reading {report_path_str}: {exc}", None
+    company_universe, error_message = _prepare_company_drilldown_universe(
+        report_df,
+        thematics_config_signature=thematics_config_signature,
+    )
+    if error_message:
+        return None, error_message, None
+    assert company_universe is not None
+    company_universe, regime_warning = _enrich_company_universe_with_market_regime(
+        company_universe,
+        evaluation_date,
+    )
+    company_universe = _enrich_company_universe_with_rsi_divergence(
+        company_universe,
+        evaluation_date,
+    )
+    return company_universe, None, regime_warning
+
+
+def build_company_drilldown_context_from_path(
+    report_path: Path,
+    *,
+    evaluation_date: date,
+    selected_sector: str,
+    selected_mode: str,
+    selected_key: str,
+) -> tuple[str, Optional[pd.DataFrame], list[str], list[str], Optional[str], Optional[str]]:
+    company_universe, error_message, regime_warning = _load_prepared_company_universe_for_report_path(
+        str(report_path),
+        _path_cache_signature(report_path),
+        evaluation_date,
+        _path_cache_signature(THEMATICS_CONFIG_PATH),
+        _market_regime_company_metrics_cache_signature(evaluation_date),
+        _company_divergence_cache_signature(),
+    )
+    if error_message:
+        return "", None, [], [], error_message, None
+    assert company_universe is not None
     if selected_mode == "all":
         return "All companies", company_universe, [], [], None, regime_warning
     if selected_mode == "sector":
@@ -3565,120 +3674,115 @@ def _annotate_company_score_trends(
         ]
     return merged.drop(columns=["fundamental_total_score_prev", "fundamental_momentum_prev"])
 
-def _company_filter_presets() -> dict[str, dict[str, object]]:
+def _build_company_filter_state(
+    *,
+    thematics: Optional[list[str]] = None,
+    sectors: Optional[list[str]] = None,
+    industries: Optional[list[str]] = None,
+    caps: Optional[list[str]] = None,
+    fund_range: tuple[float, float] = (0.0, 100.0),
+    tech_range: tuple[float, float] = (0.0, 100.0),
+    rsi_regime_range: tuple[float, float] = (0.0, 100.0),
+    sector_regime_fit_range: tuple[float, float] = (0.0, 100.0),
+    fund_momentum_range: tuple[float, float] = (0.0, 100.0),
+    tech_trend_dir: str = "All",
+    daily_rsi_divergence: str = "All",
+    weekly_rsi_divergence: str = "All",
+    short_term_flow: str = "All",
+    rel_strength: str = "All",
+    rel_volume: str = "All",
+    ai_revenue_exposure: str = "All",
+    ai_disruption_risk: str = "All",
+    beta_range: tuple[float, float] = (0.0, 5.0),
+    ticker: str = "",
+) -> dict[str, object]:
     return {
-        "Strong and Up": {
-            "fund_range": (50.0, 100.0),
-            "tech_range": (60.0, 100.0),
-            "rsi_regime_range": (70.0, 100.0),
-            "sector_regime_fit_range": (60.0, 100.0),
-            "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": TREND_FILTER_LABELS["up"],
-        },
-        "Strong and Stable": {
-            "fund_range": (50.0, 100.0),
-            "tech_range": (60.0, 100.0),
-            "rsi_regime_range": (70.0, 100.0),
-            "sector_regime_fit_range": (60.0, 100.0),
-            "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": TREND_FILTER_LABELS["flat"],
-        },
-        "Strong and Down": {
-            "fund_range": (50.0, 100.0),
-            "tech_range": (60.0, 100.0),
-            "rsi_regime_range": (70.0, 100.0),
-            "sector_regime_fit_range": (60.0, 100.0),
-            "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": TREND_FILTER_LABELS["down"],
-        },
-        "Weak and Up": {
-            "fund_range": (50.0, 100.0),
-            "tech_range": (0.0, 60.0),
-            "rsi_regime_range": (70.0, 100.0),
-            "sector_regime_fit_range": (60.0, 100.0),
-            "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": TREND_FILTER_LABELS["up"],
-        },
-        "Weak and Stable": {
-            "fund_range": (50.0, 100.0),
-            "tech_range": (0.0, 60.0),
-            "rsi_regime_range": (70.0, 100.0),
-            "sector_regime_fit_range": (60.0, 100.0),
-            "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": TREND_FILTER_LABELS["flat"],
-        },
-        "Weak and Down": {
-            "fund_range": (50.0, 100.0),
-            "tech_range": (0.0, 60.0),
-            "rsi_regime_range": (70.0, 100.0),
-            "sector_regime_fit_range": (60.0, 100.0),
-            "fund_momentum_range": (60.0, 100.0),
-            "trend_dir": TREND_FILTER_LABELS["down"],
-        },
+        "thematic": list(thematics or []),
+        "sector": list(sectors or []),
+        "industry": list(industries or []),
+        "cap": list(caps or []),
+        "fund_range": tuple(fund_range),
+        "tech_range": tuple(tech_range),
+        "rsi_regime_range": tuple(rsi_regime_range),
+        "sector_regime_fit_range": tuple(sector_regime_fit_range),
+        "fund_momentum_range": tuple(fund_momentum_range),
+        "tech_trend_dir": tech_trend_dir,
+        "daily_rsi_divergence": daily_rsi_divergence,
+        "weekly_rsi_divergence": weekly_rsi_divergence,
+        "short_term_flow": short_term_flow,
+        "rel_strength": rel_strength,
+        "rel_volume": rel_volume,
+        "ai_revenue_exposure": ai_revenue_exposure,
+        "ai_disruption_risk": ai_disruption_risk,
+        "beta_range": tuple(beta_range),
+        "ticker": ticker,
     }
 
-def _apply_company_filter_preset(prefix: str, preset_name: str) -> None:
-    preset = _company_filter_presets().get(preset_name)
-    if not preset:
-        return
-    st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(preset["fund_range"])  # type: ignore[arg-type]
-    st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(preset["tech_range"])  # type: ignore[arg-type]
-    st.session_state[f"{prefix}_drilldown_filter_rsi_regime_range"] = tuple(  # type: ignore[arg-type]
-        preset["rsi_regime_range"]
-    )
-    st.session_state[f"{prefix}_drilldown_filter_sector_regime_fit_range"] = tuple(  # type: ignore[arg-type]
-        preset["sector_regime_fit_range"]
-    )
-    st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(  # type: ignore[arg-type]
-        preset["fund_momentum_range"]
-    )
-    st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = str(preset["trend_dir"])
-    st.session_state[f"{prefix}_drilldown_filter_daily_rsi_divergence"] = st.session_state.get(
-        f"{prefix}_drilldown_filter_default_daily_rsi_divergence",
-        "All",
-    )
-    st.session_state[f"{prefix}_drilldown_filter_weekly_rsi_divergence"] = st.session_state.get(
-        f"{prefix}_drilldown_filter_default_weekly_rsi_divergence",
-        "All",
-    )
-    st.session_state[f"{prefix}_drilldown_filter_short_term_flow"] = st.session_state.get(
-        f"{prefix}_drilldown_filter_default_short_term_flow",
-        "All",
-    )
-    # Presets are intended to be one-click snapshots of thresholds, not text/cap filters.
-    st.session_state[f"{prefix}_drilldown_filter_thematic"] = list(
-        st.session_state.get(f"{prefix}_drilldown_filter_default_thematic", [])
-    )
-    st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
-    st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = "All"
-    st.session_state[f"{prefix}_drilldown_filter_rel_volume"] = "All"
-    st.session_state[f"{prefix}_drilldown_filter_ai_revenue_exposure"] = "All"
-    st.session_state[f"{prefix}_drilldown_filter_ai_disruption_risk"] = "All"
-    st.session_state[f"{prefix}_drilldown_filter_beta_range"] = tuple(
-        st.session_state.get(f"{prefix}_drilldown_filter_default_beta_range", (0.0, 5.0))
-    )
-    st.session_state[f"{prefix}_drilldown_filter_active_preset"] = preset_name
+
+def _build_all_companies_filter_state() -> dict[str, object]:
+    return _build_company_filter_state()
 
 
-def _resolve_company_filter_preset(
-    fund_range: tuple[float, float],
-    tech_range: tuple[float, float],
-    rsi_regime_range: tuple[float, float],
-    sector_regime_fit_range: tuple[float, float],
-    fund_momentum_range: tuple[float, float],
-    trend_dir: str,
-) -> str:
-    for preset_name, preset in _company_filter_presets().items():
-        if (
-            tuple(preset["fund_range"]) == tuple(fund_range)
-            and tuple(preset["tech_range"]) == tuple(tech_range)
-            and tuple(preset["rsi_regime_range"]) == tuple(rsi_regime_range)
-            and tuple(preset["sector_regime_fit_range"]) == tuple(sector_regime_fit_range)
-            and tuple(preset["fund_momentum_range"]) == tuple(fund_momentum_range)
-            and str(preset["trend_dir"]) == trend_dir
-        ):
-            return preset_name
-    return ""
+def _load_company_filter_default_state(prefix: str) -> dict[str, object]:
+    return _build_company_filter_state(
+        thematics=st.session_state.get(f"{prefix}_drilldown_filter_default_thematic", []),
+        sectors=st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []),
+        industries=st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []),
+        caps=st.session_state.get(f"{prefix}_drilldown_filter_default_cap", []),
+        fund_range=tuple(st.session_state.get(f"{prefix}_drilldown_filter_default_fund_range", (0.0, 100.0))),
+        tech_range=tuple(st.session_state.get(f"{prefix}_drilldown_filter_default_tech_range", (0.0, 100.0))),
+        rsi_regime_range=tuple(
+            st.session_state.get(f"{prefix}_drilldown_filter_default_rsi_regime_range", (0.0, 100.0))
+        ),
+        sector_regime_fit_range=tuple(
+            st.session_state.get(f"{prefix}_drilldown_filter_default_sector_regime_fit_range", (0.0, 100.0))
+        ),
+        fund_momentum_range=tuple(
+            st.session_state.get(f"{prefix}_drilldown_filter_default_fund_momentum_range", (0.0, 100.0))
+        ),
+        tech_trend_dir=st.session_state.get(f"{prefix}_drilldown_filter_default_tech_trend_dir", "All"),
+        daily_rsi_divergence=st.session_state.get(
+            f"{prefix}_drilldown_filter_default_daily_rsi_divergence",
+            "All",
+        ),
+        weekly_rsi_divergence=st.session_state.get(
+            f"{prefix}_drilldown_filter_default_weekly_rsi_divergence",
+            "All",
+        ),
+        short_term_flow=st.session_state.get(f"{prefix}_drilldown_filter_default_short_term_flow", "All"),
+        rel_strength=st.session_state.get(f"{prefix}_drilldown_filter_default_rel_strength", "All"),
+        rel_volume=st.session_state.get(f"{prefix}_drilldown_filter_default_rel_volume", "All"),
+        ai_revenue_exposure=st.session_state.get(
+            f"{prefix}_drilldown_filter_default_ai_revenue_exposure",
+            "All",
+        ),
+        ai_disruption_risk=st.session_state.get(
+            f"{prefix}_drilldown_filter_default_ai_disruption_risk",
+            "All",
+        ),
+        beta_range=tuple(st.session_state.get(f"{prefix}_drilldown_filter_default_beta_range", (0.0, 5.0))),
+        ticker="",
+    )
+
+
+def _apply_company_filter_state(prefix: str, state: dict[str, object]) -> None:
+    for suffix, value in state.items():
+        key = f"{prefix}_drilldown_filter_{suffix}"
+        if isinstance(value, list):
+            st.session_state[key] = list(value)
+        elif isinstance(value, tuple):
+            st.session_state[key] = tuple(value)
+        else:
+            st.session_state[key] = value
+
+
+def _filter_company_grid_by_ticker_list(company_df: pd.DataFrame, raw_ticker_query: str) -> pd.DataFrame:
+    normalized_tickers = parse_manual_price_tickers(raw_ticker_query)
+    if not normalized_tickers or "ticker" not in company_df.columns:
+        return company_df.copy()
+    normalized_query_set = set(normalized_tickers)
+    normalized_company_tickers = company_df["ticker"].map(normalize_price_ticker)
+    return company_df[normalized_company_tickers.isin(normalized_query_set)].copy()
 
 
 def _sync_drilldown_filter_defaults(
@@ -3843,6 +3947,9 @@ def render_company_drilldown_filters(
     ticker_key = f"{prefix}_drilldown_filter_ticker"
     pending_reset_key = f"{prefix}_drilldown_filter_pending_reset"
     default_thematic_key = f"{prefix}_drilldown_filter_default_thematic"
+    default_sector_key = f"{prefix}_drilldown_filter_default_sector"
+    default_industry_key = f"{prefix}_drilldown_filter_default_industry"
+    default_cap_key = f"{prefix}_drilldown_filter_default_cap"
     default_fund_range_key = f"{prefix}_drilldown_filter_default_fund_range"
     default_tech_range_key = f"{prefix}_drilldown_filter_default_tech_range"
     default_rsi_regime_range_key = f"{prefix}_drilldown_filter_default_rsi_regime_range"
@@ -3857,50 +3964,25 @@ def render_company_drilldown_filters(
     default_ai_revenue_exposure_key = f"{prefix}_drilldown_filter_default_ai_revenue_exposure"
     default_ai_disruption_risk_key = f"{prefix}_drilldown_filter_default_ai_disruption_risk"
     default_beta_range_key = f"{prefix}_drilldown_filter_default_beta_range"
-    active_preset_key = f"{prefix}_drilldown_filter_active_preset"
-    preferred_cap_default = ["Large", "Mega"]
-    cap_initialized_key = f"{prefix}_drilldown_filter_cap_initialized"
 
     # Streamlit forbids changing widget-bound session keys after widget instantiation.
     # Apply reset defaults at the top of a rerun before creating widgets.
-    if st.session_state.pop(pending_reset_key, False):
-        st.session_state[thematic_key] = list(st.session_state.get(default_thematic_key, []))
-        st.session_state[sector_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
-        st.session_state[industry_key] = list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
-        st.session_state[cap_key] = list(preferred_cap_default)
-        st.session_state[fund_range_key] = tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0)))
-        st.session_state[tech_range_key] = tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0)))
-        st.session_state[rsi_regime_range_key] = tuple(
-            st.session_state.get(default_rsi_regime_range_key, (0.0, 100.0))
-        )
-        st.session_state[sector_regime_fit_range_key] = tuple(
-            st.session_state.get(default_sector_regime_fit_range_key, (0.0, 100.0))
-        )
-        st.session_state[fund_momentum_range_key] = tuple(
-            st.session_state.get(default_fund_momentum_range_key, (0.0, 100.0))
-        )
-        st.session_state[tech_trend_dir_key] = st.session_state.get(default_tech_trend_dir_key, "All")
-        st.session_state[daily_rsi_divergence_key] = st.session_state.get(default_daily_rsi_divergence_key, "All")
-        st.session_state[weekly_rsi_divergence_key] = st.session_state.get(default_weekly_rsi_divergence_key, "All")
-        st.session_state[short_term_flow_key] = st.session_state.get(default_short_term_flow_key, "All")
-        st.session_state[rel_strength_key] = st.session_state.get(default_rel_strength_key, "All")
-        st.session_state[rel_volume_key] = st.session_state.get(default_rel_volume_key, "All")
-        st.session_state[ai_revenue_exposure_key] = st.session_state.get(default_ai_revenue_exposure_key, "All")
-        st.session_state[ai_disruption_risk_key] = st.session_state.get(default_ai_disruption_risk_key, "All")
-        st.session_state[beta_range_key] = tuple(st.session_state.get(default_beta_range_key, (0.0, 5.0)))
-        st.session_state[ticker_key] = ""
-        st.session_state[cap_initialized_key] = True
+    pending_filter_action = str(st.session_state.pop(pending_reset_key, "") or "")
+    if pending_filter_action == "reset":
+        _apply_company_filter_state(prefix, _load_company_filter_default_state(prefix))
+    elif pending_filter_action == "clear":
+        _apply_company_filter_state(prefix, _build_all_companies_filter_state())
 
     st.session_state.setdefault(
         thematic_key, list(st.session_state.get(default_thematic_key, []))
     )
     st.session_state.setdefault(
-        sector_key, list(st.session_state.get(f"{prefix}_drilldown_filter_default_sector", []))
+        sector_key, list(st.session_state.get(default_sector_key, []))
     )
     st.session_state.setdefault(
-        industry_key, list(st.session_state.get(f"{prefix}_drilldown_filter_default_industry", []))
+        industry_key, list(st.session_state.get(default_industry_key, []))
     )
-    st.session_state.setdefault(cap_key, list(preferred_cap_default))
+    st.session_state.setdefault(cap_key, list(st.session_state.get(default_cap_key, [])))
     st.session_state.setdefault(fund_range_key, tuple(st.session_state.get(default_fund_range_key, (0.0, 100.0))))
     st.session_state.setdefault(tech_range_key, tuple(st.session_state.get(default_tech_range_key, (0.0, 100.0))))
     st.session_state.setdefault(
@@ -3952,72 +4034,7 @@ def render_company_drilldown_filters(
         tuple(st.session_state.get(default_beta_range_key, (0.0, 5.0))),
     )
     st.session_state.setdefault(ticker_key, "")
-    st.session_state.setdefault(active_preset_key, "")
-    if not st.session_state.get(cap_initialized_key, False):
-        st.session_state[cap_key] = list(preferred_cap_default)
-        st.session_state[cap_initialized_key] = True
-
-    show_presets = bool(include_fundamental_momentum_filter and include_technical_trend_filter)
-    if show_presets:
-        active_preset = str(st.session_state.get(active_preset_key, "") or "")
-        preset_button_styles = {
-            "Strong and Up": ("#16A34A", "#FFFFFF", "#15803D"),
-            "Strong and Stable": ("#86EFAC", "#14532D", "#4ADE80"),
-            "Strong and Down": ("#BBF7D0", "#14532D", "#4ADE80"),
-            "Weak and Up": ("#FECACA", "#7F1D1D", "#FCA5A5"),
-            "Weak and Stable": ("#FCA5A5", "#7F1D1D", "#EF4444"),
-            "Weak and Down": ("#DC2626", "#FFFFFF", "#B91C1C"),
-        }
-        css_rules: list[str] = []
-        for label, (bg_color, text_color, border_color) in preset_button_styles.items():
-            btn_key = f"{prefix}_preset_{label.lower().replace(' ', '_')}"
-            css_rules.append(
-                f"""
-div.st-key-{btn_key} button {{
-  background-color: {bg_color} !important;
-  color: {text_color} !important;
-  border: 1px solid {border_color} !important;
-  min-height: 32px !important;
-  padding: 0.1rem 0.35rem !important;
-}}
-div.st-key-{btn_key} button p {{
-  color: {text_color} !important;
-  font-size: 0.84rem !important;
-  font-weight: 600 !important;
-}}
-div.st-key-{btn_key} button:hover {{
-  filter: brightness(0.96);
-}}
-                """
-            )
-            if label == active_preset:
-                css_rules.append(
-                    f"""
-div.st-key-{btn_key} button {{
-  border-bottom: 4px solid #FACC15 !important;
-  box-shadow: 0 4px 0 0 #FDE047 !important;
-}}
-                    """
-                )
-        st.markdown(
-            f"""
-<style>
-{''.join(css_rules)}
-</style>
-            """,
-            unsafe_allow_html=True,
-        )
-        preset_labels = list(preset_button_styles.keys())
-        preset_cols = st.columns([1.25] + [0.82] * len(preset_labels))
-        with preset_cols[0]:
-            st.markdown("**Company filters**")
-        for idx, label in enumerate(preset_labels, start=1):
-            with preset_cols[idx]:
-                if st.button(label, key=f"{prefix}_preset_{label.lower().replace(' ', '_')}", use_container_width=True):
-                    _apply_company_filter_preset(prefix, label)
-                    st.rerun()
-    else:
-        st.markdown("**Company filters**")
+    st.markdown("**Company filters**")
 
     with st.form(key=f"{prefix}_drilldown_filters_form", clear_on_submit=False):
         top_layout: list[float] = []
@@ -4208,35 +4225,27 @@ div.st-key-{btn_key} button {{
             ticker_query = st.text_input(
                 ticker_label,
                 key=ticker_key,
-                placeholder="Type ticker symbol...",
+                placeholder="Type one or more tickers, e.g. MSFT, AMN, GOOG",
             ).strip()
 
-        action_cols = st.columns([1, 1, 3])
+        action_cols = st.columns([1, 1, 1, 2])
         with action_cols[0]:
             apply_clicked = st.form_submit_button("Apply filters", use_container_width=True)
         with action_cols[1]:
             reset_clicked = st.form_submit_button("Reset filters", use_container_width=True)
-        if not apply_clicked and not reset_clicked:
+        with action_cols[2]:
+            clear_clicked = st.form_submit_button("Remove filters", use_container_width=True)
+        if not apply_clicked and not reset_clicked and not clear_clicked:
             st.caption("Adjust filters, then click Apply filters.")
 
     _bind_ctrl_f_to_ticker_filter(ticker_label, f"{prefix}_drilldown_ctrlf")
 
-    if apply_clicked:
-        if show_presets:
-            st.session_state[active_preset_key] = _resolve_company_filter_preset(
-                tuple(fundamental_range),
-                tuple(technical_range),
-                tuple(rsi_regime_range),
-                tuple(sector_regime_fit_range),
-                tuple(fundamental_momentum_range),
-                str(trend_filter_value),
-            )
-        else:
-            st.session_state[active_preset_key] = ""
-
     if reset_clicked:
-        st.session_state[active_preset_key] = ""
-        st.session_state[pending_reset_key] = True
+        st.session_state[pending_reset_key] = "reset"
+        st.rerun()
+
+    if clear_clicked:
+        st.session_state[pending_reset_key] = "clear"
         st.rerun()
 
     filtered = company_df.copy()
@@ -4317,9 +4326,7 @@ div.st-key-{btn_key} button {{
         filtered = filtered[filtered["ai_disruption_risk"] == ai_disruption_risk_value]
 
     if ticker_query:
-        filtered = filtered[
-            filtered["ticker"].str.contains(ticker_query, case=False, na=False, regex=False)
-        ]
+        filtered = _filter_company_grid_by_ticker_list(filtered, ticker_query)
     return filtered.copy()
 
 
@@ -4419,12 +4426,23 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
 
     display_df = sorted_df[display_columns].rename(columns=rename_map)
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
-    display_df["RSI Regime Score"] = display_df["RSI Regime Score"].map(
-        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
+    display_df["Fundamental Score"] = display_df["Fundamental Score"].map(_format_numeric_value)
+    display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(_format_numeric_value)
+    technical_trend_symbols = (
+        sorted_df.get("technical_trend_symbol", pd.Series(index=sorted_df.index, dtype=object))
+        .fillna("")
+        .astype(str)
+        .tolist()
     )
-    display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(
-        lambda value: f"{value:.1f}" if pd.notna(value) else "N/A"
-    )
+    rendered_technical_scores: list[str] = []
+    for numeric_value, trend_symbol in zip(display_df["Technical Score"].tolist(), technical_trend_symbols):
+        if trend_symbol:
+            rendered_technical_scores.append(_render_thematics_score_with_symbol(numeric_value, trend_symbol))
+        else:
+            rendered_technical_scores.append(_format_numeric_value(numeric_value))
+    display_df["Technical Score"] = rendered_technical_scores
+    display_df["RSI Regime Score"] = display_df["RSI Regime Score"].map(_format_numeric_value)
+    display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     display_df["Short Term Flow"] = display_df["Short Term Flow"].map(_format_short_term_flow_flag)
     display_df["RSI Divergence (D)"] = display_df["RSI Divergence (D)"].map(_format_divergence_flag)
     display_df["RSI Divergence (W)"] = display_df["RSI Divergence (W)"].map(_format_divergence_flag)
@@ -4432,12 +4450,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     display_df["Rel Volume"] = display_df["Rel Volume"].fillna("N/A")
     display_df["AI Revenue Exposure"] = display_df["AI Revenue Exposure"].fillna("none")
     display_df["AI Disruption Risk"] = display_df["AI Disruption Risk"].fillna("none")
-    display_df = display_df.reset_index(drop=True)
-    if "technical_trend_symbol" in sorted_df.columns:
-        display_df.attrs["technical_trend_symbols"] = (
-            sorted_df["technical_trend_symbol"].fillna("").astype(str).tolist()
-        )
-    return display_df
+    return display_df.reset_index(drop=True)
 
 
 def _style_ai_exposure_value(value: object) -> str:
@@ -4508,47 +4521,26 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
     if centered_columns:
         styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
 
-    numeric_formatters = {}
-    for column in ["Fundamental Score", "Fundamental Momentum", "Technical Score"]:
-        if column in display_df.columns:
-            numeric_formatters[column] = lambda value: f"{float(value):.1f}" if pd.notna(value) else "N/A"
-    if numeric_formatters:
-        styler = styler.format(numeric_formatters)
-
-    trend_symbols = display_df.attrs.get("technical_trend_symbols", [])
-    if trend_symbols and "Technical Score" in display_df.columns:
-        for row_index, trend_symbol in enumerate(trend_symbols):
-            if not trend_symbol:
-                continue
-            styler = styler.format(
-                {
-                    "Technical Score": (
-                        lambda value, symbol=trend_symbol: _render_thematics_score_with_symbol(
-                            float(value),
-                            symbol,
-                        )
-                        if pd.notna(value)
-                        else "N/A"
-                    )
-                },
-                subset=pd.IndexSlice[[row_index], ["Technical Score"]],
-            )
-
-    for score_column in [
+    score_columns = [
         "Fundamental Score",
         "Fundamental Momentum",
         "Technical Score",
         "RSI Regime Score",
         "Sector Regime Fit",
-    ]:
-        if score_column in display_df.columns:
-            styler = styler.applymap(_score_color_css, subset=[score_column])
-    for sign_column in ["Short Term Flow", "Rel Strength", "Rel Volume"]:
-        if sign_column in display_df.columns:
-            styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
-    for divergence_column in ["RSI Divergence (D)", "RSI Divergence (W)"]:
-        if divergence_column in display_df.columns:
-            styler = styler.applymap(_style_sign_label_value, subset=[divergence_column])
+    ]
+    usable_score_columns = [column for column in score_columns if column in display_df.columns]
+    if usable_score_columns:
+        styler = styler.applymap(_score_color_css, subset=usable_score_columns)
+    usable_sign_columns = [
+        column for column in ["Short Term Flow", "Rel Strength", "Rel Volume"] if column in display_df.columns
+    ]
+    if usable_sign_columns:
+        styler = styler.applymap(_style_sign_label_value, subset=usable_sign_columns)
+    usable_divergence_columns = [
+        column for column in ["RSI Divergence (D)", "RSI Divergence (W)"] if column in display_df.columns
+    ]
+    if usable_divergence_columns:
+        styler = styler.applymap(_style_sign_label_value, subset=usable_divergence_columns)
     if "AI Revenue Exposure" in display_df.columns:
         styler = styler.applymap(_style_ai_exposure_value, subset=["AI Revenue Exposure"])
     if "AI Disruption Risk" in display_df.columns:
@@ -5338,11 +5330,20 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
     )
     _perf_mark(timings, "render table", t_start)
     if selected_row_index is not None:
-        selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
-        selected_mode = "sector" if selected_sector == "All sectors" else "industry"
-        _queue_show_all_company_reset("fundamental")
-        st.session_state["fundamental_selected_key"] = selected_key
-        st.session_state["fundamental_selected_mode"] = selected_mode
+        next_selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
+        next_selected_mode = "sector" if selected_sector == "All sectors" else "industry"
+        show_all_active = bool(st.session_state.get("fundamental_show_all_companies", False))
+        selection_changed = (
+            st.session_state.get("fundamental_selected_key") != next_selected_key
+            or st.session_state.get("fundamental_selected_mode") != next_selected_mode
+        )
+        if selection_changed or show_all_active:
+            if show_all_active:
+                _queue_show_all_company_reset("fundamental")
+            st.session_state["fundamental_selected_key"] = next_selected_key
+            st.session_state["fundamental_selected_mode"] = next_selected_mode
+            if show_all_active:
+                st.rerun()
 
     show_all_companies = bool(st.session_state.get("fundamental_show_all_companies", False))
     selected_key = st.session_state.get("fundamental_selected_key")
@@ -5351,22 +5352,26 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
     scope_key = "__all__" if show_all_companies else str(selected_key or "")
     if scope_mode:
         company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
-        details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context(
-            report_df,
+        t_start = time.perf_counter()
+        details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context_from_path(
+            source_path,
             evaluation_date=selected_eod,
             selected_sector=selected_sector,
             selected_mode=scope_mode,
             selected_key=scope_key,
         )
+        _perf_mark(timings, "company universe", t_start)
         if details_error:
             st.warning(details_error)
         elif company_universe is not None:
             if company_trend_enabled and previous_report_df is not None:
+                t_start = time.perf_counter()
                 company_universe = _annotate_company_technical_trend(
                     company_universe,
                     previous_report_df,
                     threshold=5.0,
                 )
+                _perf_mark(timings, "company trend", t_start)
             filter_signature = (
                 selected_eod.isoformat(),
                 previous_eod.isoformat(),
@@ -5393,6 +5398,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             st.caption(details_title)
             if regime_warning:
                 st.caption(regime_warning)
+            t_start = time.perf_counter()
             filtered_companies = render_company_drilldown_filters(
                 company_universe,
                 prefix="fundamental",
@@ -5403,18 +5409,30 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 include_rel_volume_filter=True,
                 include_ai_exposure_filters=True,
             )
+            _perf_mark(timings, "company filters", t_start)
             st.caption(f"Companies after filters: {len(filtered_companies)}")
+            t_start = time.perf_counter()
             details_display = format_company_drilldown_display(filtered_companies, sort_by="fundamental")
+            _perf_mark(timings, "company display", t_start)
             if details_display.empty:
                 st.info("No companies found for the selected row.")
             else:
-                details_height = max(220, 72 + len(details_display) * 34)
+                details_height = _company_grid_height(len(details_display), row_height=34, min_height=220)
+                use_fast_grid = _use_fast_company_grid_render(len(details_display))
+                if use_fast_grid:
+                    st.caption("Large result set: using fast grid rendering.")
+                else:
+                    t_start = time.perf_counter()
+                    details_styler = _build_company_drilldown_styler(details_display)
+                    _perf_mark(timings, "company styler", t_start)
+                t_start = time.perf_counter()
                 st.dataframe(
-                    _build_company_drilldown_styler(details_display),
+                    details_display if use_fast_grid else details_styler,
                     use_container_width=True,
                     height=details_height,
                     hide_index=True,
                 )
+                _perf_mark(timings, "company render", t_start)
             if st.button("Hide company list", key="fundamental_hide_company_list"):
                 _clear_drilldown_selection("fundamental")
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
@@ -5589,11 +5607,20 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     )
     _perf_mark(timings, "render table", t_start)
     if selected_row_index is not None:
-        selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
-        selected_mode = "sector" if selected_sector == "All sectors" else "industry"
-        _queue_show_all_company_reset("technical")
-        st.session_state["technical_selected_key"] = selected_key
-        st.session_state["technical_selected_mode"] = selected_mode
+        next_selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
+        next_selected_mode = "sector" if selected_sector == "All sectors" else "industry"
+        show_all_active = bool(st.session_state.get("technical_show_all_companies", False))
+        selection_changed = (
+            st.session_state.get("technical_selected_key") != next_selected_key
+            or st.session_state.get("technical_selected_mode") != next_selected_mode
+        )
+        if selection_changed or show_all_active:
+            if show_all_active:
+                _queue_show_all_company_reset("technical")
+            st.session_state["technical_selected_key"] = next_selected_key
+            st.session_state["technical_selected_mode"] = next_selected_mode
+            if show_all_active:
+                st.rerun()
 
     show_all_companies = bool(st.session_state.get("technical_show_all_companies", False))
     selected_key = st.session_state.get("technical_selected_key")
@@ -5602,22 +5629,26 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
     scope_key = "__all__" if show_all_companies else str(selected_key or "")
     if scope_mode:
         company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
-        details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context(
-            report_df,
+        t_start = time.perf_counter()
+        details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context_from_path(
+            source_path,
             evaluation_date=selected_eod,
             selected_sector=selected_sector,
             selected_mode=scope_mode,
             selected_key=scope_key,
         )
+        _perf_mark(timings, "company universe", t_start)
         if details_error:
             st.warning(details_error)
         elif company_universe is not None:
             if company_trend_enabled and previous_report_df is not None:
+                t_start = time.perf_counter()
                 company_universe = _annotate_company_technical_trend(
                     company_universe,
                     previous_report_df,
                     threshold=5.0,
                 )
+                _perf_mark(timings, "company trend", t_start)
             filter_signature = (
                 selected_eod.isoformat(),
                 previous_eod.isoformat(),
@@ -5644,6 +5675,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
             st.caption(details_title)
             if regime_warning:
                 st.caption(regime_warning)
+            t_start = time.perf_counter()
             filtered_companies = render_company_drilldown_filters(
                 company_universe,
                 prefix="technical",
@@ -5654,18 +5686,30 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 include_rel_volume_filter=True,
                 include_ai_exposure_filters=True,
             )
+            _perf_mark(timings, "company filters", t_start)
             st.caption(f"Companies after filters: {len(filtered_companies)}")
+            t_start = time.perf_counter()
             details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
+            _perf_mark(timings, "company display", t_start)
             if details_display.empty:
                 st.info("No companies found for the selected row.")
             else:
-                details_height = max(220, 72 + len(details_display) * 34)
+                details_height = _company_grid_height(len(details_display), row_height=34, min_height=220)
+                use_fast_grid = _use_fast_company_grid_render(len(details_display))
+                if use_fast_grid:
+                    st.caption("Large result set: using fast grid rendering.")
+                else:
+                    t_start = time.perf_counter()
+                    details_styler = _build_company_drilldown_styler(details_display)
+                    _perf_mark(timings, "company styler", t_start)
+                t_start = time.perf_counter()
                 st.dataframe(
-                    _build_company_drilldown_styler(details_display),
+                    details_display if use_fast_grid else details_styler,
                     use_container_width=True,
                     height=details_height,
                     hide_index=True,
                 )
+                _perf_mark(timings, "company render", t_start)
             if st.button("Hide company list", key="technical_hide_company_list"):
                 _clear_drilldown_selection("technical")
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
@@ -7557,6 +7601,8 @@ def _build_thematics_company_universe_from_scope(
     report_df: Optional[pd.DataFrame],
     price_lookup: dict[str, dict[str, list[object]]],
     reference_date: date,
+    *,
+    thematics_config_signature: str = "",
 ) -> tuple[pd.DataFrame, bool]:
     base_df = pd.DataFrame({"ticker": scope_tickers})
     current_report = _prepare_thematics_report_frame(report_df)
@@ -7609,6 +7655,7 @@ def _build_thematics_company_universe_from_scope(
         base_df,
         include_beta=True,
         thematic_memberships=thematic_memberships,
+        thematics_config_signature=thematics_config_signature,
     )
     if error_message or company_universe is None:
         return pd.DataFrame(), False
@@ -7636,6 +7683,8 @@ def _build_thematics_company_universe(
     report_df: Optional[pd.DataFrame],
     price_lookup: dict[str, dict[str, list[object]]],
     reference_date: date,
+    *,
+    thematics_config_signature: str = "",
 ) -> tuple[pd.DataFrame, bool]:
     items = catalog.get("items", {})
     if not isinstance(items, dict) or basket_name not in items:
@@ -7650,6 +7699,7 @@ def _build_thematics_company_universe(
         report_df,
         price_lookup,
         reference_date,
+        thematics_config_signature=thematics_config_signature,
     )
 
 
@@ -7658,6 +7708,8 @@ def _build_all_thematics_company_universe(
     report_df: Optional[pd.DataFrame],
     price_lookup: dict[str, dict[str, list[object]]],
     reference_date: date,
+    *,
+    thematics_config_signature: str = "",
 ) -> tuple[pd.DataFrame, bool]:
     memberships = _all_thematic_memberships(catalog)
     scope_tickers = sorted(memberships.keys())
@@ -7669,6 +7721,49 @@ def _build_all_thematics_company_universe(
         report_df,
         price_lookup,
         reference_date,
+        thematics_config_signature=thematics_config_signature,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _build_thematics_company_universe_for_scope_cached(
+    scope_mode: str,
+    scope_name: str,
+    catalog_path_str: str,
+    catalog_cache_signature: str,
+    current_report_path_str: str,
+    current_report_cache_signature: str,
+    prices_cache_path_str: str,
+    prices_cache_signature: str,
+    reference_date: date,
+    market_cache_signature: str,
+    divergence_cache_signature: str,
+) -> tuple[pd.DataFrame, bool]:
+    _ = market_cache_signature, divergence_cache_signature
+    catalog = build_thematics_catalog(catalog_path_str, catalog_cache_signature)
+    current_report_df: Optional[pd.DataFrame] = None
+    if current_report_path_str:
+        current_report_df = normalize_report_columns(
+            load_report_select(current_report_path_str, current_report_cache_signature).copy()
+        )
+    price_lookup: dict[str, dict[str, list[object]]] = {}
+    if prices_cache_path_str:
+        price_lookup = build_price_history_lookup(prices_cache_path_str, prices_cache_signature)
+    if scope_mode == "show_all":
+        return _build_all_thematics_company_universe(
+            catalog,
+            current_report_df,
+            price_lookup,
+            reference_date,
+            thematics_config_signature=catalog_cache_signature,
+        )
+    return _build_thematics_company_universe(
+        scope_name,
+        catalog,
+        current_report_df,
+        price_lookup,
+        reference_date,
+        thematics_config_signature=catalog_cache_signature,
     )
 
 
@@ -7839,6 +7934,12 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
         }
     )
+    display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
+    display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
+    for perf_column in ["1W", "1M", "3M", "YTD"]:
+        display_df[perf_column] = display_df[perf_column].map(_format_percent_value)
+    display_df["RSI Regime"] = display_df["RSI Regime"].map(_format_numeric_value)
+    display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     for display_column, symbol_column in [
         ("TS", "technical_trend_symbol"),
         ("FS", "fundamental_trend_symbol"),
@@ -7848,13 +7949,13 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             trend_symbols = sorted_df[symbol_column].fillna("").astype(str)
             rendered_scores: list[str] = []
             for numeric_value, trend_symbol in zip(display_df[display_column], trend_symbols):
-                if pd.isna(numeric_value):
-                    rendered_scores.append("N/A")
-                    continue
-                rendered_scores.append(
-                    _render_thematics_score_with_symbol(float(numeric_value), str(trend_symbol))
-                )
+                rendered_scores.append(_render_thematics_score_with_symbol(numeric_value, str(trend_symbol)))
             display_df[display_column] = rendered_scores
+    for display_column in ["TS", "FS", "Mom. FS"]:
+        if display_column in display_df.columns:
+            display_df[display_column] = display_df[display_column].map(
+                lambda value: value if isinstance(value, str) and value.strip() else _format_numeric_value(value)
+            )
     return display_df.reset_index(drop=True)
 
 
@@ -8058,6 +8159,7 @@ def _handle_thematics_basket_checkbox_change(state_prefix: str, basket_name: str
 def _handle_thematics_show_all_company_toggle(state_prefix: str) -> None:
     if bool(st.session_state.get(f"{state_prefix}_show_all_companies", False)):
         st.session_state[f"{state_prefix}_selected_basket"] = None
+        _bump_selection_nonce(f"{state_prefix}_basket_table_nonce")
 
 
 def _render_thematics_basket_table(
@@ -8685,6 +8787,7 @@ def _build_thematics_company_styler(
     display_df: pd.DataFrame,
     trend_meta_df: Optional[pd.DataFrame] = None,
 ) -> "Styler":
+    del trend_meta_df
     styler = display_df.style.hide(axis="index")
     styler = styler.set_table_styles(
         [
@@ -8738,32 +8841,24 @@ def _build_thematics_company_styler(
 
     styler = styler.apply(stripe_rows, axis=1)
 
-    for perf_column in ["1W", "1M", "3M", "YTD"]:
-        if perf_column in display_df.columns:
-            styler = styler.applymap(_style_positive_negative_value, subset=[perf_column])
-    for score_column in ["TS", "RSI Regime", "Sector Regime Fit", "FS", "Mom. FS"]:
-        if score_column in display_df.columns:
-            styler = styler.applymap(_score_color_css, subset=[score_column])
-    for sign_column in ["Short Term Flow", "Rel Strength", "Rel Volume"]:
-        if sign_column in display_df.columns:
-            styler = styler.applymap(_style_sign_label_value, subset=[sign_column])
-    for divergence_column in ["RSI Divergence (D)", "RSI Divergence (W)"]:
-        if divergence_column in display_df.columns:
-            styler = styler.applymap(_style_sign_label_value, subset=[divergence_column])
-
-    styler = styler.format(
-        {
-            "Market Cap": _format_market_cap_display,
-            "Beta": _format_numeric_value,
-            "1W": _format_percent_value,
-            "1M": _format_percent_value,
-            "3M": _format_percent_value,
-            "YTD": _format_percent_value,
-            "RSI Regime": _format_numeric_value,
-            "Sector Regime Fit": _format_numeric_value,
-        },
-        na_rep="N/A",
-    )
+    usable_perf_columns = [column for column in ["1W", "1M", "3M", "YTD"] if column in display_df.columns]
+    if usable_perf_columns:
+        styler = styler.applymap(_style_positive_negative_value, subset=usable_perf_columns)
+    usable_score_columns = [
+        column for column in ["TS", "RSI Regime", "Sector Regime Fit", "FS", "Mom. FS"] if column in display_df.columns
+    ]
+    if usable_score_columns:
+        styler = styler.applymap(_score_color_css, subset=usable_score_columns)
+    usable_sign_columns = [
+        column for column in ["Short Term Flow", "Rel Strength", "Rel Volume"] if column in display_df.columns
+    ]
+    if usable_sign_columns:
+        styler = styler.applymap(_style_sign_label_value, subset=usable_sign_columns)
+    usable_divergence_columns = [
+        column for column in ["RSI Divergence (D)", "RSI Divergence (W)"] if column in display_df.columns
+    ]
+    if usable_divergence_columns:
+        styler = styler.applymap(_style_sign_label_value, subset=usable_divergence_columns)
     return styler
 
 
@@ -8820,6 +8915,7 @@ def _render_thematics_basket_table_v2(
     )
 
     estimated_height = max(280, 72 + len(display_df) * 38)
+    basket_table_nonce = st.session_state.setdefault("thematics_impl_basket_table_nonce", 0)
     try:
         selection_event = st.dataframe(
             styler,
@@ -8828,7 +8924,7 @@ def _render_thematics_basket_table_v2(
             on_select="rerun",
             selection_mode="single-row",
             hide_index=True,
-            key="thematics_impl_basket_table",
+            key=f"thematics_impl_basket_table_{basket_table_nonce}",
         )
     except TypeError:
         st.dataframe(styler, use_container_width=True, height=estimated_height, hide_index=True)
@@ -8905,7 +9001,12 @@ def render_thematics_tab(config: ReportConfig) -> None:
         "Thematics sections",
         "Use the implementation workspace for sortable basket and company tables, or open Thematic Lens for the narrative card view.",
     )
-    catalog = build_thematics_catalog(str(THEMATICS_CONFIG_PATH)) if THEMATICS_CONFIG_PATH.exists() else {"items": {}, "roots": []}
+    thematics_config_signature = _path_cache_signature(THEMATICS_CONFIG_PATH)
+    catalog = (
+        build_thematics_catalog(str(THEMATICS_CONFIG_PATH), thematics_config_signature)
+        if THEMATICS_CONFIG_PATH.exists()
+        else {"items": {}, "roots": []}
+    )
     if not THEMATICS_CONFIG_PATH.exists():
         st.error(f"Missing thematics config: {THEMATICS_CONFIG_PATH}")
         return
@@ -8922,9 +9023,17 @@ def render_thematics_tab(config: ReportConfig) -> None:
             value=get_default_previous_board_eod(reference_date),
             key="thematics_previous_eod",
         )
+        show_perf = st.checkbox(
+            "Show perf timings",
+            value=False,
+            key="thematics_perf_toggle",
+        )
         warnings: list[str] = []
+        timings: list[tuple[str, float]] = []
 
+        t_start = time.perf_counter()
         current_report_df, current_report_path, current_candidates, current_error = load_report_select_for_eod(reference_date)
+        _perf_mark(timings, "load current", t_start)
         if current_report_path is None:
             warnings.append(
                 f"Metadata/scoring report is missing for {reference_date.isoformat()}; metadata, beta, scoring, RS, and OBVM fields are shown as N/A."
@@ -8936,7 +9045,9 @@ def render_thematics_tab(config: ReportConfig) -> None:
             )
             current_report_df = None
 
+        t_start = time.perf_counter()
         previous_report_df, previous_report_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
+        _perf_mark(timings, "load previous", t_start)
         previous_ready = True
         if previous_report_path is None:
             warnings.append(
@@ -8952,10 +9063,13 @@ def render_thematics_tab(config: ReportConfig) -> None:
             previous_ready = False
 
         prices_cache_file = prices_cache_path("daily", reference_date.year)
+        prices_cache_signature = _path_cache_signature(prices_cache_file) if prices_cache_file.exists() else ""
         price_lookup: dict[str, dict[str, list[object]]] = {}
         if prices_cache_file.exists():
             try:
-                price_lookup = build_price_history_lookup(str(prices_cache_file))
+                t_start = time.perf_counter()
+                price_lookup = build_price_history_lookup(str(prices_cache_file), prices_cache_signature)
+                _perf_mark(timings, "load prices", t_start)
             except Exception as exc:  # pragma: no cover - UI feedback
                 warnings.append(f"Daily prices cache could not be read ({prices_cache_file}): {exc}")
         else:
@@ -8963,6 +9077,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 f"Daily prices cache is missing for {reference_date.year}; price performance fields are shown as N/A."
             )
 
+        t_start = time.perf_counter()
         basket_metrics_df, anchor_missing = _build_thematics_basket_metrics(
             catalog,
             current_report_df,
@@ -8970,6 +9085,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
             price_lookup,
             reference_date,
         )
+        _perf_mark(timings, "build baskets", t_start)
         if anchor_missing:
             warnings.append(
                 f"Some tickers do not have an exact daily price for {reference_date.isoformat()}; affected 1W/1M/3M/YTD values are shown as N/A."
@@ -9011,28 +9127,32 @@ def render_thematics_tab(config: ReportConfig) -> None:
             if show_all_companies:
                 company_scope = "show_all"
                 company_scope_name = "All thematic companies"
-                company_universe, company_anchor_missing = _build_all_thematics_company_universe(
-                    catalog,
-                    current_report_df,
-                    price_lookup,
-                    reference_date,
-                )
             else:
                 company_scope = "selected"
                 company_scope_name = str(selected_basket)
-                company_universe, company_anchor_missing = _build_thematics_company_universe(
-                    str(selected_basket),
-                    catalog,
-                    current_report_df,
-                    price_lookup,
-                    reference_date,
-                )
+            t_start = time.perf_counter()
+            company_universe, company_anchor_missing = _build_thematics_company_universe_for_scope_cached(
+                company_scope,
+                company_scope_name,
+                str(THEMATICS_CONFIG_PATH),
+                thematics_config_signature,
+                str(current_report_path) if current_report_path is not None else "",
+                _path_cache_signature(current_report_path) if current_report_path is not None else "",
+                str(prices_cache_file) if prices_cache_file.exists() else "",
+                prices_cache_signature,
+                reference_date,
+                _market_regime_company_metrics_cache_signature(reference_date),
+                _company_divergence_cache_signature(),
+            )
+            _perf_mark(timings, "company universe", t_start)
             if company_anchor_missing:
                 st.warning(
                     f"Some companies in {company_scope_name} do not have an exact anchor close for {reference_date.isoformat()}; affected rows show N/A performance."
                 )
             if previous_ready and previous_report_df is not None and not company_universe.empty:
+                t_start = time.perf_counter()
                 company_universe = _annotate_company_score_trends(company_universe, previous_report_df, threshold=5.0)
+                _perf_mark(timings, "company trend", t_start)
             filter_signature = (
                 reference_date.isoformat(),
                 previous_eod.isoformat(),
@@ -9067,6 +9187,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
             _, regime_warning = _load_market_regime_company_metrics_for_date(reference_date)
             if regime_warning:
                 st.caption(regime_warning)
+            t_start = time.perf_counter()
             filtered_companies = render_company_drilldown_filters(
                 company_universe,
                 prefix="thematics",
@@ -9079,24 +9200,36 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 include_ai_exposure_filters=True,
                 include_beta_filter=True,
             )
+            _perf_mark(timings, "company filters", t_start)
             st.caption(f"Companies after filters: {len(filtered_companies)} of {len(company_universe)}")
+            t_start = time.perf_counter()
             thematic_display = format_thematics_company_display(filtered_companies)
+            _perf_mark(timings, "company display", t_start)
             if thematic_display.empty:
                 st.info("No companies matched the current thematic filters.")
             else:
-                company_trend_meta = _build_thematics_company_trend_meta(filtered_companies)
-                display_height = max(260, 72 + len(thematic_display) * 36)
+                display_height = _company_grid_height(len(thematic_display), row_height=36, min_height=260)
+                use_fast_grid = _use_fast_company_grid_render(len(thematic_display))
+                if use_fast_grid:
+                    st.caption("Large result set: using fast grid rendering.")
+                else:
+                    t_start = time.perf_counter()
+                    thematic_styler = _build_thematics_company_styler(thematic_display)
+                    _perf_mark(timings, "company styler", t_start)
+                t_start = time.perf_counter()
                 st.dataframe(
-                    _build_thematics_company_styler(thematic_display, company_trend_meta),
+                    thematic_display if use_fast_grid else thematic_styler,
                     use_container_width=True,
                     height=display_height,
                     hide_index=True,
                     key="thematics_company_grid",
                 )
+                _perf_mark(timings, "company render", t_start)
             if st.button("Hide thematic company list", key="thematics_hide_company_list"):
                 st.session_state["thematics_impl_selected_basket"] = None
                 _queue_show_all_company_reset("thematics_impl")
                 st.rerun()
+        _render_perf_timings(show_perf, timings)
     with lens_tab:
         _render_thematics_lens_tab(catalog, current_report_df)
 
