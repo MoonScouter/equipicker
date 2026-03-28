@@ -9,6 +9,8 @@ from equipilot_app import (
     TREND_SYMBOL_DOWN,
     TREND_SYMBOL_UP,
     _annotate_company_technical_trend,
+    _build_all_companies_filter_state,
+    _build_company_filter_state,
     _build_all_thematics_company_universe,
     _build_thematics_basket_metrics,
     _build_thematics_basket_table_frame,
@@ -17,14 +19,16 @@ from equipilot_app import (
     _default_sector_regime_fit_range_for_company_scope,
     _enrich_company_universe_with_market_regime,
     _enrich_company_universe_with_rsi_divergence,
+    _filter_company_grid_by_ticker_list,
     _filter_thematics_basket_table_for_view,
     _filter_by_optional_label_value,
     _filter_by_optional_numeric_range,
-    _company_filter_presets,
+    _company_grid_height,
     _compute_company_return_metrics,
     _load_market_regime_company_metrics_for_date,
     _normalize_thematics_selected_basket,
     _prepare_company_drilldown_universe,
+    _use_fast_company_grid_render,
     apply_trend_symbols_to_table,
     build_company_drilldown_context,
     format_thematics_company_display,
@@ -350,9 +354,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         )
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertEqual(rendered.iloc[0]["Company"], "High Tech")
-        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Score"]))
-        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Momentum"]))
-        self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 72.0)
+        self.assertEqual(rendered.iloc[0]["Fundamental Score"], "70.0")
+        self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "72.0")
+        self.assertEqual(rendered.iloc[0]["Technical Score"], "90.0")
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "82.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "74.0")
         self.assertEqual(rendered.iloc[0]["Short Term Flow"], "N/A")
@@ -402,9 +406,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             ],
         )
         self.assertEqual(rendered.iloc[0]["Company"], "Alpha Inc")
-        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Score"]))
-        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Fundamental Momentum"]))
-        self.assertAlmostEqual(float(rendered.iloc[0]["Fundamental Momentum"]), 85.0)
+        self.assertEqual(rendered.iloc[0]["Fundamental Score"], "92.0")
+        self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "85.0")
+        self.assertEqual(rendered.iloc[0]["Technical Score"], "70.0")
         self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "76.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "68.0")
         self.assertEqual(rendered.iloc[0]["Short Term Flow"], "N/A")
@@ -635,9 +639,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         rendered = format_company_drilldown_display(company_df, sort_by="technical")
 
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
-        self.assertTrue(pd.api.types.is_numeric_dtype(rendered["Technical Score"]))
-        self.assertAlmostEqual(float(rendered.iloc[0]["Technical Score"]), 90.0)
-        self.assertEqual(rendered.attrs.get("technical_trend_symbols", [""])[0], TREND_SYMBOL_UP)
+        self.assertEqual(str(rendered.iloc[0]["Technical Score"]).strip(), f"90.0 {TREND_SYMBOL_UP}")
         html = _build_company_drilldown_styler(rendered).to_html()
         self.assertIn(f"90.0 {TREND_SYMBOL_UP}", html)
 
@@ -738,22 +740,83 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(by_sector.loc["Flat", "Total"], "15.0")
         self.assertEqual(by_sector.loc["Missing", "Total"], "18.0")
 
-    def test_company_filter_presets_use_shared_trend_labels(self) -> None:
-        presets = _company_filter_presets()
-        trend_labels = {str(preset["trend_dir"]) for preset in presets.values()}
+    def test_build_all_companies_filter_state_removes_scope_restrictions(self) -> None:
+        state = _build_all_companies_filter_state()
 
-        self.assertEqual(
-            trend_labels,
-            {
-                TREND_FILTER_LABELS["up"],
-                TREND_FILTER_LABELS["flat"],
-                TREND_FILTER_LABELS["down"],
-            },
+        self.assertEqual(state["thematic"], [])
+        self.assertEqual(state["sector"], [])
+        self.assertEqual(state["industry"], [])
+        self.assertEqual(state["cap"], [])
+        self.assertEqual(state["fund_range"], (0.0, 100.0))
+        self.assertEqual(state["tech_range"], (0.0, 100.0))
+        self.assertEqual(state["rsi_regime_range"], (0.0, 100.0))
+        self.assertEqual(state["sector_regime_fit_range"], (0.0, 100.0))
+        self.assertEqual(state["fund_momentum_range"], (0.0, 100.0))
+        self.assertEqual(state["tech_trend_dir"], "All")
+        self.assertEqual(state["daily_rsi_divergence"], "All")
+        self.assertEqual(state["weekly_rsi_divergence"], "All")
+        self.assertEqual(state["short_term_flow"], "All")
+        self.assertEqual(state["rel_strength"], "All")
+        self.assertEqual(state["rel_volume"], "All")
+        self.assertEqual(state["ai_revenue_exposure"], "All")
+        self.assertEqual(state["ai_disruption_risk"], "All")
+        self.assertEqual(state["beta_range"], (0.0, 5.0))
+        self.assertEqual(state["ticker"], "")
+
+    def test_build_company_filter_state_preserves_default_reset_values(self) -> None:
+        state = _build_company_filter_state(
+            caps=["Large", "Mega"],
+            fund_range=(50.0, 100.0),
+            tech_range=(60.0, 100.0),
+            rsi_regime_range=(70.0, 100.0),
+            sector_regime_fit_range=(60.0, 100.0),
+            fund_momentum_range=(60.0, 100.0),
+            tech_trend_dir=TREND_FILTER_LABELS["down"],
         )
-        self.assertTrue(all(tuple(preset["rsi_regime_range"]) == (70.0, 100.0) for preset in presets.values()))
-        self.assertTrue(
-            all(tuple(preset["sector_regime_fit_range"]) == (60.0, 100.0) for preset in presets.values())
+
+        self.assertEqual(state["cap"], ["Large", "Mega"])
+        self.assertEqual(state["fund_range"], (50.0, 100.0))
+        self.assertEqual(state["tech_range"], (60.0, 100.0))
+        self.assertEqual(state["rsi_regime_range"], (70.0, 100.0))
+        self.assertEqual(state["sector_regime_fit_range"], (60.0, 100.0))
+        self.assertEqual(state["fund_momentum_range"], (60.0, 100.0))
+        self.assertEqual(state["tech_trend_dir"], TREND_FILTER_LABELS["down"])
+
+    def test_filter_company_grid_by_ticker_list_matches_exact_normalized_tickers(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "MSFT.US", "company": "Microsoft"},
+                {"ticker": "AMN.US", "company": "AMN"},
+                {"ticker": "GOOG.US", "company": "Google"},
+                {"ticker": "MSFTW.US", "company": "Microsoft Warrant"},
+            ]
         )
+
+        filtered = _filter_company_grid_by_ticker_list(company_df, "msft, AMN\ngoog")
+
+        self.assertEqual(filtered["ticker"].tolist(), ["MSFT.US", "AMN.US", "GOOG.US"])
+
+    def test_filter_company_grid_by_ticker_list_does_not_use_partial_matches(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "MSFT.US"},
+                {"ticker": "MSFTW.US"},
+            ]
+        )
+
+        filtered = _filter_company_grid_by_ticker_list(company_df, "MSF")
+
+        self.assertTrue(filtered.empty)
+
+    def test_company_grid_height_caps_large_result_sets(self) -> None:
+        height = _company_grid_height(1000, row_height=34, min_height=220)
+
+        self.assertLess(height, 1000 * 34)
+        self.assertGreaterEqual(height, 220)
+
+    def test_use_fast_company_grid_render_turns_on_for_large_results(self) -> None:
+        self.assertFalse(_use_fast_company_grid_render(50))
+        self.assertTrue(_use_fast_company_grid_render(900))
 
     def test_company_scope_sector_regime_fit_defaults_match_show_all_and_selected_modes(self) -> None:
         self.assertEqual(
