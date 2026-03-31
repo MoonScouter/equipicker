@@ -8,6 +8,7 @@ from equipilot_app import (
     TREND_FILTER_LABELS,
     TREND_SYMBOL_DOWN,
     TREND_SYMBOL_UP,
+    _annotate_company_score_trends,
     _annotate_company_technical_trend,
     _build_all_companies_filter_state,
     _build_company_filter_state,
@@ -23,6 +24,7 @@ from equipilot_app import (
     _filter_thematics_basket_table_for_view,
     _filter_by_optional_label_value,
     _filter_by_optional_numeric_range,
+    _normalize_grid_visible_columns,
     _company_grid_height,
     _compute_company_return_metrics,
     _load_market_regime_company_metrics_for_date,
@@ -664,9 +666,17 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "short_term_flow": "positive",
                     "fundamental_total_score": 76.0,
                     "fundamental_momentum": 68.0,
+                    "fundamental_growth": 71.0,
+                    "fundamental_value": 62.0,
+                    "fundamental_quality": 74.0,
+                    "fundamental_risk": 69.0,
                     "technical_trend_symbol": TREND_SYMBOL_UP,
                     "fundamental_trend_symbol": TREND_SYMBOL_DOWN,
                     "fundamental_momentum_trend_symbol": "",
+                    "fundamental_growth_trend_symbol": TREND_SYMBOL_UP,
+                    "fundamental_value_trend_symbol": TREND_SYMBOL_DOWN,
+                    "fundamental_quality_trend_symbol": "",
+                    "fundamental_risk_trend_symbol": TREND_SYMBOL_UP,
                     "rel_strength": "Positive",
                     "rel_volume": "Positive",
                     "ai_revenue_exposure": "direct",
@@ -699,6 +709,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "RSI Divergence (W)",
                 "FS",
                 "Mom. FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -713,6 +727,157 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
         self.assertEqual(str(rendered.iloc[0]["FS"]).strip(), f"76.0 {TREND_SYMBOL_DOWN}")
         self.assertEqual(str(rendered.iloc[0]["Mom. FS"]).strip(), "68.0")
+        self.assertEqual(str(rendered.iloc[0]["Growth FS"]).strip(), f"71.0 {TREND_SYMBOL_UP}")
+        self.assertEqual(str(rendered.iloc[0]["Value FS"]).strip(), f"62.0 {TREND_SYMBOL_DOWN}")
+        self.assertEqual(str(rendered.iloc[0]["Quality FS"]).strip(), "74.0")
+        self.assertEqual(str(rendered.iloc[0]["Risk FS"]).strip(), f"69.0 {TREND_SYMBOL_UP}")
+
+    def test_thematics_basket_table_frame_includes_fundamental_pillar_scores(self) -> None:
+        catalog = {
+            "items": {
+                "AI": {
+                    "parent": "",
+                    "is_parent": True,
+                    "is_ai_super_parent": True,
+                    "is_ai_group_child": False,
+                }
+            },
+            "roots": ["AI"],
+        }
+        basket_metrics_df = pd.DataFrame(
+            [
+                {
+                    "name": "AI",
+                    "beta": 1.1,
+                    "1w_perf": 2.0,
+                    "1m_perf": 3.0,
+                    "3m_perf": 4.0,
+                    "ytd_perf": 5.0,
+                    "rel_strength_breadth": 60.0,
+                    "rel_volume_breadth": 55.0,
+                    "technical_scoring": 81.0,
+                    "fundamental_scoring": 76.0,
+                    "fundamental_momentum_scoring": 68.0,
+                    "fundamental_growth_scoring": 71.0,
+                    "fundamental_value_scoring": 62.0,
+                    "fundamental_quality_scoring": 74.0,
+                    "fundamental_risk_scoring": 69.0,
+                    "technical_trend_symbol": TREND_SYMBOL_UP,
+                    "fundamental_trend_symbol": TREND_SYMBOL_DOWN,
+                    "fundamental_momentum_trend_symbol": "",
+                    "fundamental_growth_trend_symbol": TREND_SYMBOL_UP,
+                    "fundamental_value_trend_symbol": TREND_SYMBOL_DOWN,
+                    "fundamental_quality_trend_symbol": "",
+                    "fundamental_risk_trend_symbol": TREND_SYMBOL_UP,
+                }
+            ]
+        )
+
+        display_df, meta_df = _build_thematics_basket_table_frame(basket_metrics_df, catalog)
+
+        self.assertEqual(
+            display_df.columns.tolist(),
+            [
+                "Name",
+                "Beta",
+                "1W",
+                "1M",
+                "3M",
+                "YTD",
+                "RS %",
+                "Vol %",
+                "TS",
+                "FS",
+                "Mom. FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
+            ],
+        )
+        self.assertEqual(str(display_df.iloc[0]["TS"]).strip(), f"81.0 {TREND_SYMBOL_UP}")
+        self.assertEqual(str(display_df.iloc[0]["FS"]).strip(), f"76.0 {TREND_SYMBOL_DOWN}")
+        self.assertEqual(str(display_df.iloc[0]["Mom. FS"]).strip(), "68.0")
+        self.assertEqual(str(display_df.iloc[0]["Growth FS"]).strip(), f"71.0 {TREND_SYMBOL_UP}")
+        self.assertEqual(str(display_df.iloc[0]["Value FS"]).strip(), f"62.0 {TREND_SYMBOL_DOWN}")
+        self.assertEqual(str(display_df.iloc[0]["Quality FS"]).strip(), "74.0")
+        self.assertEqual(str(display_df.iloc[0]["Risk FS"]).strip(), f"69.0 {TREND_SYMBOL_UP}")
+        self.assertEqual(meta_df.iloc[0]["basket_name"], "AI")
+
+    def test_annotate_company_score_trends_adds_pillar_trend_symbols(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "general_technical_score": 81.0,
+                    "fundamental_total_score": 76.0,
+                    "fundamental_momentum": 68.0,
+                    "fundamental_growth": 71.0,
+                    "fundamental_value": 62.0,
+                    "fundamental_quality": 74.0,
+                    "fundamental_risk": 69.0,
+                }
+            ]
+        )
+        previous_report_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "general_technical_score": 72.0,
+                    "fundamental_total_score": 83.0,
+                    "fundamental_momentum": 68.0,
+                    "fundamental_growth": 63.0,
+                    "fundamental_value": 69.0,
+                    "fundamental_quality": 72.0,
+                    "fundamental_risk": 61.0,
+                }
+            ]
+        )
+
+        annotated = _annotate_company_score_trends(company_df, previous_report_df, threshold=5.0)
+
+        self.assertEqual(annotated.iloc[0]["fundamental_trend_symbol"], TREND_SYMBOL_DOWN)
+        self.assertEqual(annotated.iloc[0]["fundamental_momentum_trend_symbol"], "")
+        self.assertEqual(annotated.iloc[0]["fundamental_growth_trend_symbol"], TREND_SYMBOL_UP)
+        self.assertEqual(annotated.iloc[0]["fundamental_value_trend_symbol"], TREND_SYMBOL_DOWN)
+        self.assertEqual(annotated.iloc[0]["fundamental_quality_trend_symbol"], "")
+        self.assertEqual(annotated.iloc[0]["fundamental_risk_trend_symbol"], TREND_SYMBOL_UP)
+
+    def test_normalize_grid_visible_columns_falls_back_to_defaults_for_invalid_saved_layouts(self) -> None:
+        available_columns = ["Ticker", "Company", "FS", "TS"]
+
+        self.assertEqual(
+            _normalize_grid_visible_columns([], available_columns),
+            available_columns,
+        )
+        self.assertEqual(
+            _normalize_grid_visible_columns(["Unknown"], available_columns),
+            available_columns,
+        )
+        self.assertEqual(
+            _normalize_grid_visible_columns(["TS", "Ticker", "Missing"], available_columns),
+            ["TS", "Ticker"],
+        )
+
+    def test_normalize_grid_visible_columns_keeps_locked_columns_and_order(self) -> None:
+        available_columns = ["Name", "TS", "FS", "Mom. FS"]
+
+        self.assertEqual(
+            _normalize_grid_visible_columns(
+                ["FS", "TS"],
+                available_columns,
+                locked_columns=["Name"],
+            ),
+            ["Name", "FS", "TS"],
+        )
+        self.assertEqual(
+            _normalize_grid_visible_columns(
+                [],
+                available_columns,
+                locked_columns=["Name"],
+            ),
+            available_columns,
+        )
 
 
     def test_apply_trend_symbols_to_table_formats_threshold_crossings_and_missing_previous(self) -> None:
@@ -920,6 +1085,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "market_cap": 10_000_000_000,
                     "beta": 1.2,
                     "fundamental_total_score": 80.0,
+                    "fundamental_growth": 72.0,
+                    "fundamental_value": 61.0,
+                    "fundamental_quality": 74.0,
+                    "fundamental_risk": 68.0,
                     "general_technical_score": 82.0,
                     "fundamental_momentum": 70.0,
                     "rs_monthly": 0.5,
@@ -933,6 +1102,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "market_cap": 8_000_000_000,
                     "beta": 0.9,
                     "fundamental_total_score": 75.0,
+                    "fundamental_growth": 64.0,
+                    "fundamental_value": 59.0,
+                    "fundamental_quality": 71.0,
+                    "fundamental_risk": 63.0,
                     "general_technical_score": 79.0,
                     "fundamental_momentum": 68.0,
                     "rs_monthly": -0.2,
@@ -963,6 +1136,65 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         thematic_by_ticker = company_universe.set_index("ticker")["thematic"].to_dict()
         self.assertEqual(thematic_by_ticker["AAA.US"], "Child A")
         self.assertEqual(thematic_by_ticker["BBB.US"], "Child B")
+        by_ticker = company_universe.set_index("ticker")
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "fundamental_growth"]), 72.0)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "fundamental_value"]), 61.0)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "fundamental_quality"]), 74.0)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "fundamental_risk"]), 68.0)
+
+    def test_build_thematics_company_universe_normalizes_raw_tickers_for_price_metrics(self) -> None:
+        catalog = {
+            "items": {
+                "Storage": {
+                    "name": "Storage",
+                    "is_parent": False,
+                    "children": [],
+                    "tickers": ["STX"],
+                }
+            }
+        }
+        report_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "STX.US",
+                    "company": "Seagate Technology PLC",
+                    "sector": "Technology",
+                    "industry": "Computer Hardware",
+                    "market_cap": 85_000_000_000,
+                    "beta": 1.6,
+                    "fundamental_total_score": 64.3,
+                    "fundamental_growth": 55.0,
+                    "fundamental_value": 44.0,
+                    "fundamental_quality": 67.0,
+                    "fundamental_risk": 49.0,
+                    "general_technical_score": 70.5,
+                    "fundamental_momentum": 100.0,
+                    "rs_monthly": 0.4,
+                    "obvm_monthly": 0.3,
+                }
+            ]
+        )
+        price_lookup = {
+            "STX.US": {
+                "dates": [date(2026, 2, 11), date(2026, 3, 1), date(2026, 3, 31)],
+                "closes": [300.0, 350.0, 385.0],
+            }
+        }
+
+        company_universe, anchor_missing = _build_thematics_company_universe(
+            "Storage",
+            catalog,
+            report_df,
+            price_lookup,
+            date(2026, 3, 31),
+        )
+
+        self.assertFalse(anchor_missing)
+        row = company_universe.iloc[0]
+        self.assertEqual(row["ticker"], "STX.US")
+        self.assertAlmostEqual(float(row["1w_perf"]), 10.0)
+        self.assertAlmostEqual(float(row["1m_perf"]), 10.0)
+        self.assertAlmostEqual(float(row["anchor_close"]), 385.0)
 
     def test_build_all_thematics_company_universe_deduplicates_tickers_and_preserves_memberships(self) -> None:
         catalog = {

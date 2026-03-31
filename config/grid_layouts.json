@@ -1,0 +1,37 @@
+{
+  "thematics_basket_table": {
+    "visible_columns": [
+      "Name",
+      "Beta",
+      "YTD",
+      "FS",
+      "Growth FS",
+      "Value FS",
+      "Quality FS",
+      "Risk FS",
+      "Mom. FS"
+    ]
+  },
+  "thematics_company_grid": {
+    "visible_columns": [
+      "Thematic",
+      "Ticker",
+      "Company",
+      "Sector",
+      "Industry",
+      "Market Cap",
+      "Beta",
+      "YTD",
+      "FS",
+      "Growth FS",
+      "Value FS",
+      "Quality FS",
+      "Risk FS",
+      "Mom. FS",
+      "Rel Strength",
+      "Rel Volume",
+      "AI Revenue Exposure",
+      "AI Disruption Risk"
+    ]
+  }
+}

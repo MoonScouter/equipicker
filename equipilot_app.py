@@ -13,7 +13,7 @@ from html import escape as html_escape
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from PIL import Image
@@ -53,6 +53,7 @@ from prices_service import (
 )
 from report_select_service import generate_report_select_cache
 from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
+from grid_layout_config import clear_grid_layout, load_grid_layout, save_grid_layout
 from openai_responses_service import (
     API_TEMPLATES_DIR,
     OPENAI_API_KEY_ENV,
@@ -92,6 +93,7 @@ QUADRANTS_DIR = REPORTS_DIR / "quadrants"
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 CONFIG_DIR = CONFIG_PATH.parent
 THEMATICS_CONFIG_PATH = CONFIG_DIR / "thematics.json"
+GRID_LAYOUT_CONFIG_PATH = CONFIG_DIR / "grid_layouts.json"
 SUMMARY_JSON_PATH = CONFIG_DIR / "text_generated.json"
 BANNER_CANDIDATES = [
     BASE_DIR / "banner_equipilot.png",
@@ -125,6 +127,264 @@ SHORT_TERM_FLOW_FILTER_OPTIONS = ["All", "Positive", "Negative", "Neutral"]
 AI_REVENUE_FILTER_OPTIONS = ["All", "direct", "indirect", "none"]
 AI_DISRUPTION_FILTER_OPTIONS = ["All", "high", "medium", "low", "none"]
 MARKET_TREND_THRESHOLD = 3.0
+
+GRID_SURFACE_FUNDAMENTAL_COMPANY = "fundamental_company_grid"
+GRID_SURFACE_TECHNICAL_COMPANY = "technical_company_grid"
+GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
+GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
+
+
+def _normalize_grid_visible_columns(
+    visible_columns: Optional[Sequence[str]],
+    available_columns: Sequence[str],
+    *,
+    locked_columns: Optional[Sequence[str]] = None,
+    default_columns: Optional[Sequence[str]] = None,
+) -> list[str]:
+    available = [
+        column_name
+        for column_name in dict.fromkeys(str(column).strip() for column in available_columns if str(column).strip())
+    ]
+    if not available:
+        return []
+
+    locked = [
+        column_name
+        for column_name in dict.fromkeys(str(column).strip() for column in (locked_columns or []) if str(column).strip())
+        if column_name in available
+    ]
+    locked_set = set(locked)
+
+    if default_columns is None:
+        default_list = list(available)
+    else:
+        default_list = [
+            column_name
+            for column_name in dict.fromkeys(
+                str(column).strip() for column in default_columns if str(column).strip()
+            )
+            if column_name in available
+        ]
+        if not default_list:
+            default_list = list(available)
+    default_visible = locked + [column_name for column_name in default_list if column_name not in locked_set]
+
+    if visible_columns is None:
+        return default_visible
+
+    normalized_requested = [
+        column_name
+        for column_name in dict.fromkeys(
+            str(column).strip() for column in visible_columns if isinstance(column, str) and str(column).strip()
+        )
+        if column_name in available
+    ]
+    if not normalized_requested:
+        return default_visible
+    normalized_visible = locked + [
+        column_name for column_name in normalized_requested if column_name not in locked_set
+    ]
+    minimum_visible = len(locked) if locked else min(1, len(available))
+    if len(normalized_visible) < minimum_visible:
+        return default_visible
+    return normalized_visible
+
+
+def _grid_layout_state_key(surface_id: str) -> str:
+    return f"{surface_id}_grid_layout_visible_columns"
+
+
+def _get_grid_visible_columns(
+    surface_id: str,
+    available_columns: Sequence[str],
+    *,
+    locked_columns: Optional[Sequence[str]] = None,
+) -> list[str]:
+    available = list(available_columns)
+    state_key = _grid_layout_state_key(surface_id)
+    state_value = st.session_state.get(state_key)
+    default_columns = list(available)
+    if isinstance(state_value, list):
+        visible_columns = _normalize_grid_visible_columns(
+            state_value,
+            available,
+            locked_columns=locked_columns,
+            default_columns=default_columns,
+        )
+    else:
+        saved_layout = load_grid_layout(surface_id, GRID_LAYOUT_CONFIG_PATH)
+        visible_columns = _normalize_grid_visible_columns(
+            saved_layout,
+            available,
+            locked_columns=locked_columns,
+            default_columns=default_columns,
+        )
+    st.session_state[state_key] = list(visible_columns)
+    return list(visible_columns)
+
+
+def _set_grid_visible_columns(surface_id: str, visible_columns: Sequence[str]) -> None:
+    st.session_state[_grid_layout_state_key(surface_id)] = list(visible_columns)
+
+
+def _render_grid_column_customizer(
+    surface_id: str,
+    available_columns: Sequence[str],
+    *,
+    locked_columns: Optional[Sequence[str]] = None,
+) -> list[str]:
+    available = list(available_columns)
+    if not available:
+        return []
+
+    locked = [column_name for column_name in (locked_columns or []) if column_name in available]
+    visible_columns = _get_grid_visible_columns(surface_id, available, locked_columns=locked)
+    hidden_columns = [column_name for column_name in available if column_name not in visible_columns]
+    minimum_visible = len(locked) if locked else 1
+
+    visible_select_key = f"{surface_id}_grid_layout_visible_select"
+    hidden_select_key = f"{surface_id}_grid_layout_hidden_select"
+    removable_columns = [column_name for column_name in visible_columns if column_name not in set(locked)]
+
+    if removable_columns:
+        if st.session_state.get(visible_select_key) not in removable_columns:
+            st.session_state[visible_select_key] = removable_columns[0]
+    else:
+        st.session_state.pop(visible_select_key, None)
+
+    if hidden_columns:
+        if st.session_state.get(hidden_select_key) not in hidden_columns:
+            st.session_state[hidden_select_key] = hidden_columns[0]
+    else:
+        st.session_state.pop(hidden_select_key, None)
+
+    with st.expander(f"Columns ({len(visible_columns)}/{len(available)})", expanded=False):
+        if locked:
+            st.caption(f"Locked columns: {', '.join(locked)}")
+        else:
+            st.caption("Customize visible columns and save the layout for this grid.")
+
+        manage_cols = st.columns([1.45, 0.75, 0.75, 0.95])
+        selected_visible = st.session_state.get(visible_select_key)
+        with manage_cols[0]:
+            st.selectbox(
+                "Visible columns",
+                options=removable_columns or ["No removable columns"],
+                key=visible_select_key,
+                disabled=not removable_columns,
+            )
+        selected_index = visible_columns.index(selected_visible) if selected_visible in visible_columns else -1
+        first_movable_index = len(locked)
+        with manage_cols[1]:
+            move_up_clicked = st.button(
+                "Up",
+                key=f"{surface_id}_grid_layout_move_up",
+                use_container_width=True,
+                disabled=selected_index < 0 or selected_index <= first_movable_index,
+            )
+        with manage_cols[2]:
+            move_down_clicked = st.button(
+                "Down",
+                key=f"{surface_id}_grid_layout_move_down",
+                use_container_width=True,
+                disabled=selected_index < 0 or selected_index >= len(visible_columns) - 1,
+            )
+        with manage_cols[3]:
+            remove_clicked = st.button(
+                "Remove",
+                key=f"{surface_id}_grid_layout_remove",
+                use_container_width=True,
+                disabled=selected_index < 0 or len(visible_columns) <= minimum_visible,
+            )
+
+        add_cols = st.columns([1.45, 0.95])
+        with add_cols[0]:
+            st.selectbox(
+                "Hidden columns",
+                options=hidden_columns or ["No hidden columns"],
+                key=hidden_select_key,
+                disabled=not hidden_columns,
+            )
+        with add_cols[1]:
+            add_clicked = st.button(
+                "Add",
+                key=f"{surface_id}_grid_layout_add",
+                use_container_width=True,
+                disabled=not hidden_columns,
+            )
+
+        action_cols = st.columns([1, 1, 2.2])
+        with action_cols[0]:
+            save_clicked = st.button(
+                "Save columns",
+                key=f"{surface_id}_grid_layout_save",
+                use_container_width=True,
+            )
+        with action_cols[1]:
+            reset_clicked = st.button(
+                "Reset saved layout",
+                key=f"{surface_id}_grid_layout_reset",
+                use_container_width=True,
+            )
+        with action_cols[2]:
+            st.caption("Saved layouts are app-wide for this grid surface.")
+
+        if move_up_clicked and selected_index > first_movable_index:
+            updated = list(visible_columns)
+            updated[selected_index - 1], updated[selected_index] = updated[selected_index], updated[selected_index - 1]
+            _set_grid_visible_columns(surface_id, updated)
+            st.rerun()
+
+        if move_down_clicked and 0 <= selected_index < len(visible_columns) - 1:
+            updated = list(visible_columns)
+            updated[selected_index + 1], updated[selected_index] = updated[selected_index], updated[selected_index + 1]
+            _set_grid_visible_columns(surface_id, updated)
+            st.rerun()
+
+        if remove_clicked and 0 <= selected_index and len(visible_columns) > minimum_visible:
+            updated = [column_name for column_name in visible_columns if column_name != selected_visible]
+            updated = _normalize_grid_visible_columns(updated, available, locked_columns=locked, default_columns=available)
+            _set_grid_visible_columns(surface_id, updated)
+            st.rerun()
+
+        if add_clicked:
+            selected_hidden = st.session_state.get(hidden_select_key)
+            if isinstance(selected_hidden, str) and selected_hidden in hidden_columns:
+                updated = list(visible_columns) + [selected_hidden]
+                updated = _normalize_grid_visible_columns(updated, available, locked_columns=locked, default_columns=available)
+                _set_grid_visible_columns(surface_id, updated)
+                st.rerun()
+
+        if save_clicked:
+            save_grid_layout(surface_id, visible_columns, GRID_LAYOUT_CONFIG_PATH)
+            st.success(f"Saved columns to {GRID_LAYOUT_CONFIG_PATH.name}.")
+
+        if reset_clicked:
+            clear_grid_layout(surface_id, GRID_LAYOUT_CONFIG_PATH)
+            default_columns = _normalize_grid_visible_columns(
+                None,
+                available,
+                locked_columns=locked,
+                default_columns=available,
+            )
+            _set_grid_visible_columns(surface_id, default_columns)
+            st.rerun()
+
+    return list(st.session_state.get(_grid_layout_state_key(surface_id), visible_columns))
+
+
+def _apply_grid_column_layout(
+    display_df: pd.DataFrame,
+    surface_id: str,
+    *,
+    locked_columns: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    visible_columns = _render_grid_column_customizer(
+        surface_id,
+        display_df.columns.tolist(),
+        locked_columns=locked_columns,
+    )
+    return display_df.loc[:, visible_columns].copy()
 
 
 def _trend_symbol_for_delta(delta_value: Optional[float], threshold: float) -> str:
@@ -3394,6 +3654,14 @@ def _prepare_company_drilldown_universe(
         selected_columns.insert(1, "company")
     if "fundamental_momentum" in report_df.columns:
         selected_columns.append("fundamental_momentum")
+    for pillar_column in [
+        "fundamental_growth",
+        "fundamental_value",
+        "fundamental_quality",
+        "fundamental_risk",
+    ]:
+        if pillar_column in report_df.columns:
+            selected_columns.append(pillar_column)
     if "rs_monthly" in report_df.columns:
         selected_columns.append("rs_monthly")
     if "obvm_monthly" in report_df.columns:
@@ -3420,6 +3688,16 @@ def _prepare_company_drilldown_universe(
         working["fundamental_momentum"] = pd.to_numeric(working["fundamental_momentum"], errors="coerce")
     else:
         working["fundamental_momentum"] = np.nan
+    for pillar_column in [
+        "fundamental_growth",
+        "fundamental_value",
+        "fundamental_quality",
+        "fundamental_risk",
+    ]:
+        if pillar_column in working.columns:
+            working[pillar_column] = pd.to_numeric(working[pillar_column], errors="coerce")
+        else:
+            working[pillar_column] = np.nan
     if "rs_monthly" in working.columns:
         working["rs_monthly"] = pd.to_numeric(working["rs_monthly"], errors="coerce")
     else:
@@ -3632,6 +3910,14 @@ def _annotate_company_score_trends(
         annotated["fundamental_trend_direction"] = "none"
         annotated["fundamental_momentum_trend_symbol"] = ""
         annotated["fundamental_momentum_trend_direction"] = "none"
+        annotated["fundamental_growth_trend_symbol"] = ""
+        annotated["fundamental_growth_trend_direction"] = "none"
+        annotated["fundamental_value_trend_symbol"] = ""
+        annotated["fundamental_value_trend_direction"] = "none"
+        annotated["fundamental_quality_trend_symbol"] = ""
+        annotated["fundamental_quality_trend_direction"] = "none"
+        annotated["fundamental_risk_trend_symbol"] = ""
+        annotated["fundamental_risk_trend_direction"] = "none"
         return annotated
 
     previous_scores = previous_report_df.copy()
@@ -3642,8 +3928,28 @@ def _annotate_company_score_trends(
     previous_scores["fundamental_momentum_prev"] = pd.to_numeric(
         previous_scores.get("fundamental_momentum"), errors="coerce"
     )
+    previous_scores["fundamental_growth_prev"] = pd.to_numeric(
+        previous_scores.get("fundamental_growth"), errors="coerce"
+    )
+    previous_scores["fundamental_value_prev"] = pd.to_numeric(
+        previous_scores.get("fundamental_value"), errors="coerce"
+    )
+    previous_scores["fundamental_quality_prev"] = pd.to_numeric(
+        previous_scores.get("fundamental_quality"), errors="coerce"
+    )
+    previous_scores["fundamental_risk_prev"] = pd.to_numeric(
+        previous_scores.get("fundamental_risk"), errors="coerce"
+    )
     previous_subset = previous_scores[
-        ["ticker", "fundamental_total_score_prev", "fundamental_momentum_prev"]
+        [
+            "ticker",
+            "fundamental_total_score_prev",
+            "fundamental_momentum_prev",
+            "fundamental_growth_prev",
+            "fundamental_value_prev",
+            "fundamental_quality_prev",
+            "fundamental_risk_prev",
+        ]
     ].drop_duplicates(subset=["ticker"], keep="first")
 
     merged = annotated.merge(previous_subset, on="ticker", how="left")
@@ -3662,6 +3968,34 @@ def _annotate_company_score_trends(
             "fundamental_momentum_trend_symbol",
             "fundamental_momentum_trend_direction",
         ),
+        (
+            "fundamental_growth",
+            "fundamental_growth",
+            "fundamental_growth_prev",
+            "fundamental_growth_trend_symbol",
+            "fundamental_growth_trend_direction",
+        ),
+        (
+            "fundamental_value",
+            "fundamental_value",
+            "fundamental_value_prev",
+            "fundamental_value_trend_symbol",
+            "fundamental_value_trend_direction",
+        ),
+        (
+            "fundamental_quality",
+            "fundamental_quality",
+            "fundamental_quality_prev",
+            "fundamental_quality_trend_symbol",
+            "fundamental_quality_trend_direction",
+        ),
+        (
+            "fundamental_risk",
+            "fundamental_risk",
+            "fundamental_risk_prev",
+            "fundamental_risk_trend_symbol",
+            "fundamental_risk_trend_direction",
+        ),
     ]:
         current_values = pd.to_numeric(merged.get(current_col), errors="coerce")
         previous_values = pd.to_numeric(merged.get(prev_col), errors="coerce")
@@ -3672,7 +4006,16 @@ def _annotate_company_score_trends(
         merged[direction_col] = [
             _trend_direction_for_delta(delta_value, threshold) for delta_value in deltas.tolist()
         ]
-    return merged.drop(columns=["fundamental_total_score_prev", "fundamental_momentum_prev"])
+    return merged.drop(
+        columns=[
+            "fundamental_total_score_prev",
+            "fundamental_momentum_prev",
+            "fundamental_growth_prev",
+            "fundamental_value_prev",
+            "fundamental_quality_prev",
+            "fundamental_risk_prev",
+        ]
+    )
 
 def _build_company_filter_state(
     *,
@@ -5413,6 +5756,10 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             t_start = time.perf_counter()
             details_display = format_company_drilldown_display(filtered_companies, sort_by="fundamental")
+            details_display = _apply_grid_column_layout(
+                details_display,
+                GRID_SURFACE_FUNDAMENTAL_COMPANY,
+            )
             _perf_mark(timings, "company display", t_start)
             if details_display.empty:
                 st.info("No companies found for the selected row.")
@@ -5690,6 +6037,10 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             t_start = time.perf_counter()
             details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
+            details_display = _apply_grid_column_layout(
+                details_display,
+                GRID_SURFACE_TECHNICAL_COMPANY,
+            )
             _perf_mark(timings, "company display", t_start)
             if details_display.empty:
                 st.info("No companies found for the selected row.")
@@ -7534,6 +7885,10 @@ def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.Dat
         "market_cap",
         "beta",
         "fundamental_total_score",
+        "fundamental_growth",
+        "fundamental_value",
+        "fundamental_quality",
+        "fundamental_risk",
         "general_technical_score",
         "stock_rsi_regime_score",
         "sector_regime_fit_score",
@@ -7566,13 +7921,21 @@ def _thematic_memberships_for_scope(
             if not isinstance(child_item, dict):
                 continue
             for ticker_value in child_item.get("tickers", []):
-                memberships.setdefault(str(ticker_value), []).append(str(child_name))
+                ticker = normalize_price_ticker(ticker_value)
+                if not ticker:
+                    continue
+                memberships.setdefault(ticker, []).append(str(child_name))
         for ticker_value in basket.get("tickers", []):
-            ticker_str = str(ticker_value)
+            ticker_str = normalize_price_ticker(ticker_value)
+            if not ticker_str:
+                continue
             memberships.setdefault(ticker_str, [basket_name])
     else:
         for ticker_value in basket.get("tickers", []):
-            memberships[str(ticker_value)] = [basket_name]
+            ticker = normalize_price_ticker(ticker_value)
+            if not ticker:
+                continue
+            memberships[ticker] = [basket_name]
     return memberships
 
 
@@ -7588,7 +7951,9 @@ def _all_thematic_memberships(catalog: dict[str, object]) -> dict[str, list[str]
         if bool(basket.get("is_ai_super_parent", False)):
             continue
         for ticker_value in basket.get("tickers", []):
-            ticker_str = str(ticker_value)
+            ticker_str = normalize_price_ticker(ticker_value)
+            if not ticker_str:
+                continue
             membership_list = memberships.setdefault(ticker_str, [])
             if basket_name not in membership_list:
                 membership_list.append(str(basket_name))
@@ -7604,7 +7969,10 @@ def _build_thematics_company_universe_from_scope(
     *,
     thematics_config_signature: str = "",
 ) -> tuple[pd.DataFrame, bool]:
-    base_df = pd.DataFrame({"ticker": scope_tickers})
+    normalized_scope_tickers = [
+        ticker for ticker in dict.fromkeys(normalize_price_ticker(ticker_value) for ticker_value in scope_tickers) if ticker
+    ]
+    base_df = pd.DataFrame({"ticker": normalized_scope_tickers})
     current_report = _prepare_thematics_report_frame(report_df)
     if not current_report.empty:
         available_columns = [
@@ -7617,6 +7985,10 @@ def _build_thematics_company_universe_from_scope(
                 "market_cap",
                 "beta",
                 "fundamental_total_score",
+                "fundamental_growth",
+                "fundamental_value",
+                "fundamental_quality",
+                "fundamental_risk",
                 "general_technical_score",
                 "stock_rsi_regime_score",
                 "sector_regime_fit_score",
@@ -7630,7 +8002,7 @@ def _build_thematics_company_universe_from_scope(
             ]
             if column in current_report.columns
         ]
-        report_subset = current_report[current_report["ticker"].isin(scope_tickers)][available_columns].copy()
+        report_subset = current_report[current_report["ticker"].isin(normalized_scope_tickers)][available_columns].copy()
         base_df = base_df.merge(report_subset, on="ticker", how="left")
 
     if "company" not in base_df.columns:
@@ -7643,6 +8015,10 @@ def _build_thematics_company_universe_from_scope(
         "market_cap",
         "beta",
         "fundamental_total_score",
+        "fundamental_growth",
+        "fundamental_value",
+        "fundamental_quality",
+        "fundamental_risk",
         "general_technical_score",
         "fundamental_momentum",
         "rs_monthly",
@@ -7691,7 +8067,10 @@ def _build_thematics_company_universe(
         return pd.DataFrame(), False
 
     basket = items[basket_name]
-    scope_tickers = list(basket.get("tickers", []))
+    scope_tickers = [
+        ticker for ticker in dict.fromkeys(normalize_price_ticker(ticker_value) for ticker_value in basket.get("tickers", []))
+        if ticker
+    ]
     memberships = _thematic_memberships_for_scope(basket_name, catalog)
     return _build_thematics_company_universe_from_scope(
         scope_tickers,
@@ -7782,10 +8161,11 @@ def _build_thematics_basket_metrics(
     previous_report = _prepare_thematics_report_frame(previous_report_df)
     all_unique_tickers = sorted(
         {
-            str(ticker_value)
+            ticker
             for item in items.values()
             if isinstance(item, dict)
-            for ticker_value in item.get("tickers", [])
+            for ticker in [normalize_price_ticker(ticker_value) for ticker_value in item.get("tickers", [])]
+            if ticker
         }
     )
     performance_df, anchor_missing = _compute_company_return_metrics(all_unique_tickers, price_lookup, reference_date)
@@ -7794,7 +8174,11 @@ def _build_thematics_basket_metrics(
     for basket_name, basket in items.items():
         if not isinstance(basket, dict):
             continue
-        scope_tickers = list(basket.get("tickers", []))
+        scope_tickers = [
+            ticker
+            for ticker in dict.fromkeys(normalize_price_ticker(ticker_value) for ticker_value in basket.get("tickers", []))
+            if ticker
+        ]
         perf_scope = performance_df[performance_df["ticker"].isin(scope_tickers)]
         report_scope = current_report[current_report["ticker"].isin(scope_tickers)] if not current_report.empty else pd.DataFrame()
         previous_scope = previous_report[previous_report["ticker"].isin(scope_tickers)] if not previous_report.empty else pd.DataFrame()
@@ -7805,6 +8189,14 @@ def _build_thematics_basket_metrics(
         previous_fundamental_score = _basket_average(previous_scope.get("fundamental_total_score", pd.Series(dtype=float)))
         fundamental_momentum_score = _basket_average(report_scope.get("fundamental_momentum", pd.Series(dtype=float)))
         previous_fundamental_momentum_score = _basket_average(previous_scope.get("fundamental_momentum", pd.Series(dtype=float)))
+        fundamental_growth_score = _basket_average(report_scope.get("fundamental_growth", pd.Series(dtype=float)))
+        previous_fundamental_growth_score = _basket_average(previous_scope.get("fundamental_growth", pd.Series(dtype=float)))
+        fundamental_value_score = _basket_average(report_scope.get("fundamental_value", pd.Series(dtype=float)))
+        previous_fundamental_value_score = _basket_average(previous_scope.get("fundamental_value", pd.Series(dtype=float)))
+        fundamental_quality_score = _basket_average(report_scope.get("fundamental_quality", pd.Series(dtype=float)))
+        previous_fundamental_quality_score = _basket_average(previous_scope.get("fundamental_quality", pd.Series(dtype=float)))
+        fundamental_risk_score = _basket_average(report_scope.get("fundamental_risk", pd.Series(dtype=float)))
+        previous_fundamental_risk_score = _basket_average(previous_scope.get("fundamental_risk", pd.Series(dtype=float)))
 
         rows.append(
             {
@@ -7836,6 +8228,10 @@ def _build_thematics_basket_metrics(
                 ),
                 "fundamental_scoring": fundamental_score,
                 "fundamental_momentum_scoring": fundamental_momentum_score,
+                "fundamental_growth_scoring": fundamental_growth_score,
+                "fundamental_value_scoring": fundamental_value_score,
+                "fundamental_quality_scoring": fundamental_quality_score,
+                "fundamental_risk_scoring": fundamental_risk_score,
                 "technical_trend_symbol": _trend_symbol_for_delta(
                     technical_score - previous_technical_score
                     if pd.notna(technical_score) and pd.notna(previous_technical_score)
@@ -7851,6 +8247,30 @@ def _build_thematics_basket_metrics(
                 "fundamental_momentum_trend_symbol": _trend_symbol_for_delta(
                     fundamental_momentum_score - previous_fundamental_momentum_score
                     if pd.notna(fundamental_momentum_score) and pd.notna(previous_fundamental_momentum_score)
+                    else None,
+                    5.0,
+                ),
+                "fundamental_growth_trend_symbol": _trend_symbol_for_delta(
+                    fundamental_growth_score - previous_fundamental_growth_score
+                    if pd.notna(fundamental_growth_score) and pd.notna(previous_fundamental_growth_score)
+                    else None,
+                    5.0,
+                ),
+                "fundamental_value_trend_symbol": _trend_symbol_for_delta(
+                    fundamental_value_score - previous_fundamental_value_score
+                    if pd.notna(fundamental_value_score) and pd.notna(previous_fundamental_value_score)
+                    else None,
+                    5.0,
+                ),
+                "fundamental_quality_trend_symbol": _trend_symbol_for_delta(
+                    fundamental_quality_score - previous_fundamental_quality_score
+                    if pd.notna(fundamental_quality_score) and pd.notna(previous_fundamental_quality_score)
+                    else None,
+                    5.0,
+                ),
+                "fundamental_risk_trend_symbol": _trend_symbol_for_delta(
+                    fundamental_risk_score - previous_fundamental_risk_score
+                    if pd.notna(fundamental_risk_score) and pd.notna(previous_fundamental_risk_score)
                     else None,
                     5.0,
                 ),
@@ -7882,6 +8302,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "RSI Divergence (W)",
                 "FS",
                 "Mom. FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -7906,6 +8330,22 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["rsi_divergence_daily_flag"] = pd.NA
     if "rsi_divergence_weekly_flag" not in sorted_df.columns:
         sorted_df["rsi_divergence_weekly_flag"] = pd.NA
+    if "fundamental_growth" not in sorted_df.columns:
+        sorted_df["fundamental_growth"] = np.nan
+    if "fundamental_value" not in sorted_df.columns:
+        sorted_df["fundamental_value"] = np.nan
+    if "fundamental_quality" not in sorted_df.columns:
+        sorted_df["fundamental_quality"] = np.nan
+    if "fundamental_risk" not in sorted_df.columns:
+        sorted_df["fundamental_risk"] = np.nan
+    if "rel_strength" not in sorted_df.columns:
+        sorted_df["rel_strength"] = "N/A"
+    if "rel_volume" not in sorted_df.columns:
+        sorted_df["rel_volume"] = "N/A"
+    if "ai_revenue_exposure" not in sorted_df.columns:
+        sorted_df["ai_revenue_exposure"] = "none"
+    if "ai_disruption_risk" not in sorted_df.columns:
+        sorted_df["ai_disruption_risk"] = "none"
 
     display_df = pd.DataFrame(
         {
@@ -7928,6 +8368,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "RSI Divergence (W)": sorted_df["rsi_divergence_weekly_flag"].map(_format_divergence_flag),
             "FS": pd.to_numeric(sorted_df["fundamental_total_score"], errors="coerce"),
             "Mom. FS": pd.to_numeric(sorted_df["fundamental_momentum"], errors="coerce"),
+            "Growth FS": pd.to_numeric(sorted_df["fundamental_growth"], errors="coerce"),
+            "Value FS": pd.to_numeric(sorted_df["fundamental_value"], errors="coerce"),
+            "Quality FS": pd.to_numeric(sorted_df["fundamental_quality"], errors="coerce"),
+            "Risk FS": pd.to_numeric(sorted_df["fundamental_risk"], errors="coerce"),
             "Rel Strength": sorted_df["rel_strength"].fillna("N/A"),
             "Rel Volume": sorted_df["rel_volume"].fillna("N/A"),
             "AI Revenue Exposure": sorted_df["ai_revenue_exposure"].fillna("none"),
@@ -7944,6 +8388,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         ("TS", "technical_trend_symbol"),
         ("FS", "fundamental_trend_symbol"),
         ("Mom. FS", "fundamental_momentum_trend_symbol"),
+        ("Growth FS", "fundamental_growth_trend_symbol"),
+        ("Value FS", "fundamental_value_trend_symbol"),
+        ("Quality FS", "fundamental_quality_trend_symbol"),
+        ("Risk FS", "fundamental_risk_trend_symbol"),
     ]:
         if symbol_column in sorted_df.columns and display_column in display_df.columns:
             trend_symbols = sorted_df[symbol_column].fillna("").astype(str)
@@ -7951,7 +8399,7 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             for numeric_value, trend_symbol in zip(display_df[display_column], trend_symbols):
                 rendered_scores.append(_render_thematics_score_with_symbol(numeric_value, str(trend_symbol)))
             display_df[display_column] = rendered_scores
-    for display_column in ["TS", "FS", "Mom. FS"]:
+    for display_column in ["TS", "FS", "Mom. FS", "Growth FS", "Value FS", "Quality FS", "Risk FS"]:
         if display_column in display_df.columns:
             display_df[display_column] = display_df[display_column].map(
                 lambda value: value if isinstance(value, str) and value.strip() else _format_numeric_value(value)
@@ -7961,7 +8409,17 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
 
 def _build_thematics_company_trend_meta(company_df: pd.DataFrame) -> pd.DataFrame:
     if company_df.empty:
-        return pd.DataFrame(columns=["ts_trend", "fs_trend", "mom_fs_trend"])
+        return pd.DataFrame(
+            columns=[
+                "ts_trend",
+                "fs_trend",
+                "mom_fs_trend",
+                "growth_fs_trend",
+                "value_fs_trend",
+                "quality_fs_trend",
+                "risk_fs_trend",
+            ]
+        )
 
     sorted_df = company_df.sort_values(
         by=["general_technical_score", "fundamental_total_score", "ticker"],
@@ -7974,6 +8432,22 @@ def _build_thematics_company_trend_meta(company_df: pd.DataFrame) -> pd.DataFram
             "fs_trend": sorted_df.get("fundamental_trend_symbol", pd.Series([""] * len(sorted_df))).fillna("").astype(str),
             "mom_fs_trend": sorted_df.get(
                 "fundamental_momentum_trend_symbol",
+                pd.Series([""] * len(sorted_df)),
+            ).fillna("").astype(str),
+            "growth_fs_trend": sorted_df.get(
+                "fundamental_growth_trend_symbol",
+                pd.Series([""] * len(sorted_df)),
+            ).fillna("").astype(str),
+            "value_fs_trend": sorted_df.get(
+                "fundamental_value_trend_symbol",
+                pd.Series([""] * len(sorted_df)),
+            ).fillna("").astype(str),
+            "quality_fs_trend": sorted_df.get(
+                "fundamental_quality_trend_symbol",
+                pd.Series([""] * len(sorted_df)),
+            ).fillna("").astype(str),
+            "risk_fs_trend": sorted_df.get(
+                "fundamental_risk_trend_symbol",
                 pd.Series([""] * len(sorted_df)),
             ).fillna("").astype(str),
         }
@@ -8402,6 +8876,28 @@ def _score_trend_class(symbol: object) -> str:
     return ""
 
 
+def _apply_trend_icon_styles_for_row(
+    row: pd.Series,
+    meta_df: pd.DataFrame,
+    trend_map: Dict[str, str],
+    display_columns: Sequence[str],
+) -> list[str]:
+    if int(row.name) < 0 or int(row.name) >= len(meta_df):
+        return ["" for _ in display_columns]
+    meta = meta_df.iloc[int(row.name)]
+    styles = ["" for _ in display_columns]
+    for column_name, trend_key in trend_map.items():
+        if column_name not in display_columns:
+            continue
+        symbol = meta.get(trend_key, "")
+        trend_style = _trend_icon_style(symbol)
+        if not trend_style:
+            continue
+        column_index = list(display_columns).index(column_name)
+        styles[column_index] = trend_style
+    return styles
+
+
 def _ordered_thematics_names(catalog: dict[str, object]) -> list[str]:
     items = catalog.get("items", {})
     roots = catalog.get("roots", [])
@@ -8625,6 +9121,22 @@ def _build_thematics_basket_table_frame(
                     row.get("fundamental_momentum_scoring"),
                     str(row.get("fundamental_momentum_trend_symbol", "") or ""),
                 ),
+                "Growth FS": _render_thematics_score_with_symbol(
+                    row.get("fundamental_growth_scoring"),
+                    str(row.get("fundamental_growth_trend_symbol", "") or ""),
+                ),
+                "Value FS": _render_thematics_score_with_symbol(
+                    row.get("fundamental_value_scoring"),
+                    str(row.get("fundamental_value_trend_symbol", "") or ""),
+                ),
+                "Quality FS": _render_thematics_score_with_symbol(
+                    row.get("fundamental_quality_scoring"),
+                    str(row.get("fundamental_quality_trend_symbol", "") or ""),
+                ),
+                "Risk FS": _render_thematics_score_with_symbol(
+                    row.get("fundamental_risk_scoring"),
+                    str(row.get("fundamental_risk_trend_symbol", "") or ""),
+                ),
             }
         )
         meta_rows.append(
@@ -8637,6 +9149,10 @@ def _build_thematics_basket_table_frame(
                 "ts_trend": str(row.get("technical_trend_symbol", "") or ""),
                 "fs_trend": str(row.get("fundamental_trend_symbol", "") or ""),
                 "mom_fs_trend": str(row.get("fundamental_momentum_trend_symbol", "") or ""),
+                "growth_fs_trend": str(row.get("fundamental_growth_trend_symbol", "") or ""),
+                "value_fs_trend": str(row.get("fundamental_value_trend_symbol", "") or ""),
+                "quality_fs_trend": str(row.get("fundamental_quality_trend_symbol", "") or ""),
+                "risk_fs_trend": str(row.get("fundamental_risk_trend_symbol", "") or ""),
             }
         )
 
@@ -8720,7 +9236,17 @@ def _build_thematics_hierarchy_styler(
         styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
     score_columns = [
         column
-        for column in ["TS", "RSI Regime", "Sector Regime Fit", "FS", "Mom. FS"]
+        for column in [
+            "TS",
+            "RSI Regime",
+            "Sector Regime Fit",
+            "FS",
+            "Mom. FS",
+            "Growth FS",
+            "Value FS",
+            "Quality FS",
+            "Risk FS",
+        ]
         if column in display_df.columns
     ]
     if score_columns:
@@ -8769,7 +9295,6 @@ def _build_thematics_hierarchy_styler(
 
     styler = styler.apply(apply_row_background, axis=1)
     styler = styler.apply(apply_name_style, axis=1)
-
     if value_color_rules:
         for column, rule_fn in value_color_rules.items():
             if column in display_df.columns:
@@ -8787,7 +9312,6 @@ def _build_thematics_company_styler(
     display_df: pd.DataFrame,
     trend_meta_df: Optional[pd.DataFrame] = None,
 ) -> "Styler":
-    del trend_meta_df
     styler = display_df.style.hide(axis="index")
     styler = styler.set_table_styles(
         [
@@ -8831,7 +9355,11 @@ def _build_thematics_company_styler(
         styler = styler.set_properties(subset=usable_left_columns, **{"text-align": "left"})
     if centered_columns:
         styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
-    score_columns = [column for column in ["TS", "FS", "Mom. FS"] if column in display_df.columns]
+    score_columns = [
+        column
+        for column in ["TS", "FS", "Mom. FS", "Growth FS", "Value FS", "Quality FS", "Risk FS"]
+        if column in display_df.columns
+    ]
     if score_columns:
         styler = styler.set_properties(subset=score_columns, **{"text-align": "center", "white-space": "nowrap"})
 
@@ -8840,12 +9368,23 @@ def _build_thematics_company_styler(
         return [f"background-color:{background};" for _ in row]
 
     styler = styler.apply(stripe_rows, axis=1)
-
     usable_perf_columns = [column for column in ["1W", "1M", "3M", "YTD"] if column in display_df.columns]
     if usable_perf_columns:
         styler = styler.applymap(_style_positive_negative_value, subset=usable_perf_columns)
     usable_score_columns = [
-        column for column in ["TS", "RSI Regime", "Sector Regime Fit", "FS", "Mom. FS"] if column in display_df.columns
+        column
+        for column in [
+            "TS",
+            "RSI Regime",
+            "Sector Regime Fit",
+            "FS",
+            "Mom. FS",
+            "Growth FS",
+            "Value FS",
+            "Quality FS",
+            "Risk FS",
+        ]
+        if column in display_df.columns
     ]
     if usable_score_columns:
         styler = styler.applymap(_score_color_css, subset=usable_score_columns)
@@ -8877,6 +9416,11 @@ def _render_thematics_basket_table_v2(
     if display_df.empty or meta_df.empty:
         st.info("No thematic baskets match the selected AI view filter.")
         return
+    display_df = _apply_grid_column_layout(
+        display_df,
+        GRID_SURFACE_THEMATICS_BASKET,
+        locked_columns=["Name"],
+    )
 
     selected_basket = st.session_state.get("thematics_impl_selected_basket")
     visible_baskets = set(meta_df.get("basket_name", pd.Series(dtype=object)).astype(str).tolist())
@@ -8902,6 +9446,10 @@ def _render_thematics_basket_table_v2(
             "TS": _score_color_css,
             "FS": _score_color_css,
             "Mom. FS": _score_color_css,
+            "Growth FS": _score_color_css,
+            "Value FS": _score_color_css,
+            "Quality FS": _score_color_css,
+            "Risk FS": _score_color_css,
         },
         format_map={
             "Beta": _format_numeric_value,
@@ -9204,6 +9752,10 @@ def render_thematics_tab(config: ReportConfig) -> None:
             st.caption(f"Companies after filters: {len(filtered_companies)} of {len(company_universe)}")
             t_start = time.perf_counter()
             thematic_display = format_thematics_company_display(filtered_companies)
+            thematic_display = _apply_grid_column_layout(
+                thematic_display,
+                GRID_SURFACE_THEMATICS_COMPANY,
+            )
             _perf_mark(timings, "company display", t_start)
             if thematic_display.empty:
                 st.info("No companies matched the current thematic filters.")
@@ -9214,7 +9766,11 @@ def render_thematics_tab(config: ReportConfig) -> None:
                     st.caption("Large result set: using fast grid rendering.")
                 else:
                     t_start = time.perf_counter()
-                    thematic_styler = _build_thematics_company_styler(thematic_display)
+                    thematic_trend_meta = _build_thematics_company_trend_meta(filtered_companies)
+                    thematic_styler = _build_thematics_company_styler(
+                        thematic_display,
+                        trend_meta_df=thematic_trend_meta,
+                    )
                     _perf_mark(timings, "company styler", t_start)
                 t_start = time.perf_counter()
                 st.dataframe(
