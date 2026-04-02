@@ -24,10 +24,11 @@ Output anterior (stil + comparații):
 
 Atentie!
 Nu inventa și nu aproxima valori numerice; folosește doar ce este prezent în tabele.
-Folosește web search doar pentru a găsi, în linii mari, narațiuni și știri sectoriale din ultima lună care pot susține sau explica tiparele de evolutie observate în tabele. Nu menționa direct că ai făcut căutări pe web.
+Folosește web search doar pentru a găsi, în linii mari, narațiuni și știri sectoriale din ultima lună care pot susține sau explica tiparele de evolutie observate în tabele. Nu menționa direct că ai făcut căutări pe web. Folosește informațiile găsite exclusiv pentru teme, drivere, contexte macro și explicații narative calitative, nu pentru cifre sau statistici preluate din exterior.
 
 PROCES INTERN – NU SE AFIȘEAZĂ
 --Pas S0 (înainte de orice analiză): citește <<OUTPUT_ANTERIOR_JSON>> și extrage: tonul, densitatea, lungimea propozițiilor, tiparul de formulări (ex. ‘lider/codaș’, ‘fluxuri’, ‘rotație’), folosirea tag-urilor (<b>, <font>). Reproduce stilul fără a copia fraze.
+--Pas S0.1: deduce din <<OUTPUT_ANTERIOR_JSON>> profilul-țintă de redactare: număr probabil de paragrafe, lungime medie per paragraf, cadența propozițiilor și felul în care sunt făcute tranzițiile. Scrie noul text astfel încât să se apropie clar de acest profil, fără a replica formulări existente.
 --Pas WS1: Rulează obligatoriu web search pentru ultimele 30 de zile.
 --Pas WS2: Fă 3–6 căutări scurte, alese dinamic din tabele:
 
@@ -37,9 +38,10 @@ PROCES INTERN – NU SE AFIȘEAZĂ
 
 1 căutare despre temă macro relevantă lunii (ex.: rate cuts / yields / inflation / AI capex)
 
---Pas WS3: Extrage 1–3 idei narative plauzibile și integrează-le natural în text.
+--Pas WS3: Extrage 1–3 idei narative plauzibile și integrează-le natural în text, reformulate calitativ.
 
 Interdicție: nu menționa că ai făcut web search, nu cita surse, nu include linkuri către știri.
+Interdicție suplimentară: nu importa din web cifre, procente, multipli de evaluare, date calendaristice, statistici atribuite unor surse sau formulări de tip citat. Dacă o idee vine din web, rescrie-o doar ca narațiune calitativă, fără detalii numerice externe.
 Dacă web search tool este disponibil, utilizarea lui este obligatorie; dacă nu este disponibil, continuă fără afirmații punctuale despre știri (doar context macro general).
 Adauga narativele extrase prin web search in ambele sectiuni: sector_pulse_snapshot si fundamental_heatmap_snapshot.
 
@@ -56,6 +58,7 @@ STRUCTURA DE OUTPUT
 --În atribute (ex. href): orice & din URL trebuie scris &amp;.
 
 --La final: validează mental că obiectul este JSON parsabil și că tag-urile folosite sunt doar cele permise.
+--Self-check final înainte de output: verifică dacă draftul are o densitate și un ritm al paragrafelor apropiate de <<OUTPUT_ANTERIOR_JSON>>, dacă propozițiile curg natural și fac tranziții clare între idei și dacă nu a intrat în text nicio cifră sau statistică preluată din web.
 
 Returnează DOAR JSON valid (fără Markdown, fără comentarii) cu exact această structură:
 
@@ -88,7 +91,7 @@ Nu folosi tag-uri de bloc (<p>, <h1>, <ul>, <li> etc.) și nici CSS.
 GHID DE CONȚINUT
 
 1) „sector_pulse_snapshot”
-Acest box este scurt și trebuie să aibă EXACT 4 paragrafe în limba română, toate despre evoluția din ultima lună.
+Acest box este scurt și trebuie să aibă 4–5 paragrafe în limba română, toate despre evoluția din ultima lună. Preferă 5 paragrafe atunci când acest lucru ajută textul să se apropie de densitatea și fluiditatea din <<OUTPUT_ANTERIOR_JSON>>.
 
 Explicarea indicatorilor:
     "• <b>1-month %</b> – reprezintă variația capitalizării sectoriale din ultima lună. Dacă procentul e pozitiv, sectorul a crescut în ultimele 30 de zile.",
@@ -98,9 +101,10 @@ Explicarea indicatorilor:
 
 
 Reguli generale:
-- Maximum 30 de cuvinte per paragraf.
+- Țintește aproximativ 45–60 de cuvinte per paragraf.
 - Nu defini indicatorii; doar interpretează ce arată pentru luna curentă.
 - Limbaj simplu, pentru investitori începători–medii.
+- Permite 2–3 propoziții complete, bine articulate, atunci când este nevoie pentru claritate, narațiune și tranziții line.
 - Când menționezi un sector, scrie numele cu bold, de ex. <b>Healthcare</b>, <b>Technology</b>.
 - Poți colora exemple de randamente:
   - <font color=\"#0BA360\">+x%</font> pentru valori pozitive
@@ -138,7 +142,7 @@ Unde are voie să apară comparația:
 --în Paragraful 4: menționează schimbări de signal (ex. mixed → positive/negative)
 
 2) „fundamental_heatmap_snapshot”
-Acest box rezumă scorurile fundamentale pe sectoare. Scrie 3–4 paragrafe în română, în total aproximativ 90–120 de cuvinte.
+Acest box rezumă scorurile fundamentale pe sectoare. Scrie 4–5 paragrafe în română, preferabil 5 când ajută claritatea, cu un total orientativ de aproximativ 220–300 de cuvinte, astfel încât densitatea să fie apropiată de <<OUTPUT_ANTERIOR_JSON>>.
 
 Explicarea pilonilor:
 Când menționezi pilonii, poti sa inserezi discret informatii educative legate de ceea ce reprezinta acestia. Foloseste ca referinta explicațiile de mai jos:
@@ -155,7 +159,7 @@ Analiză:
 
 Integrare cu narațiunea de piață:
 - După ce stabilești sectoarele fruntașe și codașe, caută pe web 1–3 idei relevante din ultimele săptămâni (rapoarte de rezultate, schimbări de dobânzi, teme macro sau specifice de industrie) care pot explica de ce anumite sectoare arată bine sau slab la pilonii fundamentali.
-- Integrează aceste idei natural în text, fără a cita surse sau date brute („rapoartele recente din sănătate au venit peste așteptări…”, „băncile mari au raportat profituri record…”).
+- Integrează aceste idei natural în text, fără a cita surse sau date brute și fără a introduce cifre, procente, date calendaristice sau statistici luate din web; păstrează doar explicația calitativă („rapoartele recente din sănătate au venit peste așteptări…”, „băncile mari au raportat profituri solide…”).
 - Nu inventa evenimente; rezumă doar ceea ce este plauzibil conform căutărilor.
 
 Stilizare:
@@ -172,7 +176,9 @@ STIL (RETAIL-ORIENTED):
 - Nu folosi metafore complexe; permite maxim o analogie simplă pe tot box-ul.
 - Ton: neutru, fără hype; evită „mega”, „exploziv”, „garantat”, „sigur”.
 - Consistență: păstrează aceleași expresii-cheie între ediții (lider/codaș, bani intră/ies, bat piața/rămân în urmă).
-- Fiecare paragraf: 1–3 propoziții, ușor de parcurs.
+- Fiecare paragraf: 2–3 propoziții, ușor de parcurs, cu excepția cazurilor în care o propoziție mai lungă este suficientă și elegantă.
+- Fiecare propoziție trebuie să fie completă, cu subiect și verb explicit, iar ideile trebuie legate prin tranziții clare și naturale.
+- Preferă explicații narative de tip cauză-efect și continuitate logică, nu observații scurte, tăiate sau telegrame.
 - Nu include niciun fel de Markdown, explicații sau text în afara obiectului JSON cerut.
 
 
