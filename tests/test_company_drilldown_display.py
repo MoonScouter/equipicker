@@ -335,31 +335,43 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(
             rendered.columns.tolist(),
             [
+                "Thematic",
                 "Ticker",
                 "Company",
                 "Sector",
                 "Industry",
                 "Market Cap",
-                "Fundamental Score",
-                "Fundamental Momentum",
-                "Technical Score",
-                "RSI Regime Score",
+                "Beta",
+                "TS",
+                "RSI Regime",
                 "Sector Regime Fit",
                 "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
+                "FS",
+                "Mom. FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
                 "AI Disruption Risk",
             ],
         )
+        self.assertEqual(rendered.iloc[0]["Thematic"], "Unassigned")
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
         self.assertEqual(rendered.iloc[0]["Company"], "High Tech")
-        self.assertEqual(rendered.iloc[0]["Fundamental Score"], "70.0")
-        self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "72.0")
-        self.assertEqual(rendered.iloc[0]["Technical Score"], "90.0")
-        self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "82.0")
+        self.assertEqual(rendered.iloc[0]["Beta"], "N/A")
+        self.assertEqual(rendered.iloc[0]["FS"], "70.0")
+        self.assertEqual(rendered.iloc[0]["Mom. FS"], "72.0")
+        self.assertEqual(rendered.iloc[0]["Growth FS"], "N/A")
+        self.assertEqual(rendered.iloc[0]["Value FS"], "N/A")
+        self.assertEqual(rendered.iloc[0]["Quality FS"], "N/A")
+        self.assertEqual(rendered.iloc[0]["Risk FS"], "N/A")
+        self.assertEqual(rendered.iloc[0]["TS"], "90.0")
+        self.assertEqual(rendered.iloc[0]["RSI Regime"], "82.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "74.0")
         self.assertEqual(rendered.iloc[0]["Short Term Flow"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
@@ -388,30 +400,37 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(
             rendered.columns.tolist(),
             [
+                "Thematic",
                 "Ticker",
                 "Company",
                 "Sector",
                 "Industry",
                 "Market Cap",
-                "Fundamental Score",
-                "Fundamental Momentum",
-                "Technical Score",
-                "RSI Regime Score",
+                "Beta",
+                "TS",
+                "RSI Regime",
                 "Sector Regime Fit",
                 "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
+                "FS",
+                "Mom. FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
                 "AI Disruption Risk",
             ],
         )
+        self.assertEqual(rendered.iloc[0]["Thematic"], "Unassigned")
         self.assertEqual(rendered.iloc[0]["Company"], "Alpha Inc")
-        self.assertEqual(rendered.iloc[0]["Fundamental Score"], "92.0")
-        self.assertEqual(rendered.iloc[0]["Fundamental Momentum"], "85.0")
-        self.assertEqual(rendered.iloc[0]["Technical Score"], "70.0")
-        self.assertEqual(rendered.iloc[0]["RSI Regime Score"], "76.0")
+        self.assertEqual(rendered.iloc[0]["FS"], "92.0")
+        self.assertEqual(rendered.iloc[0]["Mom. FS"], "85.0")
+        self.assertEqual(rendered.iloc[0]["TS"], "70.0")
+        self.assertEqual(rendered.iloc[0]["RSI Regime"], "76.0")
         self.assertEqual(rendered.iloc[0]["Sector Regime Fit"], "68.0")
         self.assertEqual(rendered.iloc[0]["Short Term Flow"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
@@ -446,19 +465,25 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         technical_rendered = format_company_drilldown_display(company_df, sort_by="technical")
 
         expected_columns = [
+            "Thematic",
             "Ticker",
             "Company",
             "Sector",
             "Industry",
             "Market Cap",
-            "Fundamental Score",
-            "Fundamental Momentum",
-            "Technical Score",
-            "RSI Regime Score",
+            "Beta",
+            "TS",
+            "RSI Regime",
             "Sector Regime Fit",
             "Short Term Flow",
             "RSI Divergence (D)",
             "RSI Divergence (W)",
+            "FS",
+            "Mom. FS",
+            "Growth FS",
+            "Value FS",
+            "Quality FS",
+            "Risk FS",
             "Rel Strength",
             "Rel Volume",
             "AI Revenue Exposure",
@@ -466,7 +491,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         ]
         self.assertEqual(fundamental_rendered.columns.tolist(), expected_columns)
         self.assertEqual(technical_rendered.columns.tolist(), expected_columns)
-        self.assertEqual(fundamental_rendered.iloc[0]["RSI Regime Score"], "84.0")
+        self.assertEqual(fundamental_rendered.iloc[0]["Thematic"], "Unassigned")
+        self.assertEqual(fundamental_rendered.iloc[0]["RSI Regime"], "84.0")
         self.assertEqual(fundamental_rendered.iloc[0]["Sector Regime Fit"], "72.0")
         self.assertEqual(fundamental_rendered.iloc[0]["Short Term Flow"], "Neutral")
         self.assertEqual(fundamental_rendered.iloc[0]["RSI Divergence (D)"], "Positive")
@@ -479,19 +505,25 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         display_df = pd.DataFrame(
             [
                 {
+                    "Thematic": "AI Infra",
                     "Ticker": "AAA.US",
                     "Company": "Alpha Inc",
                     "Sector": "Technology",
                     "Industry": "Software",
                     "Market Cap": "1.50B",
-                    "Fundamental Score": "88.0",
-                    "Fundamental Momentum": "77.0",
-                    "Technical Score": "91.0",
-                    "RSI Regime Score": "84.0",
+                    "Beta": "1.1",
+                    "TS": "91.0",
+                    "RSI Regime": "84.0",
                     "Sector Regime Fit": "72.0",
                     "Short Term Flow": "Neutral",
                     "RSI Divergence (D)": "Positive",
                     "RSI Divergence (W)": "None",
+                    "FS": "88.0",
+                    "Mom. FS": "77.0",
+                    "Growth FS": "69.0",
+                    "Value FS": "61.0",
+                    "Quality FS": "73.0",
+                    "Risk FS": "65.0",
                     "Rel Strength": "Positive",
                     "Rel Volume": "Negative",
                     "AI Revenue Exposure": "indirect",
@@ -641,7 +673,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         rendered = format_company_drilldown_display(company_df, sort_by="technical")
 
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
-        self.assertEqual(str(rendered.iloc[0]["Technical Score"]).strip(), f"90.0 {TREND_SYMBOL_UP}")
+        self.assertEqual(str(rendered.iloc[0]["TS"]).strip(), f"90.0 {TREND_SYMBOL_UP}")
         html = _build_company_drilldown_styler(rendered).to_html()
         self.assertIn(f"90.0 {TREND_SYMBOL_UP}", html)
 

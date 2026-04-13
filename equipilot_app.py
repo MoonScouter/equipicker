@@ -23,6 +23,17 @@ import numpy as np
 import plotly.graph_objects as go
 from streamlit.components.v1 import html
 
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder
+    from st_aggrid.shared import JsCode
+
+    AGGRID_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency fallback
+    AgGrid = None  # type: ignore[assignment]
+    GridOptionsBuilder = None  # type: ignore[assignment]
+    JsCode = None  # type: ignore[assignment]
+    AGGRID_AVAILABLE = False
+
 from equipicker_connect import (
     bucharest_today_str,
     report_cache_path,
@@ -132,6 +143,69 @@ GRID_SURFACE_FUNDAMENTAL_COMPANY = "fundamental_company_grid"
 GRID_SURFACE_TECHNICAL_COMPANY = "technical_company_grid"
 GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
 GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
+
+COMPANY_GRID_SCORE_COLUMNS = [
+    "TS",
+    "RSI Regime",
+    "Sector Regime Fit",
+    "FS",
+    "Mom. FS",
+    "Growth FS",
+    "Value FS",
+    "Quality FS",
+    "Risk FS",
+]
+COMPANY_GRID_SIGN_COLUMNS = [
+    "Short Term Flow",
+    "RSI Divergence (D)",
+    "RSI Divergence (W)",
+    "Rel Strength",
+    "Rel Volume",
+]
+COMPANY_GRID_PERFORMANCE_COLUMNS = ["1W", "1M", "3M", "YTD"]
+COMPANY_GRID_LEFT_COLUMNS = [
+    "Thematic",
+    "Ticker",
+    "Company",
+    "Sector",
+    "Industry",
+    "Short Term Flow",
+    "Rel Strength",
+    "Rel Volume",
+    "AI Revenue Exposure",
+    "AI Disruption Risk",
+]
+COMPANY_GRID_DEFAULT_WIDTHS = {
+    "Thematic": 170,
+    "Ticker": 95,
+    "Company": 240,
+    "Sector": 150,
+    "Industry": 220,
+    "Market Cap": 120,
+    "Beta": 90,
+    "1W": 95,
+    "1M": 95,
+    "3M": 95,
+    "YTD": 95,
+    "TS": 110,
+    "RSI Regime": 120,
+    "Sector Regime Fit": 145,
+    "Short Term Flow": 150,
+    "RSI Divergence (D)": 155,
+    "RSI Divergence (W)": 155,
+    "FS": 110,
+    "Mom. FS": 115,
+    "Growth FS": 120,
+    "Value FS": 115,
+    "Quality FS": 120,
+    "Risk FS": 115,
+    "Rel Strength": 120,
+    "Rel Volume": 120,
+    "AI Revenue Exposure": 155,
+    "AI Disruption Risk": 150,
+}
+COMPANY_GRID_WIDE_TEXT_COLUMNS = {"Thematic", "Company", "Sector", "Industry"}
+COMPANY_GRID_TOP_SCROLL_COMPONENT_HEIGHT = 24
 
 
 def _normalize_grid_visible_columns(
@@ -2935,6 +3009,530 @@ def _use_fast_company_grid_render(row_count: int) -> bool:
     return row_count >= COMPANY_GRID_FAST_RENDER_THRESHOLD
 
 
+def _company_grid_layout_storage_key(surface_id: str) -> str:
+    return f"equipicker.company_grid_layout.v2.{surface_id}"
+
+
+def _company_grid_visible_columns_surface_id(surface_id: str) -> str:
+    return f"{surface_id}_company_visible_columns_v2"
+
+
+def _company_grid_layout_reset_pending_key(surface_id: str) -> str:
+    return f"{surface_id}_company_grid_layout_reset_pending"
+
+
+def _company_grid_widget_nonce_key(surface_id: str) -> str:
+    return f"{surface_id}_company_grid_widget_nonce"
+
+
+def _company_grid_column_checkbox_key(surface_id: str, index: int) -> str:
+    return f"{surface_id}_company_grid_column_{index}"
+
+
+def _queue_company_grid_layout_reset(surface_id: str) -> None:
+    st.session_state[_company_grid_layout_reset_pending_key(surface_id)] = True
+
+
+def _clear_company_grid_layout_in_browser(surface_id: str) -> None:
+    storage_key = _company_grid_layout_storage_key(surface_id)
+    html(
+        f"""
+<script>
+(function() {{
+  try {{
+    window.parent.localStorage.removeItem({json.dumps(storage_key)});
+  }} catch (err) {{
+    // noop: localStorage access can fail in hardened browser settings
+  }}
+}})();
+</script>
+        """,
+        height=0,
+    )
+
+
+def _apply_pending_company_grid_layout_reset(surface_id: str, available_columns: Optional[Sequence[str]] = None) -> None:
+    pending_key = _company_grid_layout_reset_pending_key(surface_id)
+    if not st.session_state.pop(pending_key, False):
+        return
+    _clear_company_grid_layout_in_browser(surface_id)
+    nonce_key = _company_grid_widget_nonce_key(surface_id)
+    st.session_state[nonce_key] = int(st.session_state.get(nonce_key, 0) or 0) + 1
+    layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
+    st.session_state.pop(_grid_layout_state_key(layout_surface_id), None)
+    for index, _column_name in enumerate(list(available_columns or [])):
+        st.session_state.pop(_company_grid_column_checkbox_key(surface_id, index), None)
+
+
+def _build_company_grid_options(display_df: pd.DataFrame, surface_id: str) -> dict[str, object]:
+    if not AGGRID_AVAILABLE or GridOptionsBuilder is None or JsCode is None:
+        return {}
+
+    storage_key = _company_grid_layout_storage_key(surface_id)
+    builder = GridOptionsBuilder.from_dataframe(display_df)
+    builder.configure_default_column(
+        sortable=True,
+        resizable=True,
+        filter=False,
+        floatingFilter=False,
+        minWidth=105,
+        width=128,
+        wrapHeaderText=True,
+        autoHeaderHeight=True,
+    )
+    builder.configure_grid_options(
+        suppressDragLeaveHidesColumns=True,
+        animateRows=False,
+    )
+
+    left_align_style = {"textAlign": "left"}
+    center_style = {"textAlign": "center", "whiteSpace": "nowrap"}
+
+    score_style_js = JsCode(
+        """
+function(params) {
+  const match = String(params.value ?? "").replace(/,/g, "").match(/[-+]?\\d+(?:\\.\\d+)?/);
+  if (!match) return { color: "#A0A8B5", textAlign: "center", whiteSpace: "nowrap" };
+  const numeric = parseFloat(match[0]);
+  if (Number.isNaN(numeric)) return { color: "#A0A8B5", textAlign: "center", whiteSpace: "nowrap" };
+  if (numeric >= 80) return { color: "#0BA360", fontWeight: "700", textAlign: "center", whiteSpace: "nowrap" };
+  if (numeric >= 60) return { color: "#3BAE72", fontWeight: "700", textAlign: "center", whiteSpace: "nowrap" };
+  if (numeric >= 40) return { color: "#F2994A", fontWeight: "700", textAlign: "center", whiteSpace: "nowrap" };
+  return { color: "#EB5757", fontWeight: "700", textAlign: "center", whiteSpace: "nowrap" };
+}
+        """
+    )
+    sign_style_js = JsCode(
+        """
+function(params) {
+  const label = String(params.value ?? "").trim().toLowerCase();
+  if (label === "positive") return { color: "#15803D", fontWeight: "700" };
+  if (label === "negative") return { color: "#B42318", fontWeight: "700" };
+  return { color: "#7B8BA0" };
+}
+        """
+    )
+    performance_style_js = JsCode(
+        """
+function(params) {
+  const match = String(params.value ?? "").replace(/,/g, "").match(/[-+]?\\d+(?:\\.\\d+)?/);
+  if (!match) return { color: "#7B8BA0" };
+  const numeric = parseFloat(match[0]);
+  if (Number.isNaN(numeric)) return { color: "#7B8BA0" };
+  if (numeric > 0) return { color: "#15803D", fontWeight: "700" };
+  if (numeric < 0) return { color: "#B42318", fontWeight: "700" };
+  return { color: "#334E68", fontWeight: "600" };
+}
+        """
+    )
+    ai_exposure_style_js = JsCode(
+        """
+function(params) {
+  const value = String(params.value ?? "").trim().toLowerCase();
+  if (value === "direct") return { color: "#15803D", fontWeight: "700" };
+  if (value === "indirect") return { color: "#B45309", fontWeight: "700" };
+  if (value === "none") return { color: "#7B8BA0" };
+  return { color: "#334E68" };
+}
+        """
+    )
+    ai_risk_style_js = JsCode(
+        """
+function(params) {
+  const value = String(params.value ?? "").trim().toLowerCase();
+  if (value === "high") return { color: "#B42318", fontWeight: "700" };
+  if (value === "medium") return { color: "#B45309", fontWeight: "700" };
+  if (value === "low") return { color: "#15803D", fontWeight: "700" };
+  if (value === "none") return { color: "#7B8BA0" };
+  return { color: "#334E68" };
+}
+        """
+    )
+    numeric_comparator_js = JsCode(
+        """
+function(valueA, valueB) {
+  function parse(value) {
+    const match = String(value ?? "").replace(/,/g, "").match(/[-+]?\\d+(?:\\.\\d+)?/);
+    if (!match) return null;
+    const numeric = parseFloat(match[0]);
+    return Number.isNaN(numeric) ? null : numeric;
+  }
+  const left = parse(valueA);
+  const right = parse(valueB);
+  if (left === null && right === null) return 0;
+  if (left === null) return -1;
+  if (right === null) return 1;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+        """
+    )
+    market_cap_comparator_js = JsCode(
+        """
+function(valueA, valueB) {
+  function parseMarketCap(value) {
+    const text = String(value ?? "").trim().toUpperCase();
+    const match = text.match(/([-+]?\\d+(?:\\.\\d+)?)([TBMK]?)/);
+    if (!match) return null;
+    const numeric = parseFloat(match[1]);
+    if (Number.isNaN(numeric)) return null;
+    const unit = match[2];
+    const multiplier = unit === "T" ? 1e12 : unit === "B" ? 1e9 : unit === "M" ? 1e6 : unit === "K" ? 1e3 : 1;
+    return numeric * multiplier;
+  }
+  const left = parseMarketCap(valueA);
+  const right = parseMarketCap(valueB);
+  if (left === null && right === null) return 0;
+  if (left === null) return -1;
+  if (right === null) return 1;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+        """
+    )
+
+    for column_name in display_df.columns.tolist():
+        config: dict[str, object] = {}
+        if column_name in COMPANY_GRID_LEFT_COLUMNS:
+            config["cellStyle"] = left_align_style
+        else:
+            config["cellStyle"] = center_style
+        config["width"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
+        if column_name in COMPANY_GRID_WIDE_TEXT_COLUMNS:
+            config["minWidth"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
+        if column_name in COMPANY_GRID_SCORE_COLUMNS:
+            config["cellStyle"] = score_style_js
+            config["comparator"] = numeric_comparator_js
+        elif column_name in COMPANY_GRID_SIGN_COLUMNS:
+            config["cellStyle"] = sign_style_js
+        elif column_name in COMPANY_GRID_PERFORMANCE_COLUMNS:
+            config["cellStyle"] = performance_style_js
+            config["comparator"] = numeric_comparator_js
+        elif column_name == "AI Revenue Exposure":
+            config["cellStyle"] = ai_exposure_style_js
+        elif column_name == "AI Disruption Risk":
+            config["cellStyle"] = ai_risk_style_js
+        elif column_name == "Market Cap":
+            config["comparator"] = market_cap_comparator_js
+        elif column_name == "Beta":
+            config["comparator"] = numeric_comparator_js
+        builder.configure_column(column_name, **config)
+
+    save_state_js = JsCode(
+        f"""
+function(params) {{
+  const storageKey = {json.dumps(storage_key)};
+  try {{
+    const payload = {{
+      columnState: params.columnApi.getColumnState()
+    }};
+    window.localStorage.setItem(storageKey, JSON.stringify(payload));
+  }} catch (err) {{
+    // noop
+  }}
+}}
+        """
+    )
+    restore_state_js = JsCode(
+        f"""
+function(params) {{
+  const storageKey = {json.dumps(storage_key)};
+  try {{
+    const raw = window.localStorage.getItem(storageKey);
+    if (raw) {{
+      const payload = JSON.parse(raw);
+      if (payload && Array.isArray(payload.columnState)) {{
+        params.columnApi.applyColumnState({{ state: payload.columnState, applyOrder: true }});
+      }}
+    }}
+  }} catch (err) {{
+    // noop
+  }}
+}}
+        """
+    )
+
+    options = builder.build()
+    options.pop("autoSizeStrategy", None)
+    options["alwaysShowHorizontalScroll"] = True
+    options["onGridReady"] = restore_state_js
+    options["onFirstDataRendered"] = restore_state_js
+    options["onSortChanged"] = save_state_js
+    options["onColumnMoved"] = save_state_js
+    options["onColumnVisible"] = save_state_js
+    options["onColumnResized"] = save_state_js
+    options["onColumnPinned"] = save_state_js
+    options["sideBar"] = {
+        "toolPanels": [
+            {
+                "id": "columns",
+                "labelDefault": "Columns",
+                "labelKey": "columns",
+                "iconKey": "columns",
+                "toolPanel": "agColumnsToolPanel",
+                "toolPanelParams": {
+                    "suppressRowGroups": True,
+                    "suppressValues": True,
+                    "suppressPivots": True,
+                    "suppressPivotMode": True,
+                },
+            }
+        ],
+        "defaultToolPanel": "columns",
+    }
+    return options
+
+
+def _company_grid_custom_css() -> dict[str, dict[str, str]]:
+    return {
+        ".ag-body-horizontal-scroll-viewport": {
+            "min-height": "14px !important",
+            "height": "14px !important",
+        },
+        ".ag-body-horizontal-scroll-container": {
+            "min-height": "14px !important",
+            "height": "14px !important",
+        },
+        ".ag-header": {
+            "margin-top": "4px !important",
+        },
+        ".ag-header-cell-label": {
+            "white-space": "normal !important",
+            "line-height": "1.2 !important",
+        },
+    }
+
+
+def _company_grid_top_scroll_component_id(surface_id: str) -> str:
+    return f"company-grid-top-scroll-{surface_id}"
+
+
+def _render_company_grid_top_scrollbar(surface_id: str) -> None:
+    component_id = _company_grid_top_scroll_component_id(surface_id)
+    html(
+        f"""
+<div id="{component_id}" style="overflow-x:auto; overflow-y:hidden; display:none; width:100%; box-sizing:border-box; min-height:16px; height:16px; margin:0 0 6px 0; background:#f8fbff; border:1px solid rgba(15,39,71,0.10); border-radius:8px;">
+  <div id="{component_id}-inner" style="height:1px;"></div>
+</div>
+<script>
+(function() {{
+  // Keep the top scrollbar outside the AgGrid iframe internals; syncing it is more reliable than DOM injection.
+  const root = document.getElementById({json.dumps(component_id)});
+  const inner = document.getElementById({json.dumps(component_id + "-inner")});
+  if (!root || !inner) return;
+
+  let gridFrame = null;
+  let bottomViewport = null;
+  let centerViewport = null;
+  let syncBound = false;
+  let syncing = false;
+
+  function findGridFrame() {{
+    try {{
+      const thisFrame = window.frameElement;
+      const frames = Array.from(window.parent.document.querySelectorAll("iframe"));
+      const myIndex = frames.indexOf(thisFrame);
+      for (let i = myIndex + 1; i < frames.length; i += 1) {{
+        try {{
+          const candidateDoc = frames[i].contentWindow && frames[i].contentWindow.document;
+          if (!candidateDoc) continue;
+          if (candidateDoc.querySelector(".ag-body-horizontal-scroll-viewport")) {{
+            return frames[i];
+          }}
+        }} catch (err) {{
+          // noop
+        }}
+      }}
+    }} catch (err) {{
+      // noop
+    }}
+    return null;
+  }}
+
+  function syncFromGrid(source) {{
+    if (!source || syncing) return;
+    syncing = true;
+    root.scrollLeft = source.scrollLeft;
+    window.setTimeout(function() {{
+      syncing = false;
+    }}, 0);
+  }}
+
+  function ensureSync() {{
+    try {{
+      gridFrame = findGridFrame();
+      if (!gridFrame) {{
+        root.style.display = "none";
+        return;
+      }}
+
+      const gridDoc = gridFrame.contentWindow && gridFrame.contentWindow.document;
+      if (!gridDoc) {{
+        root.style.display = "none";
+        return;
+      }}
+
+      bottomViewport = gridDoc.querySelector(".ag-body-horizontal-scroll-viewport");
+      const bottomContainer = gridDoc.querySelector(".ag-body-horizontal-scroll-container");
+      centerViewport = gridDoc.querySelector(".ag-center-cols-viewport");
+      if (!bottomViewport || !bottomContainer) {{
+        root.style.display = "none";
+        return;
+      }}
+
+      if (!syncBound) {{
+        root.addEventListener("scroll", function() {{
+          if (!bottomViewport || syncing) return;
+          syncing = true;
+          bottomViewport.scrollLeft = root.scrollLeft;
+          if (centerViewport) {{
+            centerViewport.scrollLeft = root.scrollLeft;
+          }}
+          window.setTimeout(function() {{
+            syncing = false;
+          }}, 0);
+        }});
+        syncBound = true;
+      }}
+
+      bottomViewport.onscroll = function() {{
+        syncFromGrid(bottomViewport);
+      }};
+      if (centerViewport) {{
+        centerViewport.onscroll = function() {{
+          syncFromGrid(centerViewport);
+        }};
+      }}
+
+      const contentWidth = Math.max(bottomContainer.scrollWidth || 0, bottomContainer.clientWidth || 0);
+      const viewportWidth = bottomViewport.clientWidth || 0;
+      const shouldShow = contentWidth > viewportWidth + 1;
+      root.style.display = shouldShow ? "block" : "none";
+      inner.style.width = `${{contentWidth}}px`;
+      root.scrollLeft = bottomViewport.scrollLeft;
+    }} catch (err) {{
+      root.style.display = "none";
+    }}
+  }}
+
+  ensureSync();
+  window.setTimeout(ensureSync, 100);
+  window.setTimeout(ensureSync, 300);
+  window.setInterval(ensureSync, 1000);
+}})();
+</script>
+        """,
+        height=COMPANY_GRID_TOP_SCROLL_COMPONENT_HEIGHT,
+    )
+
+
+def _render_company_grid_column_selector(
+    surface_id: str,
+    available_columns: Sequence[str],
+) -> list[str]:
+    available = list(available_columns)
+    if not available:
+        return []
+
+    layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
+    visible_columns = _get_grid_visible_columns(
+        layout_surface_id,
+        available,
+    )
+    if not load_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH):
+        visible_columns = list(available)
+        _set_grid_visible_columns(layout_surface_id, visible_columns)
+
+    with st.expander("Fields", expanded=False):
+        st.caption("Visible columns")
+        checkbox_columns = st.columns(5)
+        updated_selection: list[str] = []
+        for index, column_name in enumerate(available):
+            checkbox_key = _company_grid_column_checkbox_key(surface_id, index)
+            if checkbox_key not in st.session_state:
+                st.session_state[checkbox_key] = column_name in visible_columns
+            with checkbox_columns[index % len(checkbox_columns)]:
+                is_visible = st.checkbox(column_name, key=checkbox_key)
+            if is_visible:
+                updated_selection.append(column_name)
+
+        normalized_selection = _normalize_grid_visible_columns(
+            updated_selection,
+            available,
+            default_columns=available,
+        )
+        if normalized_selection != visible_columns:
+            _set_grid_visible_columns(layout_surface_id, normalized_selection)
+            save_grid_layout(layout_surface_id, normalized_selection, GRID_LAYOUT_CONFIG_PATH)
+        st.caption("Hide/add columns here. Drag headers in the grid to reorder them.")
+    return list(st.session_state.get(_grid_layout_state_key(layout_surface_id), visible_columns))
+
+
+def _render_company_grid(
+    display_df: pd.DataFrame,
+    *,
+    surface_id: str,
+    row_height: int,
+    min_height: int,
+    fallback_styler_builder: Optional[Callable[[pd.DataFrame], object]] = None,
+) -> None:
+    all_columns = display_df.columns.tolist()
+    _apply_pending_company_grid_layout_reset(surface_id, all_columns)
+    visible_columns = _render_company_grid_column_selector(surface_id, all_columns)
+    display_df = display_df.loc[:, visible_columns].copy()
+    action_cols = st.columns([1.35, 5.0])
+    with action_cols[0]:
+        reset_clicked = st.button(
+            "Reset grid layout",
+            key=f"{surface_id}_company_grid_reset",
+            use_container_width=True,
+        )
+    with action_cols[1]:
+        st.caption("All columns are visible by default. Open Fields to hide/add columns, and drag headers in the grid to reorder. Layout auto-saves.")
+    if reset_clicked:
+        layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
+        clear_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH)
+        _queue_company_grid_layout_reset(surface_id)
+        st.rerun()
+
+    grid_height = _company_grid_height(len(display_df), row_height=row_height, min_height=min_height)
+    if AGGRID_AVAILABLE and AgGrid is not None:
+        widget_nonce = int(st.session_state.get(_company_grid_widget_nonce_key(surface_id), 0) or 0)
+        grid_options = _build_company_grid_options(display_df, surface_id)
+        _render_company_grid_top_scrollbar(surface_id)
+        AgGrid(
+            display_df,
+            gridOptions=grid_options,
+            height=grid_height,
+            allow_unsafe_jscode=True,
+            theme="streamlit",
+            custom_css=_company_grid_custom_css(),
+            key=f"{surface_id}_aggrid_{widget_nonce}",
+        )
+        return
+
+    st.caption("Interactive grid features require `streamlit-aggrid`; falling back to default dataframe view.")
+    use_fast_grid = _use_fast_company_grid_render(len(display_df))
+    if use_fast_grid:
+        st.caption("Large result set: using fast grid rendering.")
+    if fallback_styler_builder is not None and not use_fast_grid:
+        st.dataframe(
+            fallback_styler_builder(display_df),
+            use_container_width=True,
+            height=grid_height,
+            hide_index=True,
+        )
+    else:
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            height=grid_height,
+            hide_index=True,
+        )
+
+
 def validate_required_columns(
     df: pd.DataFrame,
     required: set[str],
@@ -3809,8 +4407,14 @@ def _load_prepared_company_universe_for_report_path(
         report_df = normalize_report_columns(load_report_select(report_path_str, report_cache_signature).copy())
     except Exception as exc:  # pragma: no cover - defensive cache wrapper
         return None, f"Failed reading {report_path_str}: {exc}", None
+    thematic_memberships = _load_all_thematic_memberships_for_config(
+        str(THEMATICS_CONFIG_PATH),
+        thematics_config_signature,
+    )
     company_universe, error_message = _prepare_company_drilldown_universe(
         report_df,
+        include_beta=True,
+        thematic_memberships=thematic_memberships,
         thematics_config_signature=thematics_config_signature,
     )
     if error_message:
@@ -4677,19 +5281,25 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     if company_df.empty:
         return pd.DataFrame(
             columns=[
+                "Thematic",
                 "Ticker",
                 "Company",
                 "Sector",
                 "Industry",
                 "Market Cap",
-                "Fundamental Score",
-                "Fundamental Momentum",
-                "Technical Score",
-                "RSI Regime Score",
+                "Beta",
+                "TS",
+                "RSI Regime",
                 "Sector Regime Fit",
                 "Short Term Flow",
                 "RSI Divergence (D)",
                 "RSI Divergence (W)",
+                "FS",
+                "Mom. FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
                 "Rel Strength",
                 "Rel Volume",
                 "AI Revenue Exposure",
@@ -4709,6 +5319,18 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["company"] = sorted_df["ticker"]
     if "fundamental_momentum" not in sorted_df.columns:
         sorted_df["fundamental_momentum"] = np.nan
+    if "fundamental_growth" not in sorted_df.columns:
+        sorted_df["fundamental_growth"] = np.nan
+    if "fundamental_value" not in sorted_df.columns:
+        sorted_df["fundamental_value"] = np.nan
+    if "fundamental_quality" not in sorted_df.columns:
+        sorted_df["fundamental_quality"] = np.nan
+    if "fundamental_risk" not in sorted_df.columns:
+        sorted_df["fundamental_risk"] = np.nan
+    if "thematic" not in sorted_df.columns:
+        sorted_df["thematic"] = "Unassigned"
+    if "beta" not in sorted_df.columns:
+        sorted_df["beta"] = np.nan
     if "rel_strength" not in sorted_df.columns:
         sorted_df["rel_strength"] = "N/A"
     if "rel_volume" not in sorted_df.columns:
@@ -4727,64 +5349,62 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["ai_revenue_exposure"] = "none"
     if "ai_disruption_risk" not in sorted_df.columns:
         sorted_df["ai_disruption_risk"] = "none"
-
-    display_columns = [
-        "ticker",
-        "company",
-        "sector",
-        "industry",
-        "market_cap",
-        "fundamental_total_score",
-        "fundamental_momentum",
-        "general_technical_score",
-        "stock_rsi_regime_score",
-        "sector_regime_fit_score",
-        "short_term_flow",
-        "rsi_divergence_daily_flag",
-        "rsi_divergence_weekly_flag",
-        "rel_strength",
-        "rel_volume",
-        "ai_revenue_exposure",
-        "ai_disruption_risk",
-    ]
-    rename_map = {
-        "ticker": "Ticker",
-        "company": "Company",
-        "sector": "Sector",
-        "industry": "Industry",
-        "market_cap": "Market Cap",
-        "fundamental_total_score": "Fundamental Score",
-        "fundamental_momentum": "Fundamental Momentum",
-        "general_technical_score": "Technical Score",
-        "stock_rsi_regime_score": "RSI Regime Score",
-        "sector_regime_fit_score": "Sector Regime Fit",
-        "short_term_flow": "Short Term Flow",
-        "rsi_divergence_daily_flag": "RSI Divergence (D)",
-        "rsi_divergence_weekly_flag": "RSI Divergence (W)",
-        "rel_strength": "Rel Strength",
-        "rel_volume": "Rel Volume",
-        "ai_revenue_exposure": "AI Revenue Exposure",
-        "ai_disruption_risk": "AI Disruption Risk",
-    }
-
-    display_df = sorted_df[display_columns].rename(columns=rename_map)
-    display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
-    display_df["Fundamental Score"] = display_df["Fundamental Score"].map(_format_numeric_value)
-    display_df["Fundamental Momentum"] = display_df["Fundamental Momentum"].map(_format_numeric_value)
-    technical_trend_symbols = (
-        sorted_df.get("technical_trend_symbol", pd.Series(index=sorted_df.index, dtype=object))
-        .fillna("")
-        .astype(str)
-        .tolist()
+    thematic_display = sorted_df["thematic"].fillna("Unassigned").astype(str).str.strip()
+    thematic_display = thematic_display.where(thematic_display.str.len() > 0, "Unassigned")
+    display_df = pd.DataFrame(
+        {
+            "Thematic": thematic_display,
+            "Ticker": sorted_df["ticker"],
+            "Company": sorted_df["company"],
+            "Sector": sorted_df["sector"].fillna("Unspecified"),
+            "Industry": sorted_df["industry"].fillna("Unspecified"),
+            "Market Cap": pd.to_numeric(sorted_df["market_cap"], errors="coerce"),
+            "Beta": pd.to_numeric(sorted_df["beta"], errors="coerce"),
+            "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
+            "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
+            "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
+            "Short Term Flow": sorted_df["short_term_flow"],
+            "RSI Divergence (D)": sorted_df["rsi_divergence_daily_flag"],
+            "RSI Divergence (W)": sorted_df["rsi_divergence_weekly_flag"],
+            "FS": pd.to_numeric(sorted_df["fundamental_total_score"], errors="coerce"),
+            "Mom. FS": pd.to_numeric(sorted_df["fundamental_momentum"], errors="coerce"),
+            "Growth FS": pd.to_numeric(sorted_df["fundamental_growth"], errors="coerce"),
+            "Value FS": pd.to_numeric(sorted_df["fundamental_value"], errors="coerce"),
+            "Quality FS": pd.to_numeric(sorted_df["fundamental_quality"], errors="coerce"),
+            "Risk FS": pd.to_numeric(sorted_df["fundamental_risk"], errors="coerce"),
+            "Rel Strength": sorted_df["rel_strength"].fillna("N/A"),
+            "Rel Volume": sorted_df["rel_volume"].fillna("N/A"),
+            "AI Revenue Exposure": sorted_df["ai_revenue_exposure"].fillna("none"),
+            "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
+        }
     )
-    rendered_technical_scores: list[str] = []
-    for numeric_value, trend_symbol in zip(display_df["Technical Score"].tolist(), technical_trend_symbols):
-        if trend_symbol:
-            rendered_technical_scores.append(_render_thematics_score_with_symbol(numeric_value, trend_symbol))
-        else:
-            rendered_technical_scores.append(_format_numeric_value(numeric_value))
-    display_df["Technical Score"] = rendered_technical_scores
-    display_df["RSI Regime Score"] = display_df["RSI Regime Score"].map(_format_numeric_value)
+    display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
+    display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
+
+    trend_columns = [
+        ("TS", "technical_trend_symbol"),
+        ("FS", "fundamental_trend_symbol"),
+        ("Mom. FS", "fundamental_momentum_trend_symbol"),
+        ("Growth FS", "fundamental_growth_trend_symbol"),
+        ("Value FS", "fundamental_value_trend_symbol"),
+        ("Quality FS", "fundamental_quality_trend_symbol"),
+        ("Risk FS", "fundamental_risk_trend_symbol"),
+    ]
+    for display_column, trend_column in trend_columns:
+        trend_symbols = (
+            sorted_df.get(trend_column, pd.Series(index=sorted_df.index, dtype=object))
+            .fillna("")
+            .astype(str)
+            .tolist()
+        )
+        rendered_values: list[str] = []
+        for numeric_value, trend_symbol in zip(display_df[display_column].tolist(), trend_symbols):
+            if trend_symbol:
+                rendered_values.append(_render_thematics_score_with_symbol(numeric_value, trend_symbol))
+            else:
+                rendered_values.append(_format_numeric_value(numeric_value))
+        display_df[display_column] = rendered_values
+    display_df["RSI Regime"] = display_df["RSI Regime"].map(_format_numeric_value)
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     display_df["Short Term Flow"] = display_df["Short Term Flow"].map(_format_short_term_flow_flag)
     display_df["RSI Divergence (D)"] = display_df["RSI Divergence (D)"].map(_format_divergence_flag)
@@ -4846,17 +5466,7 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
         overwrite=False,
     )
 
-    left_columns = [
-        "Ticker",
-        "Company",
-        "Sector",
-        "Industry",
-        "Short Term Flow",
-        "Rel Strength",
-        "Rel Volume",
-        "AI Revenue Exposure",
-        "AI Disruption Risk",
-    ]
+    left_columns = COMPANY_GRID_LEFT_COLUMNS
     centered_columns = [column for column in display_df.columns if column not in left_columns]
     usable_left_columns = [column for column in left_columns if column in display_df.columns]
     if usable_left_columns:
@@ -4864,13 +5474,7 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
     if centered_columns:
         styler = styler.set_properties(subset=centered_columns, **{"text-align": "center"})
 
-    score_columns = [
-        "Fundamental Score",
-        "Fundamental Momentum",
-        "Technical Score",
-        "RSI Regime Score",
-        "Sector Regime Fit",
-    ]
+    score_columns = COMPANY_GRID_SCORE_COLUMNS
     usable_score_columns = [column for column in score_columns if column in display_df.columns]
     if usable_score_columns:
         styler = styler.applymap(_score_color_css, subset=usable_score_columns)
@@ -5725,6 +6329,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             _sync_drilldown_filter_defaults(
                 "fundamental",
                 filter_signature,
+                default_thematics=[],
                 default_sectors=default_sectors,
                 default_industries=default_industries,
                 default_cap_buckets=["Large", "Mega"],
@@ -5748,6 +6353,7 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
                 ticker_label="Ticker filter (Fundamental drilldown)",
                 include_fundamental_momentum_filter=True,
                 include_technical_trend_filter=company_trend_enabled,
+                include_thematic_filter=True,
                 include_rel_strength_filter=True,
                 include_rel_volume_filter=True,
                 include_ai_exposure_filters=True,
@@ -5756,28 +6362,17 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             t_start = time.perf_counter()
             details_display = format_company_drilldown_display(filtered_companies, sort_by="fundamental")
-            details_display = _apply_grid_column_layout(
-                details_display,
-                GRID_SURFACE_FUNDAMENTAL_COMPANY,
-            )
             _perf_mark(timings, "company display", t_start)
             if details_display.empty:
                 st.info("No companies found for the selected row.")
             else:
-                details_height = _company_grid_height(len(details_display), row_height=34, min_height=220)
-                use_fast_grid = _use_fast_company_grid_render(len(details_display))
-                if use_fast_grid:
-                    st.caption("Large result set: using fast grid rendering.")
-                else:
-                    t_start = time.perf_counter()
-                    details_styler = _build_company_drilldown_styler(details_display)
-                    _perf_mark(timings, "company styler", t_start)
                 t_start = time.perf_counter()
-                st.dataframe(
-                    details_display if use_fast_grid else details_styler,
-                    use_container_width=True,
-                    height=details_height,
-                    hide_index=True,
+                _render_company_grid(
+                    details_display,
+                    surface_id=GRID_SURFACE_FUNDAMENTAL_COMPANY,
+                    row_height=34,
+                    min_height=220,
+                    fallback_styler_builder=_build_company_drilldown_styler,
                 )
                 _perf_mark(timings, "company render", t_start)
             if st.button("Hide company list", key="fundamental_hide_company_list"):
@@ -6006,6 +6601,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
             _sync_drilldown_filter_defaults(
                 "technical",
                 filter_signature,
+                default_thematics=[],
                 default_sectors=default_sectors,
                 default_industries=default_industries,
                 default_cap_buckets=["Large", "Mega"],
@@ -6029,6 +6625,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 ticker_label="Ticker filter (Technical drilldown)",
                 include_fundamental_momentum_filter=True,
                 include_technical_trend_filter=company_trend_enabled,
+                include_thematic_filter=True,
                 include_rel_strength_filter=True,
                 include_rel_volume_filter=True,
                 include_ai_exposure_filters=True,
@@ -6037,28 +6634,17 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
             st.caption(f"Companies after filters: {len(filtered_companies)}")
             t_start = time.perf_counter()
             details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
-            details_display = _apply_grid_column_layout(
-                details_display,
-                GRID_SURFACE_TECHNICAL_COMPANY,
-            )
             _perf_mark(timings, "company display", t_start)
             if details_display.empty:
                 st.info("No companies found for the selected row.")
             else:
-                details_height = _company_grid_height(len(details_display), row_height=34, min_height=220)
-                use_fast_grid = _use_fast_company_grid_render(len(details_display))
-                if use_fast_grid:
-                    st.caption("Large result set: using fast grid rendering.")
-                else:
-                    t_start = time.perf_counter()
-                    details_styler = _build_company_drilldown_styler(details_display)
-                    _perf_mark(timings, "company styler", t_start)
                 t_start = time.perf_counter()
-                st.dataframe(
-                    details_display if use_fast_grid else details_styler,
-                    use_container_width=True,
-                    height=details_height,
-                    hide_index=True,
+                _render_company_grid(
+                    details_display,
+                    surface_id=GRID_SURFACE_TECHNICAL_COMPANY,
+                    row_height=34,
+                    min_height=220,
+                    fallback_styler_builder=_build_company_drilldown_styler,
                 )
                 _perf_mark(timings, "company render", t_start)
             if st.button("Hide company list", key="technical_hide_company_list"):
@@ -7960,6 +8546,17 @@ def _all_thematic_memberships(catalog: dict[str, object]) -> dict[str, list[str]
     return memberships
 
 
+@st.cache_data(show_spinner=False)
+def _load_all_thematic_memberships_for_config(
+    catalog_path_str: str,
+    catalog_cache_signature: str,
+) -> dict[str, list[str]]:
+    if not Path(catalog_path_str).exists():
+        return {}
+    catalog = build_thematics_catalog(catalog_path_str, catalog_cache_signature)
+    return _all_thematic_memberships(catalog)
+
+
 def _build_thematics_company_universe_from_scope(
     scope_tickers: list[str],
     thematic_memberships: dict[str, list[str]],
@@ -9752,33 +10349,20 @@ def render_thematics_tab(config: ReportConfig) -> None:
             st.caption(f"Companies after filters: {len(filtered_companies)} of {len(company_universe)}")
             t_start = time.perf_counter()
             thematic_display = format_thematics_company_display(filtered_companies)
-            thematic_display = _apply_grid_column_layout(
-                thematic_display,
-                GRID_SURFACE_THEMATICS_COMPANY,
-            )
             _perf_mark(timings, "company display", t_start)
             if thematic_display.empty:
                 st.info("No companies matched the current thematic filters.")
             else:
-                display_height = _company_grid_height(len(thematic_display), row_height=36, min_height=260)
-                use_fast_grid = _use_fast_company_grid_render(len(thematic_display))
-                if use_fast_grid:
-                    st.caption("Large result set: using fast grid rendering.")
-                else:
-                    t_start = time.perf_counter()
-                    thematic_trend_meta = _build_thematics_company_trend_meta(filtered_companies)
-                    thematic_styler = _build_thematics_company_styler(
-                        thematic_display,
-                        trend_meta_df=thematic_trend_meta,
-                    )
-                    _perf_mark(timings, "company styler", t_start)
                 t_start = time.perf_counter()
-                st.dataframe(
-                    thematic_display if use_fast_grid else thematic_styler,
-                    use_container_width=True,
-                    height=display_height,
-                    hide_index=True,
-                    key="thematics_company_grid",
+                _render_company_grid(
+                    thematic_display,
+                    surface_id=GRID_SURFACE_THEMATICS_COMPANY,
+                    row_height=36,
+                    min_height=260,
+                    fallback_styler_builder=lambda current_display: _build_thematics_company_styler(
+                        current_display,
+                        trend_meta_df=_build_thematics_company_trend_meta(filtered_companies),
+                    ),
                 )
                 _perf_mark(timings, "company render", t_start)
             if st.button("Hide thematic company list", key="thematics_hide_company_list"):
