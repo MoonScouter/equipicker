@@ -9,6 +9,7 @@ requests
 reportlab
 scikit-learn
 streamlit
+streamlit-aggrid
 sqlalchemy
 torch
 transformers
