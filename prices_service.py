@@ -39,6 +39,23 @@ class PivotPoint:
     confirmation_index: int
 
 
+@dataclass(frozen=True)
+class ActiveDivergence:
+    anchor_index: int
+    pivot2_index: int
+    confirmation_index: int
+    pivot2_price: float
+    pivot2_rsi: float
+
+    @property
+    def recency_key(self) -> tuple[int, int]:
+        return (self.pivot2_index, self.confirmation_index)
+
+    @property
+    def instance_key(self) -> tuple[int, int, int]:
+        return (self.anchor_index, self.pivot2_index, self.confirmation_index)
+
+
 DIVERGENCE_SETTINGS_BY_FREQUENCY: dict[PricesFrequency, DivergenceSettings] = {
     "daily": DivergenceSettings(
         pivot_window_l=3,
@@ -73,8 +90,11 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "obvm",
     "rsi_14",
     "rsi_divergence_flag",
+    "rsi_divergence_confirmed",
 )
-PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS)
+PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
+    {"rsi_divergence_confirmed"}
+)
 PRICE_TICKER_ENDPOINT = (
     "https://ci.equipicker.com/api/company_overview_list"
     "?show_all=1&api_key=3b3703b83"
@@ -234,6 +254,8 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
         ~working_df["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
         "rsi_divergence_flag",
     ] = pd.NA
+    confirmed_series = working_df["rsi_divergence_confirmed"].map(_normalize_optional_boolean_value)
+    working_df["rsi_divergence_confirmed"] = pd.array(confirmed_series, dtype="boolean")
 
     working_df = working_df[
         working_df["ticker"].astype(str).str.len() > 0
@@ -242,6 +264,19 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     working_df = working_df.drop_duplicates(subset=["ticker", "date"], keep="last")
     working_df = working_df.sort_values(["ticker", "date"], kind="stable").reset_index(drop=True)
     return working_df
+
+
+def _normalize_optional_boolean_value(value: object) -> object:
+    if value is None or pd.isna(value):
+        return pd.NA
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    return pd.NA
 
 
 def fetch_prices_history(
@@ -459,14 +494,14 @@ def _build_active_divergence_series(
     price_divergence_cmp,
     rsi_divergence_cmp,
     prefer_more_extreme_cmp,
-) -> list[tuple[int, int] | None]:
+) -> list[ActiveDivergence | None]:
     events: dict[int, list[PivotPoint]] = {}
     for pivot in pivots:
         if pivot.confirmation_index >= row_count:
             continue
         events.setdefault(pivot.confirmation_index, []).append(pivot)
 
-    active_by_row: list[tuple[int, int] | None] = [None] * row_count
+    active_by_row: list[ActiveDivergence | None] = [None] * row_count
     anchor: PivotPoint | None = None
     best_divergence: tuple[PivotPoint, PivotPoint] | None = None
     for row_index in range(row_count):
@@ -500,22 +535,91 @@ def _build_active_divergence_series(
             active_by_row[row_index] = None
             continue
 
-        active_by_row[row_index] = (pivot2.index, pivot2.confirmation_index)
+        active_by_row[row_index] = ActiveDivergence(
+            anchor_index=best_divergence[0].index,
+            pivot2_index=pivot2.index,
+            confirmation_index=pivot2.confirmation_index,
+            pivot2_price=pivot2.price,
+            pivot2_rsi=pivot2.rsi,
+        )
 
     return active_by_row
 
 
-def compute_rsi_divergence_flags(
+def _rsi_crosses_confirmation_threshold(
+    previous_rsi: object,
+    current_rsi: object,
+    *,
+    divergence_flag: str,
+) -> bool:
+    previous_numeric = pd.to_numeric(previous_rsi, errors="coerce")
+    current_numeric = pd.to_numeric(current_rsi, errors="coerce")
+    if pd.isna(previous_numeric) or pd.isna(current_numeric):
+        return False
+    if divergence_flag == "positive":
+        return float(previous_numeric) <= 50.0 and float(current_numeric) > 50.0
+    if divergence_flag == "negative":
+        return float(previous_numeric) >= 50.0 and float(current_numeric) < 50.0
+    return False
+
+
+def _is_developing_refresh_triggered(
+    *,
+    divergence_flag: str,
+    selected_state: ActiveDivergence,
+    row_index: int,
+    current_low: object,
+    current_high: object,
+    current_rsi: object,
+) -> tuple[bool, float | None]:
+    if row_index <= selected_state.pivot2_index:
+        return False, None
+
+    current_rsi_numeric = pd.to_numeric(current_rsi, errors="coerce")
+    if pd.isna(current_rsi_numeric):
+        return False, None
+
+    if divergence_flag == "positive":
+        current_low_numeric = pd.to_numeric(current_low, errors="coerce")
+        if pd.isna(current_low_numeric):
+            return False, None
+        if (
+            float(current_low_numeric) < selected_state.pivot2_price
+            and float(current_rsi_numeric) > selected_state.pivot2_rsi
+        ):
+            return True, float(current_low_numeric)
+        return False, None
+
+    if divergence_flag == "negative":
+        current_high_numeric = pd.to_numeric(current_high, errors="coerce")
+        if pd.isna(current_high_numeric):
+            return False, None
+        if (
+            float(current_high_numeric) > selected_state.pivot2_price
+            and float(current_rsi_numeric) < selected_state.pivot2_rsi
+        ):
+            return True, float(current_high_numeric)
+        return False, None
+
+    return False, None
+
+
+def compute_rsi_divergence_state(
     price_df: pd.DataFrame,
     *,
     frequency: PricesFrequency,
     rsi_column: str = "rsi_14",
-) -> pd.Series:
+) -> pd.DataFrame:
     settings = divergence_settings_for_frequency(frequency)
     working_df = price_df.reset_index(drop=True).copy()
     row_count = len(working_df)
     if row_count == 0:
-        return pd.Series(dtype=object)
+        return pd.DataFrame(
+            {
+                "rsi_divergence_flag": pd.Series(dtype=object),
+                "rsi_divergence_confirmed": pd.Series(dtype="boolean"),
+            }
+        )
 
     highs = pd.to_numeric(working_df.get("adjusted_high"), errors="coerce")
     lows = pd.to_numeric(working_df.get("adjusted_low"), errors="coerce")
@@ -548,21 +652,101 @@ def compute_rsi_divergence_flags(
     )
 
     divergence_flags = np.full(row_count, "none", dtype=object)
+    divergence_confirmed = pd.array([False] * row_count, dtype="boolean")
+    active_instance_key: tuple[str, tuple[int, int, int]] | None = None
+    active_instance_start: int | None = None
+    confirmation_latched = False
+    refresh_extreme_price: float | None = None
+
     for row_index in range(row_count):
         bullish_state = bullish_active[row_index]
         bearish_state = bearish_active[row_index]
-        if bullish_state is None and bearish_state is None:
-            continue
+        selected_flag = "none"
+        selected_state: ActiveDivergence | None = None
         if bullish_state is not None and bearish_state is None:
-            divergence_flags[row_index] = "positive"
-            continue
-        if bearish_state is not None and bullish_state is None:
-            divergence_flags[row_index] = "negative"
-            continue
-        assert bullish_state is not None and bearish_state is not None
-        divergence_flags[row_index] = "positive" if bullish_state > bearish_state else "negative"
+            selected_flag = "positive"
+            selected_state = bullish_state
+        elif bearish_state is not None and bullish_state is None:
+            selected_flag = "negative"
+            selected_state = bearish_state
+        elif bullish_state is not None and bearish_state is not None:
+            if bullish_state.recency_key > bearish_state.recency_key:
+                selected_flag = "positive"
+                selected_state = bullish_state
+            else:
+                selected_flag = "negative"
+                selected_state = bearish_state
 
-    return pd.Series(divergence_flags, index=price_df.index, dtype=object)
+        divergence_flags[row_index] = selected_flag
+        if selected_state is None:
+            active_instance_key = None
+            active_instance_start = None
+            confirmation_latched = False
+            refresh_extreme_price = None
+            divergence_confirmed[row_index] = False
+            continue
+
+        current_instance_key = (selected_flag, selected_state.instance_key)
+        if current_instance_key != active_instance_key:
+            active_instance_key = current_instance_key
+            active_instance_start = row_index
+            confirmation_latched = False
+            refresh_extreme_price = None
+
+        refresh_triggered, refresh_price = _is_developing_refresh_triggered(
+            divergence_flag=selected_flag,
+            selected_state=selected_state,
+            row_index=row_index,
+            current_low=lows.iloc[row_index],
+            current_high=highs.iloc[row_index],
+            current_rsi=rsi_values.iloc[row_index],
+        )
+        if refresh_triggered and refresh_price is not None:
+            should_refresh = False
+            if refresh_extreme_price is None:
+                should_refresh = True
+            elif selected_flag == "positive" and refresh_price < refresh_extreme_price:
+                should_refresh = True
+            elif selected_flag == "negative" and refresh_price > refresh_extreme_price:
+                should_refresh = True
+            if should_refresh:
+                active_instance_start = row_index
+                confirmation_latched = False
+                refresh_extreme_price = refresh_price
+
+        if (
+            not confirmation_latched
+            and active_instance_start is not None
+            and row_index > active_instance_start
+            and _rsi_crosses_confirmation_threshold(
+                rsi_values.iloc[row_index - 1],
+                rsi_values.iloc[row_index],
+                divergence_flag=selected_flag,
+            )
+        ):
+            confirmation_latched = True
+
+        divergence_confirmed[row_index] = confirmation_latched
+
+    return pd.DataFrame(
+        {
+            "rsi_divergence_flag": pd.Series(divergence_flags, index=price_df.index, dtype=object),
+            "rsi_divergence_confirmed": pd.Series(divergence_confirmed, index=price_df.index, dtype="boolean"),
+        }
+    )
+
+
+def compute_rsi_divergence_flags(
+    price_df: pd.DataFrame,
+    *,
+    frequency: PricesFrequency,
+    rsi_column: str = "rsi_14",
+) -> pd.Series:
+    return compute_rsi_divergence_state(
+        price_df,
+        frequency=frequency,
+        rsi_column=rsi_column,
+    )["rsi_divergence_flag"]
 
 
 def _build_rsi_seed_history(
@@ -655,26 +839,35 @@ def enrich_prices_with_rsi(
 
     working_df["rsi_14"] = np.nan
     working_df["rsi_divergence_flag"] = "none"
+    working_df["rsi_divergence_confirmed"] = False
     for ticker, group in working_df.groupby("ticker", sort=False):
         if ticker not in impacted_set:
             continue
         rsi_series = compute_wilder_rsi(group["adjusted_close"], period=period)
         working_df.loc[group.index, "rsi_14"] = rsi_series.to_numpy()
-        divergence_series = compute_rsi_divergence_flags(
+        divergence_state_df = compute_rsi_divergence_state(
             group.assign(rsi_14=rsi_series),
             frequency=validated_frequency,
             rsi_column="rsi_14",
         )
-        working_df.loc[group.index, "rsi_divergence_flag"] = divergence_series.to_numpy()
+        working_df.loc[group.index, "rsi_divergence_flag"] = (
+            divergence_state_df["rsi_divergence_flag"].to_numpy()
+        )
+        working_df.loc[group.index, "rsi_divergence_confirmed"] = (
+            divergence_state_df["rsi_divergence_confirmed"].to_numpy()
+        )
 
     impacted_rsi_df = working_df.loc[
         working_df["ticker"].isin(impacted_set),
-        ["ticker", "date", "rsi_14", "rsi_divergence_flag"],
+        ["ticker", "date", "rsi_14", "rsi_divergence_flag", "rsi_divergence_confirmed"],
     ].copy()
     impacted_rsi_df = impacted_rsi_df.drop_duplicates(subset=["ticker", "date"], keep="last")
 
     preserved_df = normalized_target_df.loc[~normalized_target_df["ticker"].isin(impacted_set)].copy()
-    updated_impacted_df = impacted_target_df.drop(columns=["rsi_14", "rsi_divergence_flag"], errors="ignore").merge(
+    updated_impacted_df = impacted_target_df.drop(
+        columns=["rsi_14", "rsi_divergence_flag", "rsi_divergence_confirmed"],
+        errors="ignore",
+    ).merge(
         impacted_rsi_df,
         on=["ticker", "date"],
         how="left",

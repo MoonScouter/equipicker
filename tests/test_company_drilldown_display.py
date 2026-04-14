@@ -2,6 +2,7 @@ import unittest
 
 import pandas as pd
 from datetime import date
+from pathlib import Path
 from unittest.mock import patch
 
 from equipilot_app import (
@@ -24,6 +25,8 @@ from equipilot_app import (
     _filter_thematics_basket_table_for_view,
     _filter_by_optional_label_value,
     _filter_by_optional_numeric_range,
+    _format_divergence_flag,
+    _latest_divergence_flags_for_frequency,
     _normalize_grid_visible_columns,
     _company_grid_height,
     _compute_company_return_metrics,
@@ -538,6 +541,44 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertIn("#B42318", html)
         self.assertIn("#B45309", html)
 
+    def test_company_drilldown_styler_colors_confirmed_divergence_labels(self) -> None:
+        display_df = pd.DataFrame(
+            [
+                {
+                    "Thematic": "AI Infra",
+                    "Ticker": "AAA.US",
+                    "Company": "Alpha Inc",
+                    "Sector": "Technology",
+                    "Industry": "Software",
+                    "Market Cap": "1.50B",
+                    "Beta": "1.1",
+                    "TS": "70.0",
+                    "RSI Regime": "50.0",
+                    "Sector Regime Fit": "50.0",
+                    "Short Term Flow": "N/A",
+                    "RSI Divergence (D)": "Positive - Confirmed",
+                    "RSI Divergence (W)": "Negative - Confirmed",
+                    "FS": "70.0",
+                    "Mom. FS": "70.0",
+                    "Growth FS": "70.0",
+                    "Value FS": "70.0",
+                    "Quality FS": "70.0",
+                    "Risk FS": "70.0",
+                    "Rel Strength": "N/A",
+                    "Rel Volume": "N/A",
+                    "AI Revenue Exposure": "none",
+                    "AI Disruption Risk": "none",
+                }
+            ]
+        )
+
+        html = _build_company_drilldown_styler(display_df).to_html()
+
+        self.assertIn("Positive - Confirmed", html)
+        self.assertIn("Negative - Confirmed", html)
+        self.assertIn("#5FA777", html)
+        self.assertIn("#D97B7B", html)
+
     def test_enrich_company_universe_merges_daily_and_weekly_divergence_flags(self) -> None:
         company_df = pd.DataFrame(
             [
@@ -570,6 +611,56 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "rsi_divergence_daily_flag"]))
         self.assertTrue(pd.isna(by_ticker.loc["BBB.US", "rsi_divergence_weekly_flag"]))
 
+    def test_latest_divergence_flags_use_latest_cached_confirmation_state(self) -> None:
+        cache_df = pd.DataFrame(
+            [
+                {"ticker": "AAA.US", "date": "2026-01-05", "rsi_divergence_flag": "negative", "rsi_divergence_confirmed": True},
+                {"ticker": "BBB.US", "date": "2026-01-05", "rsi_divergence_flag": "positive", "rsi_divergence_confirmed": True},
+                {"ticker": "CCC.US", "date": "2026-01-05", "rsi_divergence_flag": "positive", "rsi_divergence_confirmed": False},
+                {"ticker": "DDD.US", "date": "2026-01-05", "rsi_divergence_flag": "none", "rsi_divergence_confirmed": False},
+                {"ticker": "EEE.US", "date": "2026-01-05", "rsi_divergence_flag": "positive", "rsi_divergence_confirmed": pd.NA},
+            ]
+        )
+
+        with patch(
+            "equipilot_app.list_prices_cache_paths",
+            return_value=[Path("prices_daily_2026.jsonl")],
+        ), patch("equipilot_app.load_prices_cache", return_value=cache_df):
+            result = _latest_divergence_flags_for_frequency(
+                "daily",
+                date(2026, 1, 10),
+            )
+
+        by_ticker = result.set_index("ticker")
+        self.assertEqual(by_ticker.loc["AAA.US", "rsi_divergence_flag"], "negative-confirmed")
+        self.assertEqual(by_ticker.loc["BBB.US", "rsi_divergence_flag"], "positive-confirmed")
+        self.assertEqual(by_ticker.loc["CCC.US", "rsi_divergence_flag"], "positive")
+        self.assertEqual(by_ticker.loc["DDD.US", "rsi_divergence_flag"], "none")
+        self.assertEqual(by_ticker.loc["EEE.US", "rsi_divergence_flag"], "positive")
+
+    def test_latest_divergence_flags_handle_older_cache_without_confirmed_column(self) -> None:
+        cache_df = pd.DataFrame(
+            [
+                {"ticker": "AAA.US", "date": "2026-01-05", "rsi_divergence_flag": "positive"},
+                {"ticker": "BBB.US", "date": "2026-01-05", "rsi_divergence_flag": "negative"},
+                {"ticker": "CCC.US", "date": "2026-01-05", "rsi_divergence_flag": "none"},
+            ]
+        )
+
+        with patch(
+            "equipilot_app.list_prices_cache_paths",
+            return_value=[Path("prices_daily_2026.jsonl")],
+        ), patch("equipilot_app.load_prices_cache", return_value=cache_df):
+            result = _latest_divergence_flags_for_frequency(
+                "daily",
+                date(2026, 1, 10),
+            )
+
+        by_ticker = result.set_index("ticker")
+        self.assertEqual(by_ticker.loc["AAA.US", "rsi_divergence_flag"], "positive")
+        self.assertEqual(by_ticker.loc["BBB.US", "rsi_divergence_flag"], "negative")
+        self.assertEqual(by_ticker.loc["CCC.US", "rsi_divergence_flag"], "none")
+
     def test_optional_label_filter_handles_positive_negative_neutral_and_none(self) -> None:
         df = pd.DataFrame(
             [
@@ -577,6 +668,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 {"ticker": "BBB.US", "rsi_divergence_daily_flag": "negative"},
                 {"ticker": "CCC.US", "rsi_divergence_daily_flag": "none"},
                 {"ticker": "DDD.US", "rsi_divergence_daily_flag": pd.NA},
+                {"ticker": "EEE.US", "rsi_divergence_daily_flag": "positive-confirmed"},
+                {"ticker": "FFF.US", "rsi_divergence_daily_flag": "negative-confirmed"},
             ]
         )
         short_term_df = pd.DataFrame(
@@ -600,6 +693,18 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             selected_value="None",
             label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
         )
+        positive_confirmed_filtered, positive_confirmed_applied = _filter_by_optional_label_value(
+            df,
+            column="rsi_divergence_daily_flag",
+            selected_value="Positive - Confirmed",
+            label_map={
+                "Positive": "positive",
+                "Positive - Confirmed": "positive-confirmed",
+                "Negative": "negative",
+                "Negative - Confirmed": "negative-confirmed",
+                "None": "none",
+            },
+        )
         neutral_filtered, neutral_applied = _filter_by_optional_label_value(
             short_term_df,
             column="short_term_flow",
@@ -611,8 +716,17 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(positive_filtered["ticker"].tolist(), ["AAA.US"])
         self.assertTrue(none_applied)
         self.assertEqual(none_filtered["ticker"].tolist(), ["CCC.US"])
+        self.assertTrue(positive_confirmed_applied)
+        self.assertEqual(positive_confirmed_filtered["ticker"].tolist(), ["EEE.US"])
         self.assertTrue(neutral_applied)
         self.assertEqual(neutral_filtered["ticker"].tolist(), ["CCC.US"])
+
+    def test_format_divergence_flag_supports_confirmed_labels(self) -> None:
+        self.assertEqual(_format_divergence_flag("positive-confirmed"), "Positive - Confirmed")
+        self.assertEqual(_format_divergence_flag("negative-confirmed"), "Negative - Confirmed")
+        self.assertEqual(_format_divergence_flag("positive"), "Positive")
+        self.assertEqual(_format_divergence_flag("negative"), "Negative")
+        self.assertEqual(_format_divergence_flag("none"), "None")
 
     def test_annotate_company_technical_trend_builds_symbol_and_direction(self) -> None:
         company_df = pd.DataFrame(
