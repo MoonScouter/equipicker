@@ -7,7 +7,9 @@ from unittest.mock import patch
 import pandas as pd
 
 from prices_service import (
+    ActiveDivergence,
     build_prices_cache_dataframe,
+    compute_rsi_divergence_state,
     compute_rsi_divergence_flags,
     compute_wilder_rsi,
     divergence_seed_history_rows,
@@ -37,6 +39,23 @@ class _DummyEngine:
 
 
 class PricesServiceTests(unittest.TestCase):
+    @staticmethod
+    def _active_divergence(
+        *,
+        anchor_index: int,
+        pivot2_index: int,
+        confirmation_index: int,
+        pivot2_price: float,
+        pivot2_rsi: float,
+    ) -> ActiveDivergence:
+        return ActiveDivergence(
+            anchor_index=anchor_index,
+            pivot2_index=pivot2_index,
+            confirmation_index=confirmation_index,
+            pivot2_price=pivot2_price,
+            pivot2_rsi=pivot2_rsi,
+        )
+
     @staticmethod
     def _build_divergence_frame(
         highs: list[float],
@@ -272,6 +291,9 @@ class PricesServiceTests(unittest.TestCase):
                 == "negative"
             ).all()
         )
+        self.assertTrue(
+            result.loc[result["ticker"] == "MSFT.US", "rsi_divergence_confirmed"].isna().all()
+        )
 
     def test_enrich_prices_with_rsi_can_use_seed_history_for_early_rows(self) -> None:
         seed_history_df = pd.DataFrame(
@@ -410,6 +432,202 @@ class PricesServiceTests(unittest.TestCase):
 
         self.assertTrue((flags == "none").all())
 
+    def test_compute_rsi_divergence_state_confirms_bullish_instance_after_post_activation_cross(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 10],
+            [6, 6, 6, 6, 6],
+            [45, 47, 49, 51, 52],
+        )
+        bullish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=6.0,
+            pivot2_rsi=49.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, None, None, None, None],
+                [None, bullish_state, bullish_state, bullish_state, bullish_state],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "positive", "positive"])
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, True])
+
+    def test_compute_rsi_divergence_state_confirms_bearish_instance_after_post_activation_cross(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 10],
+            [6, 6, 6, 6, 6],
+            [55, 53, 51, 49, 48],
+        )
+        bearish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=10.0,
+            pivot2_rsi=51.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, bearish_state, bearish_state, bearish_state, bearish_state],
+                [None, None, None, None, None],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "negative", "negative", "negative", "negative"])
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, True])
+
+    def test_compute_rsi_divergence_state_resets_confirmation_when_newer_same_sign_instance_replaces_old(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 10, 10, 10],
+            [6, 6, 6, 6, 6, 6, 6],
+            [44, 48, 51, 52, 48, 49, 51],
+        )
+        first_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=6.0,
+            pivot2_rsi=49.0,
+        )
+        refreshed_state = self._active_divergence(
+            anchor_index=3,
+            pivot2_index=4,
+            confirmation_index=5,
+            pivot2_price=5.5,
+            pivot2_rsi=48.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, None, None, None, None, None, None],
+                [None, first_state, first_state, first_state, refreshed_state, refreshed_state, refreshed_state],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "positive", "positive", "positive", "positive"])
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, True, True, False, False, True])
+
+    def test_compute_rsi_divergence_state_resets_confirmation_when_divergence_changes_sign(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 10],
+            [6, 6, 6, 6, 6],
+            [45, 48, 51, 55, 49],
+        )
+        bullish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=6.0,
+            pivot2_rsi=49.0,
+        )
+        bearish_state = self._active_divergence(
+            anchor_index=3,
+            pivot2_index=4,
+            confirmation_index=4,
+            pivot2_price=10.0,
+            pivot2_rsi=52.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, None, None, bearish_state, bearish_state],
+                [None, bullish_state, bullish_state, None, None],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "negative", "negative"])
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, True, False, True])
+
+    def test_compute_rsi_divergence_state_resets_confirmation_when_divergence_clears(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 10],
+            [6, 6, 6, 6, 6],
+            [44, 48, 51, 49, 52],
+        )
+        bullish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=6.0,
+            pivot2_rsi=49.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, None, None, None, None],
+                [None, bullish_state, bullish_state, None, None],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "none", "none"])
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, True, False, False])
+
+    def test_compute_rsi_divergence_state_does_not_confirm_without_post_activation_cross(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10],
+            [6, 6, 6, 6],
+            [49, 51, 53, 54],
+        )
+        bullish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=6.0,
+            pivot2_rsi=49.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, None, None, None],
+                [None, bullish_state, bullish_state, bullish_state],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "positive"])
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, False])
+
+    def test_compute_rsi_divergence_state_resets_confirmation_on_developing_bullish_refresh(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 10, 10, 10],
+            [6.4, 6.2, 6.0, 6.3, 5.8, 6.0, 6.2],
+            [44, 48, 49, 51, 50, 47, 51],
+        )
+        bullish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=6.0,
+            pivot2_rsi=49.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, None, None, None, None, None, None],
+                [None, bullish_state, bullish_state, bullish_state, bullish_state, bullish_state, bullish_state],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "positive", "positive", "positive", "positive"])
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, False, False, True])
+
     def test_import_prices_cache_uses_frequency_specific_divergence_seed_history_lengths(self) -> None:
         build_seed_calls: list[int] = []
 
@@ -468,6 +686,7 @@ class PricesServiceTests(unittest.TestCase):
                 "obvm": 2.5,
                 "rsi_14": 75.0,
                 "rsi_divergence_flag": "negative",
+                "rsi_divergence_confirmed": True,
             }]
         )
         with TemporaryDirectory() as tmp_dir:
@@ -480,6 +699,7 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(loaded["date"].tolist(), ["2026-02-10"])
         self.assertEqual(loaded["rsi_14"].tolist(), [75.0])
         self.assertEqual(loaded["rsi_divergence_flag"].tolist(), ["negative"])
+        self.assertEqual(loaded["rsi_divergence_confirmed"].tolist(), [True])
 
 
 if __name__ == "__main__":

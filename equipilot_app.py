@@ -133,7 +133,14 @@ TREND_FILTER_LABELS = {
 }
 TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["flat"], TREND_FILTER_LABELS["down"]]
 SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
-DIVERGENCE_FILTER_OPTIONS = ["All", "Positive", "Negative", "None"]
+DIVERGENCE_FILTER_OPTIONS = [
+    "All",
+    "Positive",
+    "Positive - Confirmed",
+    "Negative",
+    "Negative - Confirmed",
+    "None",
+]
 SHORT_TERM_FLOW_FILTER_OPTIONS = ["All", "Positive", "Negative", "Neutral"]
 AI_REVENUE_FILTER_OPTIONS = ["All", "direct", "indirect", "none"]
 AI_DISRUPTION_FILTER_OPTIONS = ["All", "high", "medium", "low", "none"]
@@ -989,7 +996,11 @@ def normalize_prices_cache_for_check(cache_df: pd.DataFrame) -> pd.DataFrame:
             f"{', '.join(sorted(set(missing_columns)))}"
         )
 
-    working_df = cache_df[list(PRICE_CACHE_COLUMNS)].copy()
+    working_df = cache_df.copy()
+    for column in PRICE_CACHE_COLUMNS:
+        if column not in working_df.columns:
+            working_df[column] = pd.NA
+    working_df = working_df[list(PRICE_CACHE_COLUMNS)].copy()
     working_df["ticker"] = working_df["ticker"].fillna("").astype(str).str.strip().str.upper()
     working_df["date"] = pd.to_datetime(working_df["date"], errors="coerce").dt.date
     for column in ["adjusted_close", "adjusted_high", "adjusted_low", "rs", "obvm", "rsi_14"]:
@@ -1005,6 +1016,12 @@ def normalize_prices_cache_for_check(cache_df: pd.DataFrame) -> pd.DataFrame:
         ~working_df["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
         "rsi_divergence_flag",
     ] = pd.NA
+    if "rsi_divergence_confirmed" not in working_df.columns:
+        working_df["rsi_divergence_confirmed"] = pd.NA
+    working_df["rsi_divergence_confirmed"] = pd.array(
+        working_df["rsi_divergence_confirmed"].map(_normalize_optional_boolean_value),
+        dtype="boolean",
+    )
     working_df = working_df[working_df["ticker"].astype(str).str.len() > 0]
     working_df = working_df.dropna(subset=["date"]).drop_duplicates(
         subset=["ticker", "date"], keep="last"
@@ -3106,6 +3123,8 @@ function(params) {
         """
 function(params) {
   const label = String(params.value ?? "").trim().toLowerCase();
+  if (label === "positive-confirmed" || label === "positive - confirmed") return { color: "#5FA777", fontWeight: "700" };
+  if (label === "negative-confirmed" || label === "negative - confirmed") return { color: "#D97B7B", fontWeight: "700" };
   if (label === "positive") return { color: "#15803D", fontWeight: "700" };
   if (label === "negative") return { color: "#B42318", fontWeight: "700" };
   return { color: "#7B8BA0" };
@@ -3896,6 +3915,37 @@ def _empty_company_divergence_metrics() -> pd.DataFrame:
     )
 
 
+def _normalize_optional_boolean_value(value: object) -> object:
+    if value is None or pd.isna(value):
+        return pd.NA
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    label = str(value).strip().lower()
+    if label in {"true", "1", "yes"}:
+        return True
+    if label in {"false", "0", "no"}:
+        return False
+    return pd.NA
+
+
+def _compose_divergence_flag_label(
+    divergence_flag: object,
+    divergence_confirmed: object,
+) -> object:
+    if divergence_flag is None or pd.isna(divergence_flag):
+        return pd.NA
+    label = str(divergence_flag).strip().lower()
+    if label not in {"positive", "negative", "none"}:
+        return pd.NA
+    if label == "none":
+        return "none"
+
+    normalized_confirmed = _normalize_optional_boolean_value(divergence_confirmed)
+    if normalized_confirmed is True:
+        return f"{label}-confirmed"
+    return label
+
+
 def _latest_divergence_flags_for_frequency(
     frequency: str,
     evaluation_date: date,
@@ -3933,12 +3983,31 @@ def _latest_divergence_flags_for_frequency(
     ]
     if working.empty:
         return pd.DataFrame(columns=["ticker", "rsi_divergence_flag"])
-    return (
+
+    working["rsi_divergence_confirmed"] = pd.array(
+        working.get("rsi_divergence_confirmed", pd.Series(index=working.index, dtype=object)).map(
+            _normalize_optional_boolean_value
+        ),
+        dtype="boolean",
+    )
+    working = (
         working.sort_values(["ticker", "date"], kind="stable")
-        .drop_duplicates(subset=["ticker"], keep="last")
-        .loc[:, ["ticker", "rsi_divergence_flag"]]
+        .drop_duplicates(subset=["ticker", "date"], keep="last")
         .reset_index(drop=True)
     )
+    latest = (
+        working.drop_duplicates(subset=["ticker"], keep="last")
+        .loc[:, ["ticker", "rsi_divergence_flag", "rsi_divergence_confirmed"]]
+        .copy()
+    )
+    latest["rsi_divergence_flag"] = latest.apply(
+        lambda row: _compose_divergence_flag_label(
+            row["rsi_divergence_flag"],
+            row["rsi_divergence_confirmed"],
+        ),
+        axis=1,
+    )
+    return latest.loc[:, ["ticker", "rsi_divergence_flag"]].reset_index(drop=True)
 
 
 @st.cache_data(show_spinner=False)
@@ -4162,8 +4231,12 @@ def _format_divergence_flag(value: object) -> str:
     label = str(value).strip().lower()
     if label == "positive":
         return "Positive"
+    if label == "positive-confirmed":
+        return "Positive - Confirmed"
     if label == "negative":
         return "Negative"
+    if label == "negative-confirmed":
+        return "Negative - Confirmed"
     if label == "none":
         return "None"
     return "N/A"
@@ -5229,13 +5302,25 @@ def render_company_drilldown_filters(
         filtered,
         column="rsi_divergence_daily_flag",
         selected_value=daily_rsi_divergence_value,
-        label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
+        label_map={
+            "Positive": "positive",
+            "Positive - Confirmed": "positive-confirmed",
+            "Negative": "negative",
+            "Negative - Confirmed": "negative-confirmed",
+            "None": "none",
+        },
     )
     filtered, _ = _filter_by_optional_label_value(
         filtered,
         column="rsi_divergence_weekly_flag",
         selected_value=weekly_rsi_divergence_value,
-        label_map={"Positive": "positive", "Negative": "negative", "None": "none"},
+        label_map={
+            "Positive": "positive",
+            "Positive - Confirmed": "positive-confirmed",
+            "Negative": "negative",
+            "Negative - Confirmed": "negative-confirmed",
+            "None": "none",
+        },
     )
     filtered, _ = _filter_by_optional_label_value(
         filtered,
@@ -9420,9 +9505,13 @@ def _style_breadth_threshold_value(value: object) -> str:
 
 def _style_sign_label_value(value: object) -> str:
     label = str(value).strip().lower()
-    if label == "positive":
+    if label in {"positive-confirmed", "positive - confirmed"}:
+        return "color:#5FA777; font-weight:700;"
+    if label in {"negative-confirmed", "negative - confirmed"}:
+        return "color:#D97B7B; font-weight:700;"
+    if label.startswith("positive"):
         return "color:#15803D; font-weight:700;"
-    if label == "negative":
+    if label.startswith("negative"):
         return "color:#B42318; font-weight:700;"
     return "color:#7B8BA0;"
 
