@@ -1,9 +1,9 @@
 {
   "meta": {
-    "version": "2.5",
-    "created": "2026-03-11",
+    "version": "energy-1.4",
+    "created": "2026-04-15",
     "total_tickers_covered": 763,
-    "notes": "Normalized hierarchy with consistent child naming. Removed redundant standalone AI Networking and standalone Cybersecurity baskets. Added AI Applications as tier-1 parent with consistent AI Apps children, including Vibe Coding & Dev Agents. Descriptions included on all baskets. AI exposure overlay included at file end."
+    "notes": "Normalized hierarchy with consistent child naming. Added final Energy taxonomy with Energy Sector as a family parent, 6 core editorial layers, LNG as a Midstream sub-layer, and Energy overlays. Existing Nuclear Renaissance and Energy Transition baskets are preserved without duplicating Nuclear Renaissance. AI exposure overlay included at file end."
   },
   "thematics": {
     "AI Infrastructure": {
@@ -691,9 +691,115 @@
         "SBAC"
       ]
     },
-    "Energy Midstream & LNG": {
-      "description": "Pipeline operators and LNG-linked infrastructure with energy-security relevance and cash-flow resilience.",
-      "tier": 2,
+    "Energy Sector": {
+      "description": "The full traditional Energy complex covered by Equipicker: integrated oils, upstream producers, midstream infrastructure, refiners, oilfield services, and uranium fuel exposure. For article purposes, the sector is presented through 6 editorial layers, with Drilling folded into Oilfield Services & Drilling for narrative simplicity.",
+      "tier": 1,
+      "value_chain_layer": 1,
+      "is_parent": true,
+      "sub_baskets": [
+        "Energy: Oil & Gas Integrated",
+        "Energy: Oil & Gas E&P",
+        "Energy: Oil & Gas Midstream",
+        "Energy: Oil & Gas Refining & Marketing",
+        "Energy: Oilfield Services & Drilling",
+        "Energy: Uranium"
+      ],
+      "tickers": [
+        "XOM",
+        "CVX",
+        "EOG",
+        "COP",
+        "FANG",
+        "DVN",
+        "OVV",
+        "MTDR",
+        "VTLE",
+        "PR",
+        "APA",
+        "OXY",
+        "EQT",
+        "CTRA",
+        "EXE",
+        "TPL",
+        "STR",
+        "KRP",
+        "BSM",
+        "DMLP",
+        "KMI",
+        "WMB",
+        "LNG",
+        "TRGP",
+        "EPD",
+        "ENB",
+        "OKE",
+        "ET",
+        "MPLX",
+        "VNOM",
+        "NEXT",
+        "PSX",
+        "VLO",
+        "MPC",
+        "SLB",
+        "HAL",
+        "BKR",
+        "NOV",
+        "FTI",
+        "LBRT",
+        "PTEN",
+        "NBR",
+        "CCJ",
+        "LEU"
+      ]
+    },
+    "Energy: Oil & Gas Integrated": {
+      "description": "The diversified supermajors with upstream, trading, refining, chemicals, and balance-sheet scale.",
+      "tier": 1,
+      "value_chain_layer": 1.1,
+      "parent": "Energy Sector",
+      "article_narrative": "This is the anchor layer of Energy. Integrated majors are usually the cleanest starting point for retail investors because they combine commodity exposure with scale, dividends, downstream ballast, and capital-allocation flexibility. Many retail investors loosely discuss COP alongside the US majors, but operationally it remains upstream-only and is kept in E&P here.",
+      "tickers": [
+        "XOM",
+        "CVX"
+      ]
+    },
+    "Energy: Oil & Gas E&P": {
+      "description": "Independent upstream producers and royalty-style names with direct exposure to oil, gas, and production volumes.",
+      "tier": 1,
+      "value_chain_layer": 1.2,
+      "parent": "Energy Sector",
+      "article_narrative": "E&P is the purest listed expression of commodity exposure. Inside this layer, it helps to separate oil-weighted names, gas-weighted names, and royalty-linked models because the drivers, volatility, and valuation logic are not the same. For article use, the practical split is: oil-weighted = EOG, COP, FANG, DVN, OVV, MTDR, VTLE, PR, APA, OXY; gas-weighted = EQT, CTRA, EXE; royalty / mineral = TPL, STR, KRP, BSM, DMLP.",
+      "tickers": [
+        "EOG",
+        "COP",
+        "FANG",
+        "DVN",
+        "OVV",
+        "MTDR",
+        "VTLE",
+        "PR",
+        "APA",
+        "OXY",
+        "EQT",
+        "CTRA",
+        "EXE",
+        "TPL",
+        "STR",
+        "KRP",
+        "BSM",
+        "DMLP"
+      ]
+    },
+    "Energy: Oil & Gas Midstream": {
+      "description": "Pipelines, gathering and processing systems, storage, transport infrastructure, and LNG-linked assets moving hydrocarbons from field to market.",
+      "tier": 1,
+      "value_chain_layer": 1.3,
+      "parent": "Energy Sector",
+      "is_parent": true,
+      "sub_baskets": [
+        "Energy Midstream & LNG",
+        "Energy Midstream: Core Pipelines & Cash Flows"
+      ],
+      "article_narrative": "Midstream is the toll-road layer of Energy. Cash flows are usually steadier than upstream because volumes and contracts matter more than day-to-day oil prices. This broader layer contains pipelines, gathering, processing, transport, and storage, while the LNG export angle is separated from the core cash-flow pipeline complex through two distinct sub-layers.",
       "tickers": [
         "KMI",
         "WMB",
@@ -706,6 +812,106 @@
         "MPLX",
         "VNOM",
         "NEXT"
+      ]
+    },
+    "Energy Midstream & LNG": {
+      "description": "The narrower LNG-export-focused slice of Energy midstream: direct export developers plus the gas-infrastructure names most relevant to feedgas flows and LNG optionality.",
+      "tier": 2,
+      "value_chain_layer": 1.31,
+      "parent": "Energy: Oil & Gas Midstream",
+      "article_narrative": "This sub-layer isolates the LNG export and gas-security angle inside Midstream. It should help readers distinguish the broader toll-road story from the narrower export-capacity and feedgas optionality story.",
+      "tickers": [
+        "LNG",
+        "NEXT",
+        "KMI",
+        "TRGP",
+        "ET"
+      ]
+    },
+    "Energy Midstream: Core Pipelines & Cash Flows": {
+      "description": "The broader fee-based midstream toll-road complex: pipelines, gathering, transport, and storage names whose investment case leans more on contracted volumes and distributable cash flow than on direct LNG export optionality.",
+      "tier": 2,
+      "value_chain_layer": 1.32,
+      "parent": "Energy: Oil & Gas Midstream",
+      "article_narrative": "This sub-layer captures the steadier cash-flow side of Midstream: the pipeline, gathering, transport, and storage names that investors often treat as the yield-and-volume backbone of the Energy sector.",
+      "tickers": [
+        "WMB",
+        "EPD",
+        "ENB",
+        "OKE",
+        "MPLX",
+        "VNOM"
+      ]
+    },
+    "Energy: Oil & Gas Refining & Marketing": {
+      "description": "Refiners converting crude into fuels and other refined products, with earnings driven by crack spreads and utilization.",
+      "tier": 1,
+      "value_chain_layer": 1.4,
+      "parent": "Energy Sector",
+      "article_narrative": "Refining is not a direct oil-price bet. What matters more is the spread between crude input costs and product prices, which makes this layer cyclical, operational, and often misunderstood by generalist investors.",
+      "tickers": [
+        "PSX",
+        "VLO",
+        "MPC"
+      ]
+    },
+    "Energy: Oilfield Services & Drilling": {
+      "description": "The picks-and-shovels layer of Energy: oilfield service providers, equipment makers, completions specialists, and drilling contractors selling activity and capacity to producers.",
+      "tier": 1,
+      "value_chain_layer": 1.5,
+      "parent": "Energy Sector",
+      "article_narrative": "This layer exists to separate resource owners from activity suppliers. These companies do not usually own the hydrocarbons; they sell tools, services, rigs, and project execution to producers. Inside the basket, it helps to distinguish broader service and equipment names such as SLB, HAL, BKR, NOV, FTI, and LBRT from pure drilling contractors such as PTEN and NBR, which usually carry the highest operating leverage.",
+      "tickers": [
+        "SLB",
+        "HAL",
+        "BKR",
+        "NOV",
+        "FTI",
+        "LBRT",
+        "PTEN",
+        "NBR"
+      ]
+    },
+    "Energy: Uranium": {
+      "description": "Uranium and nuclear-fuel exposure sitting inside the Energy classification and linking the old energy system to the electrification era.",
+      "tier": 1,
+      "value_chain_layer": 1.6,
+      "parent": "Energy Sector",
+      "article_narrative": "Uranium is small relative to oil and gas in market-cap terms, but strategically important. It gives the Energy article a bridge into energy security, baseload electricity, and the power needs of an increasingly electrified economy.",
+      "tickers": [
+        "CCJ",
+        "LEU"
+      ]
+    },
+    "High-Yield Energy Income": {
+      "description": "Energy names where the equity case leans heavily on distributions, fee-based cash flow, or royalty-style income exposure.",
+      "tier": 2,
+      "article_narrative": "For many retail investors, Energy is not only a commodity story but an income story. This overlay groups the most relevant yield vehicles inside Energy, combining fee-based midstream and MLP cash-flow models with royalty and mineral exposure.",
+      "tickers": [
+        "EPD",
+        "ET",
+        "MPLX",
+        "ENB",
+        "WMB",
+        "KMI",
+        "OKE",
+        "VNOM",
+        "KRP",
+        "BSM",
+        "DMLP",
+        "STR"
+      ]
+    },
+    "Energy Security & Geopolitics": {
+      "description": "Cross-cutting names most exposed to allied fuel security, LNG exports, Western nuclear-fuel resilience, and geopolitically driven energy repricing.",
+      "tier": 2,
+      "article_narrative": "This overlay should stay selective. It is not meant to include every large oil company, but rather the names whose investment case is especially tied to energy security, allied supply chains, or geopolitical premium.",
+      "tickers": [
+        "LNG",
+        "NEXT",
+        "CCJ",
+        "LEU",
+        "TPL"
       ]
     },
     "Energy Transition": {
@@ -918,46 +1124,6 @@
         "OKLO",
         "SMR",
         "BWXT"
-      ]
-    },
-    "Oil & Gas E&P": {
-      "description": "Upstream producers, royalty-linked exposure, and diversified E&P businesses.",
-      "tier": 2,
-      "tickers": [
-        "EOG",
-        "COP",
-        "FANG",
-        "DVN",
-        "OVV",
-        "MTDR",
-        "VTLE",
-        "PR",
-        "EXE",
-        "EQT",
-        "CTRA",
-        "APA",
-        "TPL",
-        "STR",
-        "KRP",
-        "BSM",
-        "DMLP",
-        "XOM",
-        "CVX",
-        "OXY"
-      ]
-    },
-    "Oilfield Services": {
-      "description": "Drilling, completions, and oilfield equipment/services providers.",
-      "tier": 2,
-      "tickers": [
-        "SLB",
-        "HAL",
-        "BKR",
-        "NOV",
-        "FTI",
-        "LBRT",
-        "PTEN",
-        "NBR"
       ]
     },
     "Pet Economy": {

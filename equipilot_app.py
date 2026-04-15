@@ -726,6 +726,37 @@ def _thematics_sort_key(item: dict) -> tuple[float, str]:
     return tier_num, layer_num, str(item.get("name", "")).lower()
 
 
+AI_FAMILY_NAME = "AI"
+ENERGY_FAMILY_NAME = "Energy"
+ENERGY_FAMILY_PARENT = "Energy Sector"
+ENERGY_CORE_LAYERS = (
+    "Energy: Oil & Gas Integrated",
+    "Energy: Oil & Gas E&P",
+    "Energy: Oil & Gas Midstream",
+    "Energy: Oil & Gas Refining & Marketing",
+    "Energy: Oilfield Services & Drilling",
+    "Energy: Uranium",
+)
+ENERGY_SUB_LAYERS = (
+    "Energy Midstream & LNG",
+    "Energy Midstream: Core Pipelines & Cash Flows",
+)
+ENERGY_OVERLAY_BASKETS = ("High-Yield Energy Income", "Energy Security & Geopolitics")
+ENERGY_RELATED_BASKETS = ("Nuclear Renaissance",)
+
+
+def _is_ai_family_layer_candidate(basket_name: str, item: dict[str, object]) -> bool:
+    parent_name = str(item.get("parent", "") or "").strip()
+    if parent_name:
+        return False
+    if basket_name == AI_FAMILY_NAME:
+        return False
+    tier_value = pd.to_numeric(item.get("tier"), errors="coerce")
+    if pd.isna(tier_value) or float(tier_value) != 1.0:
+        return False
+    return basket_name.startswith("AI ")
+
+
 @st.cache_data(show_spinner=False)
 def build_thematics_catalog(path_str: str, cache_signature: str = "") -> dict[str, object]:
     payload = load_thematics_config(path_str, cache_signature)
@@ -755,14 +786,17 @@ def build_thematics_catalog(path_str: str, cache_signature: str = "") -> dict[st
             "ticker_count": len(normalized_tickers),
             "is_ai_super_parent": False,
             "is_ai_group_child": False,
+            "family": "",
+            "hierarchy_role": "standalone",
+            "is_family_parent": False,
+            "is_family_layer": False,
+            "is_family_sub_layer": False,
         }
 
     ai_child_names = [
         item_name
         for item_name, item in items.items()
-        if not str(item.get("parent", "") or "").strip()
-        and pd.to_numeric(item.get("tier"), errors="coerce") == 1
-        and item_name != "AI"
+        if _is_ai_family_layer_candidate(item_name, item)
     ]
     if ai_child_names:
         ai_unique_tickers = sorted(
@@ -786,16 +820,63 @@ def build_thematics_catalog(path_str: str, cache_signature: str = "") -> dict[st
             "ticker_count": len(ai_unique_tickers),
             "is_ai_super_parent": True,
             "is_ai_group_child": False,
+            "family": AI_FAMILY_NAME,
+            "hierarchy_role": "family_parent",
+            "is_family_parent": True,
+            "is_family_layer": False,
+            "is_family_sub_layer": False,
         }
         for child_name in ai_child_names:
-            items[child_name]["parent"] = "AI"
+            items[child_name]["parent"] = AI_FAMILY_NAME
             items[child_name]["is_ai_group_child"] = True
+            items[child_name]["family"] = AI_FAMILY_NAME
+            items[child_name]["hierarchy_role"] = "layer"
+            items[child_name]["is_family_layer"] = True
+
+    for item_name, item in items.items():
+        if item_name == ENERGY_FAMILY_PARENT:
+            item["family"] = ENERGY_FAMILY_NAME
+            item["hierarchy_role"] = "family_parent"
+            item["is_family_parent"] = True
+        elif item_name in ENERGY_CORE_LAYERS:
+            item["family"] = ENERGY_FAMILY_NAME
+            item["hierarchy_role"] = "layer"
+            item["is_family_layer"] = True
+        elif item_name in ENERGY_SUB_LAYERS:
+            item["family"] = ENERGY_FAMILY_NAME
+            item["hierarchy_role"] = "sub_layer"
+            item["is_family_sub_layer"] = True
+        elif item_name in ENERGY_OVERLAY_BASKETS:
+            item["family"] = ENERGY_FAMILY_NAME
+            item["hierarchy_role"] = "overlay"
+        elif item_name in ENERGY_RELATED_BASKETS:
+            item["family"] = ENERGY_FAMILY_NAME
+            item["hierarchy_role"] = "related"
 
     for item in items.values():
         child_names = [child_name for child_name in item["sub_baskets"] if child_name in items]
         if item["is_parent"] and child_names:
             child_names = sorted(child_names, key=lambda child_name: _thematics_sort_key(items[child_name]))
         item["children"] = child_names
+
+    for item_name, item in items.items():
+        lineage = []
+        current_name = item_name
+        seen: set[str] = set()
+        while current_name in items and current_name not in seen:
+            seen.add(current_name)
+            lineage.append(current_name)
+            parent_name = str(items[current_name].get("parent", "") or "")
+            if not parent_name:
+                break
+            current_name = parent_name
+        if lineage and lineage[-1] == AI_FAMILY_NAME:
+            item["family"] = AI_FAMILY_NAME
+            if item.get("hierarchy_role") not in {"family_parent", "layer"}:
+                item["hierarchy_role"] = "sub_layer"
+                item["is_family_sub_layer"] = True
+        if item.get("family") == ENERGY_FAMILY_NAME and item.get("hierarchy_role") == "sub_layer":
+            item["is_family_sub_layer"] = True
 
     roots = [
         item["name"]
@@ -9610,12 +9691,21 @@ def _ordered_thematics_names(catalog: dict[str, object]) -> list[str]:
 
 THEMATICS_VIEW_MODES: tuple[tuple[str, str], ...] = (
     ("all", "All thematics"),
-    ("ai_vs_rest", "AI vs Rest"),
-    ("ai_layers_vs_rest", "AI layers vs Rest"),
-    ("ai_sub_layers_vs_rest", "AI sub-layers vs Rest"),
+    ("family_roots", "AI vs Energy vs Rest"),
+    ("layers", "Layers"),
+    ("sub_layers", "Sub-layers"),
     ("ai_layers", "AI layers"),
     ("ai_sub_layers", "AI sub-layers"),
+    ("energy_all", "Energy all"),
+    ("energy_layers", "Energy layers"),
+    ("energy_sub_layers", "Energy sub-layers"),
 )
+
+THEMATICS_VIEW_MODE_ALIASES = {
+    "ai_vs_rest": "family_roots",
+    "ai_layers_vs_rest": "layers",
+    "ai_sub_layers_vs_rest": "sub_layers",
+}
 
 
 def _thematics_basket_lineage(catalog: dict[str, object], basket_name: str) -> list[str]:
@@ -9644,40 +9734,108 @@ def _classify_thematics_basket_for_view(
     basket_name: str,
     meta_row: Optional[pd.Series] = None,
 ) -> str:
-    if basket_name == "AI":
-        return "ai_super_parent"
-
     depth = int(meta_row.get("depth", 0) or 0) if meta_row is not None else 0
+    family = str(meta_row.get("family", "") or "") if meta_row is not None else ""
+    hierarchy_role = str(meta_row.get("hierarchy_role", "") or "") if meta_row is not None else ""
+    if not family or not hierarchy_role:
+        items = catalog.get("items", {})
+        item = items.get(basket_name, {}) if isinstance(items, dict) else {}
+        if isinstance(item, dict):
+            family = str(item.get("family", "") or "")
+            hierarchy_role = str(item.get("hierarchy_role", "") or "")
+
+    if family == AI_FAMILY_NAME and hierarchy_role == "family_parent":
+        return "ai_family_parent"
+    if family == ENERGY_FAMILY_NAME and hierarchy_role == "family_parent":
+        return "energy_family_parent"
+    if family == AI_FAMILY_NAME and hierarchy_role == "layer":
+        return "ai_layer"
+    if family == AI_FAMILY_NAME and hierarchy_role == "sub_layer":
+        return "ai_sub_layer"
+    if family == ENERGY_FAMILY_NAME and hierarchy_role == "layer":
+        return "energy_layer"
+    if family == ENERGY_FAMILY_NAME and hierarchy_role == "sub_layer":
+        return "energy_sub_layer"
+    if family == ENERGY_FAMILY_NAME and hierarchy_role == "overlay":
+        return "energy_overlay"
+    if family == ENERGY_FAMILY_NAME and hierarchy_role == "related":
+        return "energy_related"
+
+    if basket_name == AI_FAMILY_NAME:
+        return "ai_family_parent"
     if meta_row is not None and bool(meta_row.get("is_ai_super_parent", False)):
-        return "ai_super_parent"
+        return "ai_family_parent"
     if meta_row is not None and bool(meta_row.get("is_ai_group_child", False)) and depth == 1:
         return "ai_layer"
 
     lineage = _thematics_basket_lineage(catalog, basket_name)
-    if lineage and lineage[-1] == "AI":
+    if lineage and lineage[-1] == AI_FAMILY_NAME:
         if depth == 1:
             return "ai_layer"
         if depth > 1:
             return "ai_sub_layer"
 
-    if depth == 0 and basket_name != "AI":
-        return "non_ai_root"
+    if depth == 0 and basket_name != AI_FAMILY_NAME:
+        return "standalone"
     return "other"
 
 
-def _thematics_view_mode_matches(view_mode: str, basket_class: str) -> bool:
+def _is_family_sub_layer_equivalent(
+    catalog: dict[str, object],
+    basket_name: str,
+    basket_class: str,
+) -> bool:
+    if basket_class in {"ai_sub_layer", "energy_sub_layer"}:
+        return True
+    if basket_class not in {"ai_layer", "energy_layer"}:
+        return False
+    items = catalog.get("items", {})
+    basket = items.get(basket_name, {}) if isinstance(items, dict) else {}
+    children = basket.get("children", []) if isinstance(basket, dict) else []
+    return not children
+
+
+def _thematics_view_mode_matches(
+    view_mode: str,
+    basket_class: str,
+    *,
+    catalog: Optional[dict[str, object]] = None,
+    basket_name: str = "",
+) -> bool:
+    view_mode = THEMATICS_VIEW_MODE_ALIASES.get(view_mode, view_mode)
     if view_mode == "all":
         return True
-    if view_mode == "ai_vs_rest":
-        return basket_class in {"ai_super_parent", "non_ai_root"}
-    if view_mode == "ai_layers_vs_rest":
-        return basket_class in {"ai_layer", "non_ai_root"}
-    if view_mode == "ai_sub_layers_vs_rest":
-        return basket_class in {"ai_sub_layer", "non_ai_root"}
+    if view_mode == "family_roots":
+        return basket_class in {"ai_family_parent", "energy_family_parent", "standalone"}
+    if view_mode == "layers":
+        return basket_class in {"ai_layer", "energy_layer", "energy_overlay", "energy_related", "standalone"}
+    if view_mode == "sub_layers":
+        if basket_class in {"standalone", "energy_overlay", "energy_related"}:
+            return True
+        if catalog is not None:
+            return _is_family_sub_layer_equivalent(catalog, basket_name, basket_class)
+        return basket_class in {"ai_sub_layer", "energy_sub_layer"}
     if view_mode == "ai_layers":
         return basket_class == "ai_layer"
     if view_mode == "ai_sub_layers":
         return basket_class == "ai_sub_layer"
+    if view_mode == "energy_all":
+        return basket_class in {
+            "energy_family_parent",
+            "energy_layer",
+            "energy_sub_layer",
+            "energy_overlay",
+            "energy_related",
+        }
+    if view_mode == "energy_layers":
+        return basket_class == "energy_layer"
+    if view_mode == "energy_sub_layers":
+        if catalog is not None:
+            return _is_family_sub_layer_equivalent(catalog, basket_name, basket_class) and basket_class in {
+                "energy_layer",
+                "energy_sub_layer",
+            }
+        return basket_class == "energy_sub_layer"
     return True
 
 
@@ -9695,7 +9853,7 @@ def _filter_thematics_basket_table_for_view(
         meta_row = meta_df.iloc[row_index]
         basket_name = str(meta_row.get("basket_name", ""))
         basket_class = _classify_thematics_basket_for_view(catalog, basket_name, meta_row)
-        if _thematics_view_mode_matches(view_mode, basket_class):
+        if _thematics_view_mode_matches(view_mode, basket_class, catalog=catalog, basket_name=basket_name):
             keep_indices.append(row_index)
 
     if not keep_indices:
@@ -9717,16 +9875,17 @@ def _render_thematics_view_mode_controls(state_prefix: str) -> str:
     view_mode_key = f"{state_prefix}_view_mode"
     allowed_modes = {mode for mode, _ in THEMATICS_VIEW_MODES}
     current_mode = str(st.session_state.get(view_mode_key, "all") or "all")
+    current_mode = THEMATICS_VIEW_MODE_ALIASES.get(current_mode, current_mode)
     if current_mode not in allowed_modes:
         current_mode = "all"
-        st.session_state[view_mode_key] = current_mode
+    st.session_state[view_mode_key] = current_mode
 
     theme_styles = {
         True: ("#123159", "#FFFFFF", "#123159"),
         False: ("#F4F8FC", "#123159", "#D0DDEB"),
     }
     css_rules: list[str] = []
-    button_layout = [1.0, 1.0, 1.15, 1.25, 1.0, 1.0]
+    button_layout = [1.05, 1.45, 0.78, 0.95, 0.9, 1.0, 0.95, 1.0, 1.18]
     button_cols = st.columns(button_layout)
     for (mode, label), col in zip(THEMATICS_VIEW_MODES, button_cols):
         is_active = mode == current_mode
@@ -9832,6 +9991,11 @@ def _build_thematics_basket_table_frame(
                 "is_parent": bool(basket.get("is_parent", False)),
                 "is_ai_super_parent": bool(basket.get("is_ai_super_parent", False)),
                 "is_ai_group_child": bool(basket.get("is_ai_group_child", False)),
+                "family": str(basket.get("family", "") or ""),
+                "hierarchy_role": str(basket.get("hierarchy_role", "") or ""),
+                "is_family_parent": bool(basket.get("is_family_parent", False)),
+                "is_family_layer": bool(basket.get("is_family_layer", False)),
+                "is_family_sub_layer": bool(basket.get("is_family_sub_layer", False)),
                 "ts_trend": str(row.get("technical_trend_symbol", "") or ""),
                 "fs_trend": str(row.get("fundamental_trend_symbol", "") or ""),
                 "mom_fs_trend": str(row.get("fundamental_momentum_trend_symbol", "") or ""),
@@ -9879,6 +10043,11 @@ def _build_thematics_lens_frame(catalog: dict[str, object]) -> tuple[pd.DataFram
                 "is_parent": bool(basket.get("is_parent", False)),
                 "is_ai_super_parent": bool(basket.get("is_ai_super_parent", False)),
                 "is_ai_group_child": bool(basket.get("is_ai_group_child", False)),
+                "family": str(basket.get("family", "") or ""),
+                "hierarchy_role": str(basket.get("hierarchy_role", "") or ""),
+                "is_family_parent": bool(basket.get("is_family_parent", False)),
+                "is_family_layer": bool(basket.get("is_family_layer", False)),
+                "is_family_sub_layer": bool(basket.get("is_family_sub_layer", False)),
             }
         )
     return pd.DataFrame(rows), pd.DataFrame(meta_rows)
@@ -9941,12 +10110,15 @@ def _build_thematics_hierarchy_styler(
     def apply_row_background(row: pd.Series) -> list[str]:
         meta = meta_df.iloc[int(row.name)]
         basket_name = str(meta.get("basket_name", ""))
+        hierarchy_role = str(meta.get("hierarchy_role", "") or "")
         if basket_name == selected_basket:
             background = "#FFF7E0"
-        elif bool(meta.get("is_ai_super_parent", False)):
+        elif hierarchy_role == "family_parent" or bool(meta.get("is_family_parent", False)):
             background = "#EEF4FF"
-        elif bool(meta.get("is_ai_group_child", False)):
+        elif hierarchy_role == "layer" or bool(meta.get("is_family_layer", False)):
             background = "#F7FBFF"
+        elif hierarchy_role == "sub_layer" or bool(meta.get("is_family_sub_layer", False)):
+            background = "#FBFDFF"
         else:
             background = "#FFFFFF" if int(row.name) % 2 == 0 else "#FBFDFF"
         return [f"background-color:{background};" for _ in row]
@@ -9955,20 +10127,26 @@ def _build_thematics_hierarchy_styler(
         meta = meta_df.iloc[int(row.name)]
         depth = int(meta.get("depth", 0) or 0)
         is_parent = bool(meta.get("is_parent", False))
-        is_ai_super_parent = bool(meta.get("is_ai_super_parent", False))
-        is_ai_group_child = bool(meta.get("is_ai_group_child", False))
+        hierarchy_role = str(meta.get("hierarchy_role", "") or "")
+        is_family_parent = hierarchy_role == "family_parent" or bool(meta.get("is_family_parent", False))
+        is_family_layer = hierarchy_role == "layer" or bool(meta.get("is_family_layer", False))
+        is_family_sub_layer = hierarchy_role == "sub_layer" or bool(meta.get("is_family_sub_layer", False))
         padding_left = 0.55 + (depth * 1.2)
         color = "#123159"
         font_weight = "700" if is_parent else "600"
         extra = ""
-        if is_ai_super_parent:
+        if is_family_parent:
             color = "#123159"
             font_weight = "800"
             extra = "border-left:4px solid #184E82;"
-        elif is_ai_group_child:
+        elif is_family_layer:
             color = "#0B5CAD"
             font_weight = "700"
             extra = "border-left:3px solid #93C5FD;"
+        elif is_family_sub_layer:
+            color = "#2C5F93"
+            font_weight = "650"
+            extra = "border-left:2px solid #BFDBFE;"
         elif depth > 0:
             color = "#4F647C"
         styles = ["" for _ in row]
@@ -10100,7 +10278,7 @@ def _render_thematics_basket_table_v2(
 
     display_df, meta_df = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, view_mode)
     if display_df.empty or meta_df.empty:
-        st.info("No thematic baskets match the selected AI view filter.")
+        st.info("No thematic baskets match the selected view filter.")
         return
     display_df = _apply_grid_column_layout(
         display_df,
@@ -10189,6 +10367,20 @@ def _render_thematics_lens_tab(
 
     lens_focus_key = "thematics_lens_focus_basket"
     selected_focus = st.session_state.get(lens_focus_key)
+    view_mode = _render_thematics_view_mode_controls("thematics_lens")
+    lens_df, meta_df = _filter_thematics_basket_table_for_view(lens_df, meta_df, catalog, view_mode)
+    if lens_df.empty or meta_df.empty:
+        st.info("No thematic baskets match the selected view filter.")
+        return
+    visible_baskets = set(meta_df.get("basket_name", pd.Series(dtype=object)).astype(str).tolist())
+    normalized_focus = _normalize_thematics_selected_basket(
+        str(selected_focus) if selected_focus else None,
+        visible_baskets,
+    )
+    if normalized_focus != selected_focus:
+        st.session_state[lens_focus_key] = normalized_focus
+        selected_focus = normalized_focus
+
     selector_col, card_col = st.columns([1.3, 1.9])
     with selector_col:
         st.caption("Click a thematic to open its lens card.")
