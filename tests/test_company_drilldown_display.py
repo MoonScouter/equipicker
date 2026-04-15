@@ -1,3 +1,4 @@
+import json
 import unittest
 
 import pandas as pd
@@ -15,6 +16,7 @@ from equipilot_app import (
     _build_company_filter_state,
     _build_all_thematics_company_universe,
     _build_thematics_basket_metrics,
+    _build_thematics_lens_frame,
     _build_thematics_basket_table_frame,
     _build_thematics_company_universe,
     _build_company_drilldown_styler,
@@ -34,6 +36,7 @@ from equipilot_app import (
     _normalize_thematics_selected_basket,
     _prepare_company_drilldown_universe,
     _use_fast_company_grid_render,
+    build_thematics_catalog,
     apply_trend_symbols_to_table,
     build_company_drilldown_context,
     format_thematics_company_display,
@@ -1480,6 +1483,66 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(row["rel_strength_breadth"]), 50.0)
         self.assertAlmostEqual(float(row["rel_volume_breadth"]), 50.0)
 
+    def test_thematics_energy_config_matches_final_taxonomy(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "config" / "thematics.json"
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        thematics = payload["thematics"]
+
+        self.assertNotIn("Oil & Gas E&P", thematics)
+        self.assertNotIn("Oilfield Services", thematics)
+        self.assertEqual(list(thematics).count("Energy Sector"), 1)
+        self.assertEqual(
+            thematics["Energy Sector"]["sub_baskets"],
+            [
+                "Energy: Oil & Gas Integrated",
+                "Energy: Oil & Gas E&P",
+                "Energy: Oil & Gas Midstream",
+                "Energy: Oil & Gas Refining & Marketing",
+                "Energy: Oilfield Services & Drilling",
+                "Energy: Uranium",
+            ],
+        )
+
+        child_union = []
+        for child_name in thematics["Energy Sector"]["sub_baskets"]:
+            child_union.extend(thematics[child_name]["tickers"])
+        self.assertEqual(len(thematics["Energy Sector"]["tickers"]), len(set(thematics["Energy Sector"]["tickers"])))
+        self.assertEqual(set(thematics["Energy Sector"]["tickers"]), set(child_union))
+
+        self.assertTrue(thematics["Energy: Oil & Gas Midstream"]["is_parent"])
+        self.assertEqual(
+            thematics["Energy: Oil & Gas Midstream"]["sub_baskets"],
+            ["Energy Midstream & LNG", "Energy Midstream: Core Pipelines & Cash Flows"],
+        )
+        self.assertEqual(thematics["Energy Midstream & LNG"]["parent"], "Energy: Oil & Gas Midstream")
+        self.assertEqual(
+            thematics["Energy Midstream: Core Pipelines & Cash Flows"]["parent"],
+            "Energy: Oil & Gas Midstream",
+        )
+        self.assertEqual(thematics["Energy Midstream & LNG"]["tickers"], ["LNG", "NEXT", "KMI", "TRGP", "ET"])
+        self.assertEqual(
+            thematics["Energy Midstream: Core Pipelines & Cash Flows"]["tickers"],
+            ["WMB", "EPD", "ENB", "OKE", "MPLX", "VNOM"],
+        )
+        midstream_union = []
+        for child_name in thematics["Energy: Oil & Gas Midstream"]["sub_baskets"]:
+            midstream_union.extend(thematics[child_name]["tickers"])
+        self.assertEqual(set(thematics["Energy: Oil & Gas Midstream"]["tickers"]), set(midstream_union))
+        self.assertEqual(
+            thematics["Energy: Oilfield Services & Drilling"]["tickers"],
+            ["SLB", "HAL", "BKR", "NOV", "FTI", "LBRT", "PTEN", "NBR"],
+        )
+        self.assertEqual(thematics["Energy Security & Geopolitics"]["tickers"], ["LNG", "NEXT", "CCJ", "LEU", "TPL"])
+        self.assertEqual(
+            thematics["Nuclear Renaissance"],
+            {
+                "description": "Nuclear generation, fuel-cycle exposure, and SMR-linked beneficiaries driven by clean baseload demand.",
+                "tier": 2,
+                "tickers": ["CEG", "VST", "TLN", "CCJ", "LEU", "OKLO", "SMR", "BWXT"],
+            },
+        )
+        self.assertIn("Energy Transition", thematics)
+
     def test_thematics_ai_view_modes_filter_expected_rows(self) -> None:
         catalog = {
             "items": {
@@ -1584,9 +1647,222 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         )
         self.assertEqual(ai_vs_rest, ["AI", "Utilities Basket"])
         self.assertEqual(ai_layers_vs_rest, ["AI Infrastructure", "AI Silicon", "AI Cloud Platforms", "Utilities Basket"])
-        self.assertEqual(ai_sub_layers_vs_rest, ["AI Infra: Power Generation", "AI Cloud Platforms: Core", "Utilities Basket"])
+        self.assertEqual(ai_sub_layers_vs_rest, ["AI Infra: Power Generation", "AI Silicon", "AI Cloud Platforms: Core", "Utilities Basket"])
         self.assertEqual(ai_layers, ["AI Infrastructure", "AI Silicon", "AI Cloud Platforms"])
         self.assertEqual(ai_sub_layers, ["AI Infra: Power Generation", "AI Cloud Platforms: Core"])
+
+    def test_thematics_energy_view_modes_filter_expected_rows(self) -> None:
+        items = {}
+
+        def add_item(
+            name: str,
+            *,
+            parent: str = "",
+            children: list[str] | None = None,
+            family: str = "",
+            role: str = "standalone",
+            is_parent: bool = False,
+            is_ai_super_parent: bool = False,
+            is_ai_group_child: bool = False,
+        ) -> None:
+            items[name] = {
+                "name": name,
+                "parent": parent,
+                "is_parent": is_parent,
+                "children": list(children or []),
+                "tickers": [],
+                "is_ai_super_parent": is_ai_super_parent,
+                "is_ai_group_child": is_ai_group_child,
+                "family": family,
+                "hierarchy_role": role,
+                "is_family_parent": role == "family_parent",
+                "is_family_layer": role == "layer",
+                "is_family_sub_layer": role == "sub_layer",
+            }
+
+        add_item(
+            "AI",
+            children=["AI Infrastructure", "AI Silicon", "AI Cloud Platforms"],
+            family="AI",
+            role="family_parent",
+            is_parent=True,
+            is_ai_super_parent=True,
+        )
+        add_item(
+            "AI Infrastructure",
+            parent="AI",
+            children=["AI Infra: Power Generation"],
+            family="AI",
+            role="layer",
+            is_ai_group_child=True,
+        )
+        add_item("AI Infra: Power Generation", parent="AI Infrastructure", family="AI", role="sub_layer")
+        add_item("AI Silicon", parent="AI", family="AI", role="layer", is_ai_group_child=True)
+        add_item(
+            "AI Cloud Platforms",
+            parent="AI",
+            children=["AI Cloud Platforms: Core"],
+            family="AI",
+            role="layer",
+            is_parent=True,
+            is_ai_group_child=True,
+        )
+        add_item("AI Cloud Platforms: Core", parent="AI Cloud Platforms", family="AI", role="sub_layer")
+        energy_layers = [
+            "Energy: Oil & Gas Integrated",
+            "Energy: Oil & Gas E&P",
+            "Energy: Oil & Gas Midstream",
+            "Energy: Oil & Gas Refining & Marketing",
+            "Energy: Oilfield Services & Drilling",
+            "Energy: Uranium",
+        ]
+        add_item("Energy Sector", children=energy_layers, family="Energy", role="family_parent", is_parent=True)
+        for layer_name in energy_layers:
+            add_item(
+                layer_name,
+                parent="Energy Sector",
+                children=[
+                    "Energy Midstream & LNG",
+                    "Energy Midstream: Core Pipelines & Cash Flows",
+                ] if layer_name == "Energy: Oil & Gas Midstream" else [],
+                family="Energy",
+                role="layer",
+                is_parent=layer_name == "Energy: Oil & Gas Midstream",
+            )
+        add_item("Energy Midstream & LNG", parent="Energy: Oil & Gas Midstream", family="Energy", role="sub_layer")
+        add_item(
+            "Energy Midstream: Core Pipelines & Cash Flows",
+            parent="Energy: Oil & Gas Midstream",
+            family="Energy",
+            role="sub_layer",
+        )
+        add_item("High-Yield Energy Income", family="Energy", role="overlay")
+        add_item("Energy Security & Geopolitics", family="Energy", role="overlay")
+        add_item("Nuclear Renaissance", family="Energy", role="related")
+        add_item("Energy Transition")
+        add_item("Utilities Basket")
+
+        catalog = {
+            "items": items,
+            "roots": [
+                "AI",
+                "Energy Sector",
+                "High-Yield Energy Income",
+                "Energy Security & Geopolitics",
+                "Nuclear Renaissance",
+                "Energy Transition",
+                "Utilities Basket",
+            ],
+        }
+        basket_metrics_df = pd.DataFrame([{"name": name, "beta": 1.0} for name in items])
+        display_df, meta_df = _build_thematics_basket_table_frame(basket_metrics_df, catalog)
+
+        family_roots = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "family_roots")[0]["Name"].tolist()
+        layers = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "layers")[0]["Name"].tolist()
+        sub_layers = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "sub_layers")[0]["Name"].tolist()
+        energy_all = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "energy_all")[0]["Name"].tolist()
+        energy_layer_rows = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "energy_layers")[0]["Name"].tolist()
+        energy_sub_layer_rows = _filter_thematics_basket_table_for_view(display_df, meta_df, catalog, "energy_sub_layers")[0]["Name"].tolist()
+
+        self.assertEqual(family_roots, ["AI", "Energy Sector", "Energy Transition", "Utilities Basket"])
+        self.assertEqual(
+            layers,
+            [
+                "AI Infrastructure",
+                "AI Silicon",
+                "AI Cloud Platforms",
+                "Energy: Oil & Gas Integrated",
+                "Energy: Oil & Gas E&P",
+                "Energy: Oil & Gas Midstream",
+                "Energy: Oil & Gas Refining & Marketing",
+                "Energy: Oilfield Services & Drilling",
+                "Energy: Uranium",
+                "High-Yield Energy Income",
+                "Energy Security & Geopolitics",
+                "Nuclear Renaissance",
+                "Energy Transition",
+                "Utilities Basket",
+            ],
+        )
+        self.assertEqual(
+            sub_layers,
+            [
+                "AI Infra: Power Generation",
+                "AI Silicon",
+                "AI Cloud Platforms: Core",
+                "Energy: Oil & Gas Integrated",
+                "Energy: Oil & Gas E&P",
+                "Energy Midstream & LNG",
+                "Energy Midstream: Core Pipelines & Cash Flows",
+                "Energy: Oil & Gas Refining & Marketing",
+                "Energy: Oilfield Services & Drilling",
+                "Energy: Uranium",
+                "High-Yield Energy Income",
+                "Energy Security & Geopolitics",
+                "Nuclear Renaissance",
+                "Energy Transition",
+                "Utilities Basket",
+            ],
+        )
+        self.assertEqual(
+            energy_all,
+            [
+                "Energy Sector",
+                "Energy: Oil & Gas Integrated",
+                "Energy: Oil & Gas E&P",
+                "Energy: Oil & Gas Midstream",
+                "Energy Midstream & LNG",
+                "Energy Midstream: Core Pipelines & Cash Flows",
+                "Energy: Oil & Gas Refining & Marketing",
+                "Energy: Oilfield Services & Drilling",
+                "Energy: Uranium",
+                "High-Yield Energy Income",
+                "Energy Security & Geopolitics",
+                "Nuclear Renaissance",
+            ],
+        )
+        self.assertNotIn("Energy Transition", energy_all)
+        self.assertEqual(energy_layer_rows, energy_layers)
+        self.assertEqual(
+            energy_sub_layer_rows,
+            [
+                "Energy: Oil & Gas Integrated",
+                "Energy: Oil & Gas E&P",
+                "Energy Midstream & LNG",
+                "Energy Midstream: Core Pipelines & Cash Flows",
+                "Energy: Oil & Gas Refining & Marketing",
+                "Energy: Oilfield Services & Drilling",
+                "Energy: Uranium",
+            ],
+        )
+        self.assertNotIn("Energy: Oil & Gas Midstream", energy_sub_layer_rows)
+
+    def test_thematics_catalog_marks_energy_hierarchy_for_table_and_lens(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "config" / "thematics.json"
+        signature = f"test-{config_path.stat().st_mtime_ns}"
+        catalog = build_thematics_catalog(str(config_path), signature)
+        items = catalog["items"]
+        self.assertEqual(items["Energy Sector"]["family"], "Energy")
+        self.assertEqual(items["Energy Sector"]["hierarchy_role"], "family_parent")
+        self.assertEqual(items["Energy: Oil & Gas Midstream"]["hierarchy_role"], "layer")
+        self.assertEqual(items["Energy Midstream & LNG"]["hierarchy_role"], "sub_layer")
+        self.assertEqual(items["Energy Midstream: Core Pipelines & Cash Flows"]["hierarchy_role"], "sub_layer")
+        self.assertEqual(items["High-Yield Energy Income"]["hierarchy_role"], "overlay")
+        self.assertEqual(items["Energy Security & Geopolitics"]["hierarchy_role"], "overlay")
+        self.assertEqual(items["Nuclear Renaissance"]["hierarchy_role"], "related")
+        self.assertEqual(items["Energy Transition"]["hierarchy_role"], "standalone")
+
+        basket_metrics_df = pd.DataFrame([{"name": name, "beta": 1.0} for name in items])
+        _, table_meta = _build_thematics_basket_table_frame(basket_metrics_df, catalog)
+        _, lens_meta = _build_thematics_lens_frame(catalog)
+        table_roles = table_meta.set_index("basket_name")["hierarchy_role"].to_dict()
+        lens_roles = lens_meta.set_index("basket_name")["hierarchy_role"].to_dict()
+        self.assertEqual(table_roles["Energy Sector"], "family_parent")
+        self.assertEqual(lens_roles["Energy Sector"], "family_parent")
+        self.assertEqual(table_roles["Energy Midstream & LNG"], "sub_layer")
+        self.assertEqual(lens_roles["Energy Midstream & LNG"], "sub_layer")
+        self.assertEqual(table_roles["Energy Midstream: Core Pipelines & Cash Flows"], "sub_layer")
+        self.assertEqual(lens_roles["Energy Midstream: Core Pipelines & Cash Flows"], "sub_layer")
 
     def test_thematics_selected_basket_is_cleared_when_hidden(self) -> None:
         self.assertEqual(
