@@ -713,7 +713,6 @@
         "DVN",
         "OVV",
         "MTDR",
-        "VTLE",
         "PR",
         "APA",
         "OXY",
@@ -721,7 +720,6 @@
         "CTRA",
         "EXE",
         "TPL",
-        "STR",
         "KRP",
         "BSM",
         "DMLP",
@@ -767,7 +765,7 @@
       "tier": 1,
       "value_chain_layer": 1.2,
       "parent": "Energy Sector",
-      "article_narrative": "E&P is the purest listed expression of commodity exposure. Inside this layer, it helps to separate oil-weighted names, gas-weighted names, and royalty-linked models because the drivers, volatility, and valuation logic are not the same. For article use, the practical split is: oil-weighted = EOG, COP, FANG, DVN, OVV, MTDR, VTLE, PR, APA, OXY; gas-weighted = EQT, CTRA, EXE; royalty / mineral = TPL, STR, KRP, BSM, DMLP.",
+      "article_narrative": "E&P is the purest listed expression of commodity exposure. Inside this layer, it helps to separate oil-weighted names, gas-weighted names, and royalty-linked models because the drivers, volatility, and valuation logic are not the same. For article use, the practical split is: oil-weighted = EOG, COP, FANG, DVN, OVV, MTDR, PR, APA, OXY; gas-weighted = EQT, CTRA, EXE; royalty / mineral = TPL, KRP, BSM, DMLP.",
       "tickers": [
         "EOG",
         "COP",
@@ -775,7 +773,6 @@
         "DVN",
         "OVV",
         "MTDR",
-        "VTLE",
         "PR",
         "APA",
         "OXY",
@@ -783,7 +780,6 @@
         "CTRA",
         "EXE",
         "TPL",
-        "STR",
         "KRP",
         "BSM",
         "DMLP"
@@ -898,8 +894,7 @@
         "VNOM",
         "KRP",
         "BSM",
-        "DMLP",
-        "STR"
+        "DMLP"
       ]
     },
     "Energy Security & Geopolitics": {
