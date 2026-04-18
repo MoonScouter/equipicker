@@ -10890,7 +10890,9 @@ def main() -> None:
     config = render_sidebar(config)
     render_header()
 
-    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, trade_ideas_tab, quadrants_tab, api_tab = st.tabs(
+    show_quadrants_tab = False
+
+    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, trade_ideas_tab, api_tab = st.tabs(
         [
             "Home",
             "Indices",
@@ -10898,7 +10900,6 @@ def main() -> None:
             "Sector",
             "Thematics",
             "Trade Ideas",
-            "Quadrants",
             "API",
         ]
     )
@@ -10914,7 +10915,7 @@ def main() -> None:
         render_thematics_tab(config)
     with trade_ideas_tab:
         render_trade_ideas(config)
-    with quadrants_tab:
+    if show_quadrants_tab:
         default_anchor = config.eod_as_of_date or config.report_date
         render_quadrants(default_anchor)
     with api_tab:
