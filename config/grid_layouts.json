@@ -92,5 +92,19 @@
       "Rel Strength",
       "Rel Volume"
     ]
+  },
+  "thematics_company_grid_company_visible_columns_v2": {
+    "visible_columns": [
+      "Thematic",
+      "Ticker",
+      "Company",
+      "Market Cap",
+      "FS",
+      "Mom. FS",
+      "Growth FS",
+      "Value FS",
+      "Quality FS",
+      "Risk FS"
+    ]
   }
 }
