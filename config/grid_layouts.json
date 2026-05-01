@@ -10,7 +10,8 @@
       "Value FS",
       "Quality FS",
       "Risk FS",
-      "Mom. FS"
+      "Mom. FS",
+      "1M"
     ]
   },
   "thematics_company_grid": {
@@ -95,16 +96,25 @@
   },
   "thematics_company_grid_company_visible_columns_v2": {
     "visible_columns": [
-      "Thematic",
       "Ticker",
       "Company",
+      "Sector",
       "Market Cap",
+      "1M",
+      "RSI Regime",
+      "Short Term Flow",
+      "RSI Divergence (D)",
+      "RSI Divergence (W)",
       "FS",
       "Mom. FS",
       "Growth FS",
       "Value FS",
       "Quality FS",
-      "Risk FS"
+      "Risk FS",
+      "Rel Strength",
+      "Rel Volume",
+      "AI Revenue Exposure",
+      "AI Disruption Risk"
     ]
   }
 }

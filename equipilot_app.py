@@ -7,6 +7,7 @@ import logging
 import base64
 import calendar
 import re
+import threading
 import time
 from bisect import bisect_right
 from html import escape as html_escape
@@ -81,6 +82,16 @@ from openai_responses_service import (
     run_responses_request,
     save_json_document,
     save_output_text,
+)
+from split_service import (
+    DEFAULT_END_DATE as DEFAULT_SPLIT_END_DATE,
+    DEFAULT_EXCHANGE as DEFAULT_SPLIT_EXCHANGE,
+    DEFAULT_START_DATE as DEFAULT_SPLIT_START_DATE,
+    list_saved_split_outputs,
+    load_split_output,
+    refresh_split_result_summary,
+    run_split_check,
+    save_split_outputs,
 )
 from market_service import (
     build_market_cache_key,
@@ -2254,6 +2265,295 @@ def render_api_tab() -> None:
         render_api_outputs_subtab()
     with prompts_tab:
         render_api_prompts_subtab()
+
+
+def _split_result_to_frame(result: dict[str, object]) -> pd.DataFrame:
+    matches = result.get("matches", [])
+    if not isinstance(matches, list) or not matches:
+        return pd.DataFrame(columns=["code", "name", "sector", "industry", "exchange", "date", "split"])
+    return pd.DataFrame(matches).drop(columns=["raw_record"], errors="ignore")
+
+
+def _store_current_split_result(result: dict[str, object], output_paths: Optional[dict[str, Path]] = None) -> None:
+    normalized_result = refresh_split_result_summary(dict(result))
+    st.session_state["utilities_split_result"] = normalized_result
+    st.session_state["utilities_split_output_paths"] = {
+        key: str(path)
+        for key, path in (output_paths or {}).items()
+    }
+
+
+def _render_split_progress_log(log_lines: Sequence[object]) -> None:
+    escaped_lines = "<br>".join(html_escape(str(line)) for line in log_lines)
+    html(
+        f"""
+        <div id="split-progress-log" style="
+            height: 220px;
+            overflow-y: auto;
+            padding: 12px;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            border-radius: 8px;
+            background: rgba(248, 250, 252, 0.9);
+            color: #475569;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+            font-size: 13px;
+            line-height: 1.55;
+            white-space: normal;
+        ">
+            {escaped_lines}
+        </div>
+        <script>
+            const logEl = document.getElementById("split-progress-log");
+            if (logEl) {{
+                logEl.scrollTop = logEl.scrollHeight;
+            }}
+        </script>
+        """,
+        height=220,
+    )
+
+
+def _get_split_run_state() -> dict[str, object]:
+    state = st.session_state.get("utilities_split_run_state")
+    if not isinstance(state, dict):
+        state = {}
+        st.session_state["utilities_split_run_state"] = state
+    return state
+
+
+def _split_run_is_active(run_state: dict[str, object]) -> bool:
+    thread = run_state.get("thread")
+    return isinstance(thread, threading.Thread) and thread.is_alive()
+
+
+def _start_split_run(start_date_value: date, end_date_value: date, exchange_value: str) -> None:
+    stop_event = threading.Event()
+    run_state: dict[str, object] = {
+        "status": "running",
+        "stop_event": stop_event,
+        "progress": "Loading Equipicker universe...",
+        "log_lines": [],
+        "result": None,
+        "output_paths": {},
+        "error": "",
+        "consumed": False,
+    }
+
+    def worker() -> None:
+        def append_log(message: str) -> None:
+            log_lines = run_state.setdefault("log_lines", [])
+            if isinstance(log_lines, list):
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                log_lines.append(f"[{timestamp}] {message}")
+
+        def progress_callback(current_date: date, records_seen: int, total_seen: int) -> None:
+            run_state["progress"] = (
+                f"{current_date.isoformat()} checked | {records_seen} split records found | "
+                f"{total_seen} total records seen"
+            )
+
+        try:
+            result = run_split_check(
+                start_date=start_date_value,
+                end_date=end_date_value,
+                exchange=exchange_value,
+                stop_requested=stop_event.is_set,
+                progress_callback=progress_callback,
+                log_callback=append_log,
+            )
+            output_paths = save_split_outputs(result)
+        except Exception as exc:  # pragma: no cover - UI feedback
+            run_state["status"] = "error"
+            run_state["error"] = str(exc)
+            append_log(f"Run failed: {exc}")
+        else:
+            run_state["result"] = result
+            run_state["output_paths"] = output_paths
+            run_state["status"] = "cancelled" if result.get("cancelled") else "completed"
+            run_state["progress"] = "Stopped and saved partial output." if result.get("cancelled") else "Completed."
+
+    thread = threading.Thread(target=worker, name="equipicker-split-check", daemon=True)
+    run_state["thread"] = thread
+    st.session_state["utilities_split_run_state"] = run_state
+    thread.start()
+
+
+def render_utilities_get_splits_subtab() -> None:
+    render_subtab_group_intro(
+        "get_splits",
+        "Check EODHD bulk split events against the Equipicker universe and save the result set for reuse.",
+    )
+
+    run_state = _get_split_run_state()
+    run_active = _split_run_is_active(run_state)
+
+    control_cols = st.columns([1, 1, 0.8, 1, 1])
+    with control_cols[0]:
+        start_date_value = st.date_input(
+            "Start date",
+            value=DEFAULT_SPLIT_START_DATE,
+            key="utilities_get_splits_start_date",
+            disabled=run_active,
+        )
+    with control_cols[1]:
+        end_date_value = st.date_input(
+            "End date",
+            value=DEFAULT_SPLIT_END_DATE,
+            key="utilities_get_splits_end_date",
+            disabled=run_active,
+        )
+    with control_cols[2]:
+        exchange_value = st.text_input(
+            "Exchange",
+            value=DEFAULT_SPLIT_EXCHANGE,
+            key="utilities_get_splits_exchange",
+            disabled=run_active,
+        )
+    with control_cols[3]:
+        st.write("")
+        st.write("")
+        run_clicked = st.button(
+            "run check",
+            use_container_width=True,
+            key="utilities_get_splits_run_button",
+            disabled=run_active,
+        )
+    with control_cols[4]:
+        st.write("")
+        st.write("")
+        stop_clicked = st.button(
+            "stop",
+            use_container_width=True,
+            key="utilities_get_splits_stop_button",
+            disabled=not run_active,
+        )
+
+    if stop_clicked and run_active:
+        stop_event = run_state.get("stop_event")
+        if isinstance(stop_event, threading.Event):
+            stop_event.set()
+            run_state["progress"] = "Stop requested. The loop will halt before the next EODHD day call."
+            log_lines = run_state.get("log_lines")
+            if isinstance(log_lines, list):
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                log_lines.append(f"[{timestamp}] Stop requested from the UI.")
+            st.warning("Stop requested. Waiting for the current EODHD request to finish.")
+
+    if run_clicked:
+        if end_date_value < start_date_value:
+            st.error("End date cannot be earlier than start date.")
+        else:
+            _start_split_run(
+                start_date_value=start_date_value,
+                end_date_value=end_date_value,
+                exchange_value=str(exchange_value or DEFAULT_SPLIT_EXCHANGE).strip().upper(),
+            )
+            st.rerun()
+
+    run_state = _get_split_run_state()
+    run_active = _split_run_is_active(run_state)
+    if run_active:
+        st.status("Loading Splits", state="running")
+    elif run_state.get("status") in {"completed", "cancelled", "error"} and not run_state.get("consumed"):
+        run_state["consumed"] = True
+        if run_state.get("status") == "error":
+            st.error(f"Split check failed: {run_state.get('error')}")
+        else:
+            result = run_state.get("result")
+            output_paths = run_state.get("output_paths")
+            if isinstance(result, dict):
+                saved_json_name = ""
+                if isinstance(output_paths, dict) and output_paths.get("json"):
+                    saved_json_name = Path(output_paths["json"]).name
+                _store_current_split_result(
+                    result,
+                    output_paths if isinstance(output_paths, dict) else None,
+                )
+                if run_state.get("status") == "cancelled":
+                    st.warning(f"Split check stopped and partial output saved: {saved_json_name or 'output JSON'}")
+                else:
+                    st.success(f"Split check saved: {saved_json_name or 'output JSON'}")
+
+    log_lines = run_state.get("log_lines")
+    if isinstance(log_lines, list) and log_lines:
+        st.caption("Progress log")
+        _render_split_progress_log(log_lines)
+
+    saved_names = list_saved_split_outputs()
+    reload_cols = st.columns([1.6, 0.7, 1.2])
+    with reload_cols[0]:
+        selected_output = st.selectbox(
+            "Previously saved output",
+            [""] + saved_names,
+            format_func=lambda value: value or "(select output)",
+            key="utilities_get_splits_saved_output",
+        )
+    with reload_cols[1]:
+        st.write("")
+        st.write("")
+        reload_clicked = st.button("Load output", use_container_width=True, key="utilities_get_splits_load_button")
+    with reload_cols[2]:
+        if selected_output:
+            st.caption(f"Selected JSON: {selected_output}.json")
+
+    if reload_clicked:
+        if not selected_output:
+            st.info("Select a saved output first.")
+        else:
+            try:
+                result = load_split_output(selected_output)
+            except Exception as exc:  # pragma: no cover - UI feedback
+                st.error(f"Could not load saved output: {exc}")
+            else:
+                _store_current_split_result(result)
+                st.success(f"Loaded output: {selected_output}.json")
+
+    current_result = st.session_state.get("utilities_split_result")
+    if not isinstance(current_result, dict):
+        st.info("Run a check or load a previous output to see the summary text here.")
+        return
+
+    st.markdown("**Current output text**")
+    st.text_area(
+        "Split check summary",
+        value=str(current_result.get("page_summary_text", "")),
+        height=120,
+        disabled=True,
+        label_visibility="collapsed",
+    )
+
+    meta_cols = st.columns(4)
+    meta_cols[0].metric("Universe size", int(current_result.get("universe_size", 0) or 0))
+    meta_cols[1].metric("Split records seen", int(current_result.get("total_split_records_seen", 0) or 0))
+    meta_cols[2].metric("Matches", len(current_result.get("matches", []) or []))
+    meta_cols[3].metric("Exchange", str(current_result.get("exchange", "") or "n/a"))
+
+    st.dataframe(_split_result_to_frame(current_result), use_container_width=True, hide_index=True)
+
+    output_paths = st.session_state.get("utilities_split_output_paths", {})
+    if isinstance(output_paths, dict) and output_paths:
+        st.caption(
+            "Saved files: "
+            + " | ".join(
+                f"{output_type}: {Path(path).name}"
+                for output_type, path in output_paths.items()
+                if output_type in {"json", "csv", "html"}
+            )
+        )
+
+    if _split_run_is_active(_get_split_run_state()):
+        time.sleep(1)
+        st.rerun()
+
+
+def render_utilities_tab() -> None:
+    render_subtab_group_intro(
+        "Utilities",
+        "Operational checks and saved helper outputs for Equipicker workflows.",
+    )
+    get_splits_tab = st.tabs(["get_splits"])[0]
+    with get_splits_tab:
+        render_utilities_get_splits_subtab()
 
 
 def get_banner_path() -> Optional[Path]:
@@ -10892,7 +11192,7 @@ def main() -> None:
 
     show_quadrants_tab = False
 
-    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, trade_ideas_tab, api_tab = st.tabs(
+    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, trade_ideas_tab, api_tab, utilities_tab = st.tabs(
         [
             "Home",
             "Indices",
@@ -10901,6 +11201,7 @@ def main() -> None:
             "Thematics",
             "Trade Ideas",
             "API",
+            "Utilities",
         ]
     )
     with home_tab:
@@ -10920,6 +11221,8 @@ def main() -> None:
         render_quadrants(default_anchor)
     with api_tab:
         render_api_tab()
+    with utilities_tab:
+        render_utilities_tab()
 
     render_footer()
 
