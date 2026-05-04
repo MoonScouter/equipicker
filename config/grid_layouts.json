@@ -3,15 +3,15 @@
     "visible_columns": [
       "Name",
       "Beta",
-      "1W",
-      "YTD",
+      "1M",
+      "RS %",
+      "Vol %",
       "FS",
+      "Mom. FS",
       "Growth FS",
       "Value FS",
       "Quality FS",
-      "Risk FS",
-      "Mom. FS",
-      "1M"
+      "Risk FS"
     ]
   },
   "thematics_company_grid": {
@@ -78,6 +78,8 @@
       "Industry",
       "Market Cap",
       "Beta",
+      "1M",
+      "YTD",
       "TS",
       "RSI Regime",
       "Sector Regime Fit",
@@ -115,6 +117,19 @@
       "Rel Volume",
       "AI Revenue Exposure",
       "AI Disruption Risk"
+    ]
+  },
+  "market_sector_table_company_visible_columns_v2": {
+    "visible_columns": [
+      "Sector",
+      "Family",
+      "RSI Breadth >= 60",
+      "RSI Breadth >= 75",
+      "RSI Breadth < 40",
+      "RSI Participation Composite",
+      "Sector Rotation Score",
+      "Sector Regime Fit Score",
+      "Regime Fit Flag"
     ]
   }
 }

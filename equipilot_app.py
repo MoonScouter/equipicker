@@ -6,6 +6,7 @@ import json
 import logging
 import base64
 import calendar
+import hashlib
 import re
 import threading
 import time
@@ -144,6 +145,8 @@ _favicon = Image.open(_FAVICON_PATH) if _FAVICON_PATH.exists() else None
 CAP_BUCKET_ORDER = ["Nano", "Micro", "Small", "Mid", "Large", "Mega", "Unknown"]
 COMPANY_GRID_MAX_HEIGHT = 820
 COMPANY_GRID_FAST_RENDER_THRESHOLD = 800
+COMPANY_GRID_DEFAULT_VISIBLE_ROWS = 150
+COMPANY_GRID_ROW_LIMIT_OPTIONS = [100, 150, 250, 500]
 QUADRANT_BORDER_D_T_THRESHOLD = 5.0
 TREND_SYMBOL_UP = "📈"
 TREND_SYMBOL_DOWN = "📉"
@@ -171,6 +174,7 @@ GRID_SURFACE_FUNDAMENTAL_COMPANY = "fundamental_company_grid"
 GRID_SURFACE_TECHNICAL_COMPANY = "technical_company_grid"
 GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
 GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
+GRID_SURFACE_MARKET_SECTOR_TABLE = "market_sector_table"
 
 COMPANY_GRID_SCORE_COLUMNS = [
     "TS",
@@ -234,6 +238,7 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
 }
 COMPANY_GRID_WIDE_TEXT_COLUMNS = {"Thematic", "Company", "Sector", "Industry"}
 COMPANY_GRID_TOP_SCROLL_COMPONENT_HEIGHT = 24
+PERFORMANCE_FALLBACK_MARKER = "\u2063"
 
 
 def _normalize_grid_visible_columns(
@@ -329,6 +334,22 @@ def _set_grid_visible_columns(surface_id: str, visible_columns: Sequence[str]) -
     st.session_state[_grid_layout_state_key(surface_id)] = list(visible_columns)
 
 
+def _merge_preferred_visible_columns(
+    visible_columns: Sequence[str],
+    available_columns: Sequence[str],
+    preferred_columns: Optional[Sequence[str]] = None,
+) -> list[str]:
+    available = list(dict.fromkeys(available_columns))
+    normalized_visible = [column for column in visible_columns if column in available]
+    if not preferred_columns:
+        return normalized_visible
+    merged = list(normalized_visible)
+    for column in preferred_columns:
+        if column in available and column not in merged:
+            merged.append(column)
+    return merged
+
+
 def _render_grid_column_customizer(
     surface_id: str,
     available_columns: Sequence[str],
@@ -341,127 +362,43 @@ def _render_grid_column_customizer(
 
     locked = [column_name for column_name in (locked_columns or []) if column_name in available]
     visible_columns = _get_grid_visible_columns(surface_id, available, locked_columns=locked)
-    hidden_columns = [column_name for column_name in available if column_name not in visible_columns]
-    minimum_visible = len(locked) if locked else 1
-
-    visible_select_key = f"{surface_id}_grid_layout_visible_select"
-    hidden_select_key = f"{surface_id}_grid_layout_hidden_select"
-    removable_columns = [column_name for column_name in visible_columns if column_name not in set(locked)]
-
-    if removable_columns:
-        if st.session_state.get(visible_select_key) not in removable_columns:
-            st.session_state[visible_select_key] = removable_columns[0]
-    else:
-        st.session_state.pop(visible_select_key, None)
-
-    if hidden_columns:
-        if st.session_state.get(hidden_select_key) not in hidden_columns:
-            st.session_state[hidden_select_key] = hidden_columns[0]
-    else:
-        st.session_state.pop(hidden_select_key, None)
-
-    with st.expander(f"Columns ({len(visible_columns)}/{len(available)})", expanded=False):
+    with st.expander("Fields", expanded=False):
         if locked:
             st.caption(f"Locked columns: {', '.join(locked)}")
         else:
-            st.caption("Customize visible columns and save the layout for this grid.")
+            st.caption("All columns are visible by default. Use Fields to hide or add columns.")
 
-        manage_cols = st.columns([1.45, 0.75, 0.75, 0.95])
-        selected_visible = st.session_state.get(visible_select_key)
-        with manage_cols[0]:
-            st.selectbox(
-                "Visible columns",
-                options=removable_columns or ["No removable columns"],
-                key=visible_select_key,
-                disabled=not removable_columns,
-            )
-        selected_index = visible_columns.index(selected_visible) if selected_visible in visible_columns else -1
-        first_movable_index = len(locked)
-        with manage_cols[1]:
-            move_up_clicked = st.button(
-                "Up",
-                key=f"{surface_id}_grid_layout_move_up",
-                use_container_width=True,
-                disabled=selected_index < 0 or selected_index <= first_movable_index,
-            )
-        with manage_cols[2]:
-            move_down_clicked = st.button(
-                "Down",
-                key=f"{surface_id}_grid_layout_move_down",
-                use_container_width=True,
-                disabled=selected_index < 0 or selected_index >= len(visible_columns) - 1,
-            )
-        with manage_cols[3]:
-            remove_clicked = st.button(
-                "Remove",
-                key=f"{surface_id}_grid_layout_remove",
-                use_container_width=True,
-                disabled=selected_index < 0 or len(visible_columns) <= minimum_visible,
-            )
+        checkbox_columns = st.columns(5)
+        updated_selection: list[str] = []
+        locked_set = set(locked)
+        for index, column_name in enumerate(available):
+            checkbox_key = f"{surface_id}_grid_layout_field_{index}"
+            default_visible = column_name in visible_columns
+            if checkbox_key not in st.session_state:
+                st.session_state[checkbox_key] = default_visible
+            if column_name in locked_set:
+                st.session_state[checkbox_key] = True
+            with checkbox_columns[index % len(checkbox_columns)]:
+                is_visible = st.checkbox(
+                    column_name,
+                    key=checkbox_key,
+                    disabled=column_name in locked_set,
+                )
+            if is_visible or column_name in locked_set:
+                updated_selection.append(column_name)
 
-        add_cols = st.columns([1.45, 0.95])
-        with add_cols[0]:
-            st.selectbox(
-                "Hidden columns",
-                options=hidden_columns or ["No hidden columns"],
-                key=hidden_select_key,
-                disabled=not hidden_columns,
-            )
-        with add_cols[1]:
-            add_clicked = st.button(
-                "Add",
-                key=f"{surface_id}_grid_layout_add",
-                use_container_width=True,
-                disabled=not hidden_columns,
-            )
+        normalized_selection = _normalize_grid_visible_columns(
+            updated_selection,
+            available,
+            locked_columns=locked,
+            default_columns=available,
+        )
+        if normalized_selection != visible_columns:
+            _set_grid_visible_columns(surface_id, normalized_selection)
+            save_grid_layout(surface_id, normalized_selection, GRID_LAYOUT_CONFIG_PATH)
+        st.caption("Column visibility auto-saves for this grid surface.")
 
-        action_cols = st.columns([1, 1, 2.2])
-        with action_cols[0]:
-            save_clicked = st.button(
-                "Save columns",
-                key=f"{surface_id}_grid_layout_save",
-                use_container_width=True,
-            )
-        with action_cols[1]:
-            reset_clicked = st.button(
-                "Reset saved layout",
-                key=f"{surface_id}_grid_layout_reset",
-                use_container_width=True,
-            )
-        with action_cols[2]:
-            st.caption("Saved layouts are app-wide for this grid surface.")
-
-        if move_up_clicked and selected_index > first_movable_index:
-            updated = list(visible_columns)
-            updated[selected_index - 1], updated[selected_index] = updated[selected_index], updated[selected_index - 1]
-            _set_grid_visible_columns(surface_id, updated)
-            st.rerun()
-
-        if move_down_clicked and 0 <= selected_index < len(visible_columns) - 1:
-            updated = list(visible_columns)
-            updated[selected_index + 1], updated[selected_index] = updated[selected_index], updated[selected_index + 1]
-            _set_grid_visible_columns(surface_id, updated)
-            st.rerun()
-
-        if remove_clicked and 0 <= selected_index and len(visible_columns) > minimum_visible:
-            updated = [column_name for column_name in visible_columns if column_name != selected_visible]
-            updated = _normalize_grid_visible_columns(updated, available, locked_columns=locked, default_columns=available)
-            _set_grid_visible_columns(surface_id, updated)
-            st.rerun()
-
-        if add_clicked:
-            selected_hidden = st.session_state.get(hidden_select_key)
-            if isinstance(selected_hidden, str) and selected_hidden in hidden_columns:
-                updated = list(visible_columns) + [selected_hidden]
-                updated = _normalize_grid_visible_columns(updated, available, locked_columns=locked, default_columns=available)
-                _set_grid_visible_columns(surface_id, updated)
-                st.rerun()
-
-        if save_clicked:
-            save_grid_layout(surface_id, visible_columns, GRID_LAYOUT_CONFIG_PATH)
-            st.success(f"Saved columns to {GRID_LAYOUT_CONFIG_PATH.name}.")
-
-        if reset_clicked:
+        if st.button("Reset saved layout", key=f"{surface_id}_grid_layout_reset", use_container_width=True):
             clear_grid_layout(surface_id, GRID_LAYOUT_CONFIG_PATH)
             default_columns = _normalize_grid_visible_columns(
                 None,
@@ -470,6 +407,9 @@ def _render_grid_column_customizer(
                 default_columns=available,
             )
             _set_grid_visible_columns(surface_id, default_columns)
+            for index, column_name in enumerate(available):
+                checkbox_key = f"{surface_id}_grid_layout_field_{index}"
+                st.session_state[checkbox_key] = column_name in default_columns
             st.rerun()
 
     return list(st.session_state.get(_grid_layout_state_key(surface_id), visible_columns))
@@ -954,6 +894,13 @@ def _bump_selection_nonce(state_key: str) -> None:
     st.session_state[state_key] = int(st.session_state.get(state_key, 0) or 0) + 1
 
 
+def _combine_optional_messages(*messages: Optional[str]) -> Optional[str]:
+    cleaned = [str(message).strip() for message in messages if str(message or "").strip()]
+    if not cleaned:
+        return None
+    return " ".join(cleaned)
+
+
 def _price_close_for_target(
     price_entry: Optional[dict[str, list[object]]],
     target_date: date,
@@ -1002,11 +949,15 @@ def _compute_company_return_metrics(
     for ticker_value in tickers:
         price_entry = price_lookup.get(ticker_value)
         anchor_close = _price_close_for_target(price_entry, reference_date, exact=True)
+        anchor_fallback_used = False
         if anchor_close is None:
             exact_anchor_missing = True
+            anchor_close = _price_close_for_target(price_entry, reference_date)
+            anchor_fallback_used = anchor_close is not None
         row: dict[str, object] = {
             "ticker": ticker_value,
             "anchor_close": anchor_close,
+            "anchor_fallback_used": anchor_fallback_used,
         }
         for metric_name, target_date in anchor_targets.items():
             base_close = _price_close_for_target(
@@ -1036,6 +987,13 @@ def _format_percent_value(value: object) -> str:
     return f"{float(numeric):.1f}%"
 
 
+def _format_percent_value_with_fallback_marker(value: object, fallback_used: bool = False) -> str:
+    formatted = _format_percent_value(value)
+    if formatted == "N/A" or not fallback_used:
+        return formatted
+    return f"{formatted}{PERFORMANCE_FALLBACK_MARKER}"
+
+
 def _format_numeric_value(value: object) -> str:
     numeric = pd.to_numeric(value, errors="coerce")
     if pd.isna(numeric):
@@ -1052,6 +1010,13 @@ def _render_score_with_symbol(value: object, symbol: str) -> str:
 
 def _render_percent_with_symbol(value: object, symbol: str) -> str:
     formatted = _format_percent_value(value)
+    if formatted == "N/A" or not symbol:
+        return formatted
+    return f"{formatted} {symbol}"
+
+
+def _render_numeric_with_symbol(value: object, symbol: str) -> str:
+    formatted = _format_numeric_value(value)
     if formatted == "N/A" or not symbol:
         return formatted
     return f"{formatted} {symbol}"
@@ -3008,6 +2973,29 @@ button[role="tab"][aria-selected="true"] {
 .stTextArea textarea {
     border-radius: 12px !important;
 }
+div[data-baseweb="slider"] > div {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+div[data-baseweb="slider"] [data-testid="stTickBar"] {
+    background: rgba(46, 144, 250, 0.18) !important;
+}
+div[data-baseweb="slider"] [data-testid="stTickBarMin"],
+div[data-baseweb="slider"] [data-testid="stTickBarMax"] {
+    background: var(--ep-sky) !important;
+}
+div[data-baseweb="slider"] [role="slider"] {
+    background: var(--ep-sky) !important;
+    border: 2px solid #FFFFFF !important;
+    box-shadow: 0 0 0 1px rgba(46, 144, 250, 0.18) !important;
+}
+div[data-baseweb="tag"] {
+    background: var(--ep-sky) !important;
+    border-color: var(--ep-sky) !important;
+}
+div[data-baseweb="tag"] * {
+    color: #FFFFFF !important;
+}
 .ep-appbar {
     display:flex;
     justify-content:space-between;
@@ -3702,8 +3690,39 @@ def _company_grid_widget_nonce_key(surface_id: str) -> str:
     return f"{surface_id}_company_grid_widget_nonce"
 
 
+def _company_grid_aggrid_key(
+    surface_id: str,
+    widget_nonce: int,
+    visible_columns: Sequence[str],
+    pinned_columns: Sequence[str],
+    selected_row_limit: str,
+) -> str:
+    layout_payload = {
+        "visible": list(visible_columns),
+        "pinned": list(pinned_columns),
+        "rows": str(selected_row_limit),
+    }
+    layout_signature = hashlib.md5(
+        json.dumps(layout_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"{surface_id}_aggrid_{widget_nonce}_{layout_signature}"
+
+
 def _company_grid_column_checkbox_key(surface_id: str, index: int) -> str:
     return f"{surface_id}_company_grid_column_{index}"
+
+
+def _company_grid_pinned_columns_key(surface_id: str) -> str:
+    return f"{surface_id}_company_grid_pinned_columns"
+
+
+def _default_company_grid_pinned_columns(available_columns: Sequence[str]) -> list[str]:
+    available = list(available_columns)
+    preferred = [column for column in ["Ticker", "Company"] if column in available]
+    if preferred:
+        return preferred
+    fallback = [column for column in ["Name", "Sector"] if column in available]
+    return fallback[:1]
 
 
 def _queue_company_grid_layout_reset(surface_id: str) -> None:
@@ -3737,15 +3756,21 @@ def _apply_pending_company_grid_layout_reset(surface_id: str, available_columns:
     st.session_state[nonce_key] = int(st.session_state.get(nonce_key, 0) or 0) + 1
     layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
     st.session_state.pop(_grid_layout_state_key(layout_surface_id), None)
+    st.session_state.pop(_company_grid_pinned_columns_key(surface_id), None)
     for index, _column_name in enumerate(list(available_columns or [])):
         st.session_state.pop(_company_grid_column_checkbox_key(surface_id, index), None)
 
 
-def _build_company_grid_options(display_df: pd.DataFrame, surface_id: str) -> dict[str, object]:
+def _build_company_grid_options(
+    display_df: pd.DataFrame,
+    surface_id: str,
+    *,
+    pinned_columns: Optional[Sequence[str]] = None,
+) -> dict[str, object]:
     if not AGGRID_AVAILABLE or GridOptionsBuilder is None or JsCode is None:
         return {}
 
-    storage_key = _company_grid_layout_storage_key(surface_id)
+    pinned_set = set(pinned_columns or [])
     builder = GridOptionsBuilder.from_dataframe(display_df)
     builder.configure_default_column(
         sortable=True,
@@ -3760,6 +3785,12 @@ def _build_company_grid_options(display_df: pd.DataFrame, surface_id: str) -> di
     builder.configure_grid_options(
         suppressDragLeaveHidesColumns=True,
         animateRows=False,
+        enableRangeSelection=True,
+        enableCellTextSelection=True,
+        rowBuffer=8,
+        debounceVerticalScrollbar=True,
+        suppressRowVirtualisation=False,
+        suppressColumnVirtualisation=False,
     )
 
     left_align_style = {"textAlign": "left"}
@@ -3794,13 +3825,18 @@ function(params) {
     performance_style_js = JsCode(
         """
 function(params) {
-  const match = String(params.value ?? "").replace(/,/g, "").match(/[-+]?\\d+(?:\\.\\d+)?/);
+  const rawValue = String(params.value ?? "");
+  const fallbackUsed = rawValue.includes("\u2063");
+  const match = rawValue.replace(/,/g, "").match(/[-+]?\\d+(?:\\.\\d+)?/);
   if (!match) return { color: "#7B8BA0" };
   const numeric = parseFloat(match[0]);
   if (Number.isNaN(numeric)) return { color: "#7B8BA0" };
-  if (numeric > 0) return { color: "#15803D", fontWeight: "700" };
-  if (numeric < 0) return { color: "#B42318", fontWeight: "700" };
-  return { color: "#334E68", fontWeight: "600" };
+  const baseStyle = fallbackUsed
+    ? { boxShadow: "inset 0 0 0 1px #F59E0B", borderRadius: "2px" }
+    : {};
+  if (numeric > 0) return Object.assign(baseStyle, { color: "#15803D", fontWeight: "700" });
+  if (numeric < 0) return Object.assign(baseStyle, { color: "#B42318", fontWeight: "700" });
+  return Object.assign(baseStyle, { color: "#334E68", fontWeight: "600" });
 }
         """
     )
@@ -3881,6 +3917,9 @@ function(valueA, valueB) {
         config["width"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
         if column_name in COMPANY_GRID_WIDE_TEXT_COLUMNS:
             config["minWidth"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
+        if column_name in pinned_set:
+            config["pinned"] = "left"
+            config["lockPinned"] = True
         if column_name in COMPANY_GRID_SCORE_COLUMNS:
             config["cellStyle"] = score_style_js
             config["comparator"] = numeric_comparator_js
@@ -3899,68 +3938,10 @@ function(valueA, valueB) {
             config["comparator"] = numeric_comparator_js
         builder.configure_column(column_name, **config)
 
-    save_state_js = JsCode(
-        f"""
-function(params) {{
-  const storageKey = {json.dumps(storage_key)};
-  try {{
-    const payload = {{
-      columnState: params.columnApi.getColumnState()
-    }};
-    window.localStorage.setItem(storageKey, JSON.stringify(payload));
-  }} catch (err) {{
-    // noop
-  }}
-}}
-        """
-    )
-    restore_state_js = JsCode(
-        f"""
-function(params) {{
-  const storageKey = {json.dumps(storage_key)};
-  try {{
-    const raw = window.localStorage.getItem(storageKey);
-    if (raw) {{
-      const payload = JSON.parse(raw);
-      if (payload && Array.isArray(payload.columnState)) {{
-        params.columnApi.applyColumnState({{ state: payload.columnState, applyOrder: true }});
-      }}
-    }}
-  }} catch (err) {{
-    // noop
-  }}
-}}
-        """
-    )
-
     options = builder.build()
     options.pop("autoSizeStrategy", None)
     options["alwaysShowHorizontalScroll"] = True
-    options["onGridReady"] = restore_state_js
-    options["onFirstDataRendered"] = restore_state_js
-    options["onSortChanged"] = save_state_js
-    options["onColumnMoved"] = save_state_js
-    options["onColumnVisible"] = save_state_js
-    options["onColumnResized"] = save_state_js
-    options["onColumnPinned"] = save_state_js
-    options["sideBar"] = {
-        "toolPanels": [
-            {
-                "id": "columns",
-                "labelDefault": "Columns",
-                "labelKey": "columns",
-                "iconKey": "columns",
-                "toolPanel": "agColumnsToolPanel",
-                "toolPanelParams": {
-                    "suppressRowGroups": True,
-                    "suppressValues": True,
-                    "suppressPivots": True,
-                    "suppressPivotMode": True,
-                },
-            }
-        ],
-        "defaultToolPanel": "columns",
-    }
+    options["suppressClipboardPaste"] = False
     return options
 
 
@@ -3982,6 +3963,26 @@ def _company_grid_custom_css() -> dict[str, dict[str, str]]:
             "line-height": "1.2 !important",
         },
     }
+
+
+def _render_dataframe_csv_download(
+    export_df: pd.DataFrame,
+    *,
+    surface_id: str,
+    file_name: str,
+    button_label: str = "Download CSV",
+) -> None:
+    if export_df.empty:
+        return
+    csv_data = export_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        button_label,
+        data=csv_data,
+        file_name=file_name,
+        mime="text/csv",
+        use_container_width=True,
+        key=f"{surface_id}_download_csv",
+    )
 
 
 def _company_grid_top_scroll_component_id(surface_id: str) -> str:
@@ -4007,23 +4008,96 @@ def _render_company_grid_top_scrollbar(surface_id: str) -> None:
   let centerViewport = null;
   let syncBound = false;
   let syncing = false;
+  let attempts = 0;
+  let resizeBound = false;
+  let pendingTopScrollLeft = null;
+  let pendingGridScrollLeft = null;
+  let rafTopScroll = null;
+  let rafGridScroll = null;
+
+  function nearlyEqualScroll(leftA, leftB) {{
+    return Math.abs((leftA || 0) - (leftB || 0)) <= 1;
+  }}
+
+  function flushTopScroll() {{
+    if (pendingTopScrollLeft === null) return;
+    const nextScrollLeft = pendingTopScrollLeft;
+    pendingTopScrollLeft = null;
+    rafTopScroll = null;
+    if (nearlyEqualScroll(root.scrollLeft, nextScrollLeft)) return;
+    syncing = true;
+    root.scrollLeft = nextScrollLeft;
+    window.setTimeout(function() {{
+      syncing = false;
+    }}, 0);
+  }}
+
+  function scheduleTopScroll(nextScrollLeft) {{
+    pendingTopScrollLeft = nextScrollLeft;
+    if (rafTopScroll !== null) return;
+    rafTopScroll = window.requestAnimationFrame(flushTopScroll);
+  }}
+
+  function flushGridScroll() {{
+    if (pendingGridScrollLeft === null || !bottomViewport) return;
+    const nextScrollLeft = pendingGridScrollLeft;
+    pendingGridScrollLeft = null;
+    rafGridScroll = null;
+    if (nearlyEqualScroll(bottomViewport.scrollLeft, nextScrollLeft)) return;
+    syncing = true;
+    bottomViewport.scrollLeft = nextScrollLeft;
+    if (centerViewport) {{
+      if (!nearlyEqualScroll(centerViewport.scrollLeft, nextScrollLeft)) {{
+        centerViewport.scrollLeft = nextScrollLeft;
+      }}
+    }}
+    window.setTimeout(function() {{
+      syncing = false;
+    }}, 0);
+  }}
+
+  function scheduleGridScroll(nextScrollLeft) {{
+    pendingGridScrollLeft = nextScrollLeft;
+    if (rafGridScroll !== null) return;
+    rafGridScroll = window.requestAnimationFrame(flushGridScroll);
+  }}
+
+  function iframeDistanceScore(frame) {{
+    try {{
+      if (!frame || !frame.getBoundingClientRect || !window.frameElement || !window.frameElement.getBoundingClientRect) {{
+        return Number.POSITIVE_INFINITY;
+      }}
+      const frameRect = frame.getBoundingClientRect();
+      const componentRect = window.frameElement.getBoundingClientRect();
+      const verticalDistance = Math.abs(frameRect.top - componentRect.bottom);
+      const horizontalDistance = Math.abs(frameRect.left - componentRect.left);
+      return verticalDistance + horizontalDistance;
+    }} catch (err) {{
+      return Number.POSITIVE_INFINITY;
+    }}
+  }}
 
   function findGridFrame() {{
     try {{
-      const thisFrame = window.frameElement;
       const frames = Array.from(window.parent.document.querySelectorAll("iframe"));
-      const myIndex = frames.indexOf(thisFrame);
-      for (let i = myIndex + 1; i < frames.length; i += 1) {{
+      let bestFrame = null;
+      let bestScore = Number.POSITIVE_INFINITY;
+      for (const frame of frames) {{
         try {{
-          const candidateDoc = frames[i].contentWindow && frames[i].contentWindow.document;
+          const candidateDoc = frame.contentWindow && frame.contentWindow.document;
           if (!candidateDoc) continue;
           if (candidateDoc.querySelector(".ag-body-horizontal-scroll-viewport")) {{
-            return frames[i];
+            const score = iframeDistanceScore(frame);
+            if (score < bestScore) {{
+              bestScore = score;
+              bestFrame = frame;
+            }}
           }}
         }} catch (err) {{
           // noop
         }}
       }}
+      return bestFrame;
     }} catch (err) {{
       // noop
     }}
@@ -4032,14 +4106,11 @@ def _render_company_grid_top_scrollbar(surface_id: str) -> None:
 
   function syncFromGrid(source) {{
     if (!source || syncing) return;
-    syncing = true;
-    root.scrollLeft = source.scrollLeft;
-    window.setTimeout(function() {{
-      syncing = false;
-    }}, 0);
+    scheduleTopScroll(source.scrollLeft);
   }}
 
   function ensureSync() {{
+    attempts += 1;
     try {{
       gridFrame = findGridFrame();
       if (!gridFrame) {{
@@ -4064,25 +4135,21 @@ def _render_company_grid_top_scrollbar(surface_id: str) -> None:
       if (!syncBound) {{
         root.addEventListener("scroll", function() {{
           if (!bottomViewport || syncing) return;
-          syncing = true;
-          bottomViewport.scrollLeft = root.scrollLeft;
-          if (centerViewport) {{
-            centerViewport.scrollLeft = root.scrollLeft;
-          }}
-          window.setTimeout(function() {{
-            syncing = false;
-          }}, 0);
+          scheduleGridScroll(root.scrollLeft);
         }});
         syncBound = true;
       }}
 
-      bottomViewport.onscroll = function() {{
-        syncFromGrid(bottomViewport);
-      }};
-      if (centerViewport) {{
-        centerViewport.onscroll = function() {{
-          syncFromGrid(centerViewport);
-        }};
+      if (!bottomViewport.__equipilotTopSyncBound) {{
+        bottomViewport.addEventListener("scroll", function() {{
+          syncFromGrid(bottomViewport);
+        }}, {{ passive: true }});
+        bottomViewport.__equipilotTopSyncBound = true;
+      }}
+
+      if (!resizeBound) {{
+        window.addEventListener("resize", ensureSync);
+        resizeBound = true;
       }}
 
       const contentWidth = Math.max(bottomContainer.scrollWidth || 0, bottomContainer.clientWidth || 0);
@@ -4090,7 +4157,9 @@ def _render_company_grid_top_scrollbar(surface_id: str) -> None:
       const shouldShow = contentWidth > viewportWidth + 1;
       root.style.display = shouldShow ? "block" : "none";
       inner.style.width = `${{contentWidth}}px`;
-      root.scrollLeft = bottomViewport.scrollLeft;
+      if (!nearlyEqualScroll(root.scrollLeft, bottomViewport.scrollLeft)) {{
+        scheduleTopScroll(bottomViewport.scrollLeft);
+      }}
     }} catch (err) {{
       root.style.display = "none";
     }}
@@ -4099,7 +4168,15 @@ def _render_company_grid_top_scrollbar(surface_id: str) -> None:
   ensureSync();
   window.setTimeout(ensureSync, 100);
   window.setTimeout(ensureSync, 300);
-  window.setInterval(ensureSync, 1000);
+  const syncTimer = window.setInterval(function() {{
+    ensureSync();
+    if (gridFrame && attempts > 6) {{
+      window.clearInterval(syncTimer);
+    }}
+    if (attempts > 20) {{
+      window.clearInterval(syncTimer);
+    }}
+  }}, 1000);
 }})();
 </script>
         """,
@@ -4110,21 +4187,48 @@ def _render_company_grid_top_scrollbar(surface_id: str) -> None:
 def _render_company_grid_column_selector(
     surface_id: str,
     available_columns: Sequence[str],
-) -> list[str]:
+    *,
+    preferred_visible_columns: Optional[Sequence[str]] = None,
+) -> tuple[list[str], list[str]]:
     available = list(available_columns)
     if not available:
-        return []
+        return [], []
 
     layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
     visible_columns = _get_grid_visible_columns(
         layout_surface_id,
         available,
     )
+    merged_visible_columns = _merge_preferred_visible_columns(
+        visible_columns,
+        available,
+        preferred_visible_columns,
+    )
+    if merged_visible_columns != visible_columns:
+        visible_columns = merged_visible_columns
+        _set_grid_visible_columns(layout_surface_id, visible_columns)
+        save_grid_layout(layout_surface_id, visible_columns, GRID_LAYOUT_CONFIG_PATH)
     if not load_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH):
         visible_columns = list(available)
         _set_grid_visible_columns(layout_surface_id, visible_columns)
 
+    pinned_key = _company_grid_pinned_columns_key(surface_id)
+    pinned_state = st.session_state.get(pinned_key)
+    if pinned_state is None:
+        pinned_state = _default_company_grid_pinned_columns(available)
+        st.session_state[pinned_key] = pinned_state
+    pinned_columns = [column for column in pinned_state if column in visible_columns]
+
     with st.expander("Fields", expanded=False):
+        st.caption("Frozen columns")
+        pinned_columns = st.multiselect(
+            "Freeze columns on the left",
+            options=visible_columns,
+            default=pinned_columns,
+            key=pinned_key,
+            help="Frozen columns stay visible when you scroll horizontally, similar to Excel freeze panes.",
+        )
+
         st.caption("Visible columns")
         checkbox_columns = st.columns(5)
         updated_selection: list[str] = []
@@ -4145,8 +4249,11 @@ def _render_company_grid_column_selector(
         if normalized_selection != visible_columns:
             _set_grid_visible_columns(layout_surface_id, normalized_selection)
             save_grid_layout(layout_surface_id, normalized_selection, GRID_LAYOUT_CONFIG_PATH)
-        st.caption("Hide/add columns here. Drag headers in the grid to reorder them.")
-    return list(st.session_state.get(_grid_layout_state_key(layout_surface_id), visible_columns))
+            pinned_columns = [column for column in pinned_columns if column in normalized_selection]
+        st.caption("Hide/add columns here. Frozen columns stay visible while scrolling right.")
+    visible_columns = list(st.session_state.get(_grid_layout_state_key(layout_surface_id), visible_columns))
+    pinned_columns = [column for column in st.session_state.get(pinned_key, pinned_columns) if column in visible_columns]
+    return visible_columns, pinned_columns
 
 
 def _render_company_grid(
@@ -4155,13 +4262,38 @@ def _render_company_grid(
     surface_id: str,
     row_height: int,
     min_height: int,
+    preferred_visible_columns: Optional[Sequence[str]] = None,
+    default_row_limit: Optional[str] = None,
+    show_top_scrollbar: bool = False,
     fallback_styler_builder: Optional[Callable[[pd.DataFrame], object]] = None,
+    csv_file_name: Optional[str] = None,
 ) -> None:
     all_columns = display_df.columns.tolist()
     _apply_pending_company_grid_layout_reset(surface_id, all_columns)
-    visible_columns = _render_company_grid_column_selector(surface_id, all_columns)
+    visible_columns, pinned_columns = _render_company_grid_column_selector(
+        surface_id,
+        all_columns,
+        preferred_visible_columns=preferred_visible_columns,
+    )
     display_df = display_df.loc[:, visible_columns].copy()
-    action_cols = st.columns([1.35, 5.0])
+    total_rows = len(display_df)
+    row_limit_options = [
+        str(limit)
+        for limit in COMPANY_GRID_ROW_LIMIT_OPTIONS
+        if limit < total_rows
+    ]
+    row_limit_options.append("All")
+    computed_default_row_limit = (
+        str(COMPANY_GRID_DEFAULT_VISIBLE_ROWS) if COMPANY_GRID_DEFAULT_VISIBLE_ROWS < total_rows else "All"
+    )
+    normalized_default_row_limit = str(default_row_limit).strip() if default_row_limit is not None else computed_default_row_limit
+    if normalized_default_row_limit not in row_limit_options:
+        normalized_default_row_limit = computed_default_row_limit
+    row_limit_key = f"{surface_id}_company_grid_row_limit"
+    if st.session_state.get(row_limit_key) not in row_limit_options:
+        st.session_state[row_limit_key] = normalized_default_row_limit
+
+    action_cols = st.columns([1.35, 1.2, 1.0, 3.15])
     with action_cols[0]:
         reset_clicked = st.button(
             "Reset grid layout",
@@ -4169,6 +4301,19 @@ def _render_company_grid(
             use_container_width=True,
         )
     with action_cols[1]:
+        _render_dataframe_csv_download(
+            display_df,
+            surface_id=surface_id,
+            file_name=csv_file_name or f"{surface_id}.csv",
+        )
+    with action_cols[2]:
+        selected_row_limit = st.selectbox(
+            "Rows",
+            options=row_limit_options,
+            key=row_limit_key,
+            label_visibility="collapsed",
+        )
+    with action_cols[3]:
         st.caption("All columns are visible by default. Open Fields to hide/add columns, and drag headers in the grid to reorder. Layout auto-saves.")
     if reset_clicked:
         layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
@@ -4176,36 +4321,49 @@ def _render_company_grid(
         _queue_company_grid_layout_reset(surface_id)
         st.rerun()
 
-    grid_height = _company_grid_height(len(display_df), row_height=row_height, min_height=min_height)
+    if selected_row_limit != "All":
+        render_df = display_df.head(int(selected_row_limit)).copy()
+        st.caption(f"Showing first {len(render_df)} of {total_rows} rows. Download CSV includes all filtered rows.")
+    else:
+        render_df = display_df
+
+    grid_height = _company_grid_height(len(render_df), row_height=row_height, min_height=min_height)
     if AGGRID_AVAILABLE and AgGrid is not None:
         widget_nonce = int(st.session_state.get(_company_grid_widget_nonce_key(surface_id), 0) or 0)
-        grid_options = _build_company_grid_options(display_df, surface_id)
-        _render_company_grid_top_scrollbar(surface_id)
+        grid_options = _build_company_grid_options(render_df, surface_id, pinned_columns=pinned_columns)
+        if show_top_scrollbar:
+            _render_company_grid_top_scrollbar(surface_id)
         AgGrid(
-            display_df,
+            render_df,
             gridOptions=grid_options,
             height=grid_height,
             allow_unsafe_jscode=True,
             theme="streamlit",
             custom_css=_company_grid_custom_css(),
-            key=f"{surface_id}_aggrid_{widget_nonce}",
+            key=_company_grid_aggrid_key(
+                surface_id,
+                widget_nonce,
+                visible_columns,
+                pinned_columns,
+                selected_row_limit,
+            ),
         )
         return
 
     st.caption("Interactive grid features require `streamlit-aggrid`; falling back to default dataframe view.")
-    use_fast_grid = _use_fast_company_grid_render(len(display_df))
+    use_fast_grid = _use_fast_company_grid_render(len(render_df))
     if use_fast_grid:
         st.caption("Large result set: using fast grid rendering.")
     if fallback_styler_builder is not None and not use_fast_grid:
         st.dataframe(
-            fallback_styler_builder(display_df),
+            fallback_styler_builder(render_df),
             use_container_width=True,
             height=grid_height,
             hide_index=True,
         )
     else:
         st.dataframe(
-            display_df,
+            render_df,
             use_container_width=True,
             height=grid_height,
             hide_index=True,
@@ -4985,6 +5143,15 @@ def _prepare_company_drilldown_universe(
         selected_columns.insert(1, "company")
     if "fundamental_momentum" in report_df.columns:
         selected_columns.append("fundamental_momentum")
+    for technical_pillar_column in [
+        "relative_performance",
+        "relative_volume",
+        "momentum",
+        "intermediate_trend",
+        "long_term_trend",
+    ]:
+        if technical_pillar_column in report_df.columns:
+            selected_columns.append(technical_pillar_column)
     for pillar_column in [
         "fundamental_growth",
         "fundamental_value",
@@ -5019,6 +5186,17 @@ def _prepare_company_drilldown_universe(
         working["fundamental_momentum"] = pd.to_numeric(working["fundamental_momentum"], errors="coerce")
     else:
         working["fundamental_momentum"] = np.nan
+    for technical_pillar_column in [
+        "relative_performance",
+        "relative_volume",
+        "momentum",
+        "intermediate_trend",
+        "long_term_trend",
+    ]:
+        if technical_pillar_column in working.columns:
+            working[technical_pillar_column] = pd.to_numeric(working[technical_pillar_column], errors="coerce")
+        else:
+            working[technical_pillar_column] = np.nan
     for pillar_column in [
         "fundamental_growth",
         "fundamental_value",
@@ -5134,6 +5312,8 @@ def _load_prepared_company_universe_for_report_path(
     thematics_config_signature: str,
     market_cache_signature: str,
     divergence_cache_signature: str,
+    prices_cache_path_str: str,
+    prices_cache_signature: str,
 ) -> tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
     _ = market_cache_signature, divergence_cache_signature
     try:
@@ -5153,6 +5333,38 @@ def _load_prepared_company_universe_for_report_path(
     if error_message:
         return None, error_message, None
     assert company_universe is not None
+
+    performance_warning: Optional[str] = None
+    price_lookup: dict[str, dict[str, list[object]]] = {}
+    if prices_cache_path_str:
+        try:
+            price_lookup = build_price_history_lookup(prices_cache_path_str, prices_cache_signature)
+        except Exception as exc:  # pragma: no cover - defensive cache wrapper
+            performance_warning = f"Daily prices cache could not be read ({prices_cache_path_str}): {exc}"
+    else:
+        performance_warning = (
+            f"Daily prices cache is missing for {evaluation_date.year}; "
+            "price performance fields are shown as N/A."
+        )
+    performance_df, anchor_missing = _compute_company_return_metrics(
+        company_universe["ticker"].dropna().astype(str).tolist(),
+        price_lookup,
+        evaluation_date,
+    )
+    if not performance_df.empty:
+        company_universe = company_universe.merge(performance_df, on="ticker", how="left")
+    else:
+        for metric_name in ["anchor_close", "1w_perf", "1m_perf", "3m_perf", "ytd_perf"]:
+            company_universe[metric_name] = np.nan
+    if anchor_missing:
+        performance_warning = _combine_optional_messages(
+            performance_warning,
+            (
+                f"Some companies do not have an exact anchor close for {evaluation_date.isoformat()}; "
+                "their performance falls back to the latest prior EOD, highlighted with an orange border."
+            ),
+        )
+
     company_universe, regime_warning = _enrich_company_universe_with_market_regime(
         company_universe,
         evaluation_date,
@@ -5161,7 +5373,7 @@ def _load_prepared_company_universe_for_report_path(
         company_universe,
         evaluation_date,
     )
-    return company_universe, None, regime_warning
+    return company_universe, None, _combine_optional_messages(performance_warning, regime_warning)
 
 
 def build_company_drilldown_context_from_path(
@@ -5179,6 +5391,8 @@ def build_company_drilldown_context_from_path(
         _path_cache_signature(THEMATICS_CONFIG_PATH),
         _market_regime_company_metrics_cache_signature(evaluation_date),
         _company_divergence_cache_signature(),
+        str(prices_cache_path("daily", evaluation_date.year)) if prices_cache_path("daily", evaluation_date.year).exists() else "",
+        _path_cache_signature(prices_cache_path("daily", evaluation_date.year)),
     )
     if error_message:
         return "", None, [], [], error_message, None
@@ -5717,6 +5931,12 @@ def render_company_drilldown_filters(
     st.markdown("**Company filters**")
 
     with st.form(key=f"{prefix}_drilldown_filters_form", clear_on_submit=False):
+        ticker_query = st.text_input(
+            ticker_label,
+            key=ticker_key,
+            placeholder="Tickers, e.g. MSFT, AMN, GOOG",
+        ).strip()
+
         top_layout: list[float] = []
         if include_thematic_filter:
             top_layout.append(1.1)
@@ -5902,11 +6122,7 @@ def render_company_drilldown_filters(
                 )
             next_bottom_col += 1
         with filter_cols_bottom[next_bottom_col]:
-            ticker_query = st.text_input(
-                ticker_label,
-                key=ticker_key,
-                placeholder="Type one or more tickers, e.g. MSFT, AMN, GOOG",
-            ).strip()
+            st.caption("Use Ctrl/Cmd+F to jump to the ticker filter.")
 
         action_cols = st.columns([1, 1, 1, 2])
         with action_cols[0]:
@@ -6033,7 +6249,16 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Industry",
                 "Market Cap",
                 "Beta",
+                "1W",
+                "1M",
+                "3M",
+                "YTD",
                 "TS",
+                "Relative Performance",
+                "Relative Volume",
+                "Momentum",
+                "Intermediate Trend",
+                "Long-term Trend",
                 "RSI Regime",
                 "Sector Regime Fit",
                 "Short Term Flow",
@@ -6076,10 +6301,24 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["thematic"] = "Unassigned"
     if "beta" not in sorted_df.columns:
         sorted_df["beta"] = np.nan
+    for performance_column in ["1w_perf", "1m_perf", "3m_perf", "ytd_perf"]:
+        if performance_column not in sorted_df.columns:
+            sorted_df[performance_column] = np.nan
+    if "anchor_fallback_used" not in sorted_df.columns:
+        sorted_df["anchor_fallback_used"] = False
     if "rel_strength" not in sorted_df.columns:
         sorted_df["rel_strength"] = "N/A"
     if "rel_volume" not in sorted_df.columns:
         sorted_df["rel_volume"] = "N/A"
+    for technical_pillar_column in [
+        "relative_performance",
+        "relative_volume",
+        "momentum",
+        "intermediate_trend",
+        "long_term_trend",
+    ]:
+        if technical_pillar_column not in sorted_df.columns:
+            sorted_df[technical_pillar_column] = np.nan
     if "stock_rsi_regime_score" not in sorted_df.columns:
         sorted_df["stock_rsi_regime_score"] = np.nan
     if "sector_regime_fit_score" not in sorted_df.columns:
@@ -6105,7 +6344,16 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "Industry": sorted_df["industry"].fillna("Unspecified"),
             "Market Cap": pd.to_numeric(sorted_df["market_cap"], errors="coerce"),
             "Beta": pd.to_numeric(sorted_df["beta"], errors="coerce"),
+            "1W": pd.to_numeric(sorted_df["1w_perf"], errors="coerce"),
+            "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
+            "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
+            "YTD": pd.to_numeric(sorted_df["ytd_perf"], errors="coerce"),
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
+            "Relative Performance": pd.to_numeric(sorted_df["relative_performance"], errors="coerce"),
+            "Relative Volume": pd.to_numeric(sorted_df["relative_volume"], errors="coerce"),
+            "Momentum": pd.to_numeric(sorted_df["momentum"], errors="coerce"),
+            "Intermediate Trend": pd.to_numeric(sorted_df["intermediate_trend"], errors="coerce"),
+            "Long-term Trend": pd.to_numeric(sorted_df["long_term_trend"], errors="coerce"),
             "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
             "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
             "Short Term Flow": sorted_df["short_term_flow"],
@@ -6125,6 +6373,12 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     )
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
+    perf_fallback_flags = sorted_df["anchor_fallback_used"].fillna(False).astype(bool).tolist()
+    for perf_column in ["1W", "1M", "3M", "YTD"]:
+        display_df[perf_column] = [
+            _format_percent_value_with_fallback_marker(value, fallback_used)
+            for value, fallback_used in zip(display_df[perf_column].tolist(), perf_fallback_flags)
+        ]
 
     trend_columns = [
         ("TS", "technical_trend_symbol"),
@@ -6149,6 +6403,14 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             else:
                 rendered_values.append(_format_numeric_value(numeric_value))
         display_df[display_column] = rendered_values
+    for technical_display_column in [
+        "Relative Performance",
+        "Relative Volume",
+        "Momentum",
+        "Intermediate Trend",
+        "Long-term Trend",
+    ]:
+        display_df[technical_display_column] = display_df[technical_display_column].map(_format_numeric_value)
     display_df["RSI Regime"] = display_df["RSI Regime"].map(_format_numeric_value)
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     display_df["Short Term Flow"] = display_df["Short Term Flow"].map(_format_short_term_flow_flag)
@@ -6838,12 +7100,15 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         "Equipilot / Fundamental Scoring",
     )
     default_eod = get_default_board_eod(config)
-    selected_eod = render_report_select_date_input("EOD date", value=default_eod, key="fundamental_scoring_eod")
-    previous_eod = render_report_select_date_input(
-        "EOD date (previous)",
-        value=get_default_previous_board_eod(selected_eod),
-        key="fundamental_scoring_prev_eod",
-    )
+    date_col, previous_date_col = st.columns(2)
+    with date_col:
+        selected_eod = render_report_select_date_input("EOD date", value=default_eod, key="fundamental_scoring_eod")
+    with previous_date_col:
+        previous_eod = render_report_select_date_input(
+            "Prev EOD",
+            value=get_default_previous_board_eod(selected_eod),
+            key="fundamental_scoring_prev_eod",
+        )
     show_trend = st.checkbox(
         "Show trend arrows vs previous EOD",
         value=True,
@@ -6941,22 +7206,12 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         )
 
     sector_options = ["All sectors"] + sorted(report_df["sector"].fillna("Unspecified").unique().tolist())
-    sector_col, show_all_col = st.columns([1.4, 1.0])
-    with sector_col:
-        selected_sector = st.selectbox(
-            "Sector view",
-            options=sector_options,
-            index=0,
-            key="fundamental_scoring_sector_select",
-        )
-    with show_all_col:
-        _apply_pending_show_all_company_reset("fundamental")
-        st.checkbox(
-            "Show all companies",
-            key="fundamental_show_all_companies",
-            on_change=_handle_show_all_company_toggle,
-            args=("fundamental",),
-        )
+    selected_sector = st.selectbox(
+        "Sector view",
+        options=sector_options,
+        index=0,
+        key="fundamental_scoring_sector_select",
+    )
     t_start = time.perf_counter()
     table_df = get_fundamental_table_for_sector(str(source_path), selected_sector)
     _perf_mark(timings, "build table", t_start)
@@ -6984,27 +7239,13 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
         format_map = None
     render_df = _sort_table_by_total_desc(render_df)
 
-    drilldown_signature = (
-        selected_eod.isoformat(),
-        previous_eod.isoformat(),
-        selected_sector,
-        "trend_on" if show_trend else "trend_off",
-    )
-    _sync_drilldown_signature("fundamental", drilldown_signature)
-    drilldown_nonce_key = "fundamental_drilldown_nonce"
-    drilldown_nonce = st.session_state.setdefault(drilldown_nonce_key, 0)
-    table_widget_key = (
-        f"fundamental_scoring_select_{selected_eod.isoformat()}_"
-        f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_"
-        f"{'trend' if show_trend else 'notrend'}_{drilldown_nonce}_sortv2"
-    )
     if selected_sector == "All sectors":
         render_board_title_band("Cross-Sector Fundamental Scoring")
     else:
         render_board_title_band(f"{selected_sector} - Industry Fundamental Scoring")
 
     t_start = time.perf_counter()
-    selected_row_index = render_pdf_like_table(
+    render_pdf_like_table(
         render_df,
         center_all_except_first=True,
         highlight_max_cols=["Total", "P1", "P2", "P3", "P4", "P5"],
@@ -7017,139 +7258,54 @@ def render_fundamental_scoring_board(config: ReportConfig) -> None:
             "P5": _score_color_css,
         },
         format_map=format_map,
-        selectable=True,
-        selection_key=table_widget_key,
     )
     _perf_mark(timings, "render table", t_start)
-    if selected_row_index is not None:
-        next_selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
-        next_selected_mode = "sector" if selected_sector == "All sectors" else "industry"
-        show_all_active = bool(st.session_state.get("fundamental_show_all_companies", False))
-        selection_changed = (
-            st.session_state.get("fundamental_selected_key") != next_selected_key
-            or st.session_state.get("fundamental_selected_mode") != next_selected_mode
-        )
-        if selection_changed or show_all_active:
-            if show_all_active:
-                _queue_show_all_company_reset("fundamental")
-            st.session_state["fundamental_selected_key"] = next_selected_key
-            st.session_state["fundamental_selected_mode"] = next_selected_mode
-            if show_all_active:
-                st.rerun()
-
-    show_all_companies = bool(st.session_state.get("fundamental_show_all_companies", False))
-    selected_key = st.session_state.get("fundamental_selected_key")
-    selected_mode = st.session_state.get("fundamental_selected_mode")
-    scope_mode = "all" if show_all_companies else str(selected_mode) if selected_key and selected_mode else ""
-    scope_key = "__all__" if show_all_companies else str(selected_key or "")
-    if scope_mode:
-        company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
-        t_start = time.perf_counter()
-        details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context_from_path(
-            source_path,
-            evaluation_date=selected_eod,
-            selected_sector=selected_sector,
-            selected_mode=scope_mode,
-            selected_key=scope_key,
-        )
-        _perf_mark(timings, "company universe", t_start)
-        if details_error:
-            st.warning(details_error)
-        elif company_universe is not None:
-            if company_trend_enabled and previous_report_df is not None:
-                t_start = time.perf_counter()
-                company_universe = _annotate_company_technical_trend(
-                    company_universe,
-                    previous_report_df,
-                    threshold=5.0,
-                )
-                _perf_mark(timings, "company trend", t_start)
-            filter_signature = (
-                selected_eod.isoformat(),
-                previous_eod.isoformat(),
-                selected_sector,
-                scope_mode,
-                scope_key,
-            )
-            _sync_drilldown_filter_defaults(
-                "fundamental",
-                filter_signature,
-                default_thematics=[],
-                default_sectors=default_sectors,
-                default_industries=default_industries,
-                default_cap_buckets=["Large", "Mega"],
-                default_fund_range=(50.0, 100.0),
-                default_tech_range=(60.0, 100.0),
-                default_rsi_regime_range=(70.0, 100.0),
-                default_sector_regime_fit_range=_default_sector_regime_fit_range_for_company_scope(
-                    "show_all" if scope_mode == "all" else "selected"
-                ),
-                default_fund_momentum_range=(60.0, 100.0),
-                default_tech_trend_dir="All",
-            )
-            st.markdown("---")
-            st.caption(details_title)
-            if regime_warning:
-                st.caption(regime_warning)
-            t_start = time.perf_counter()
-            filtered_companies = render_company_drilldown_filters(
-                company_universe,
-                prefix="fundamental",
-                ticker_label="Ticker filter (Fundamental drilldown)",
-                include_fundamental_momentum_filter=True,
-                include_technical_trend_filter=company_trend_enabled,
-                include_thematic_filter=True,
-                include_rel_strength_filter=True,
-                include_rel_volume_filter=True,
-                include_ai_exposure_filters=True,
-            )
-            _perf_mark(timings, "company filters", t_start)
-            st.caption(f"Companies after filters: {len(filtered_companies)}")
-            t_start = time.perf_counter()
-            details_display = format_company_drilldown_display(filtered_companies, sort_by="fundamental")
-            _perf_mark(timings, "company display", t_start)
-            if details_display.empty:
-                st.info("No companies found for the selected row.")
-            else:
-                t_start = time.perf_counter()
-                _render_company_grid(
-                    details_display,
-                    surface_id=GRID_SURFACE_FUNDAMENTAL_COMPANY,
-                    row_height=34,
-                    min_height=220,
-                    fallback_styler_builder=_build_company_drilldown_styler,
-                )
-                _perf_mark(timings, "company render", t_start)
-            if st.button("Hide company list", key="fundamental_hide_company_list"):
-                _clear_drilldown_selection("fundamental")
-                st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
-                st.rerun()
     _render_perf_timings(show_perf, timings)
 
 
-def render_technical_scoring_board(config: ReportConfig) -> None:
+def _render_technical_scoring_content(
+    config: ReportConfig,
+    *,
+    state_prefix: str,
+    page_title: str,
+    subtitle: str,
+    breadcrumb: str,
+    enable_company_drilldown: bool,
+    screener_mode: bool = False,
+) -> None:
     render_page_intro(
-        "Technical Scoring",
-        "Technical pillar scoring with sector view and industry drill-down by selected sector.",
-        "Equipilot / Technical Scoring",
+        page_title,
+        subtitle,
+        breadcrumb,
     )
     default_eod = get_default_board_eod(config)
-    selected_eod = render_report_select_date_input("EOD date", value=default_eod, key="technical_scoring_eod")
-    previous_eod = render_report_select_date_input(
-        "EOD date (previous)",
-        value=get_default_previous_board_eod(selected_eod),
-        key="technical_scoring_prev_eod",
-    )
-    show_trend = st.checkbox(
-        "Show trend arrows vs previous EOD",
-        value=True,
-        key="technical_scoring_show_trends",
-    )
-    show_perf = st.checkbox(
-        "Show perf timings",
-        value=False,
-        key="technical_scoring_perf_toggle",
-    )
+    date_col, previous_date_col = st.columns(2)
+    with date_col:
+        selected_eod = render_report_select_date_input(
+            "EOD date",
+            value=default_eod,
+            key=f"{state_prefix}_eod",
+        )
+    with previous_date_col:
+        previous_eod = render_report_select_date_input(
+            "Prev EOD",
+            value=get_default_previous_board_eod(selected_eod),
+            key=f"{state_prefix}_prev_eod",
+        )
+    if screener_mode:
+        show_trend = True
+        show_perf = False
+    else:
+        show_trend = st.checkbox(
+            "Show trend arrows vs previous EOD",
+            value=True,
+            key=f"{state_prefix}_show_trends",
+        )
+        show_perf = st.checkbox(
+            "Show perf timings",
+            value=False,
+            key=f"{state_prefix}_perf_toggle",
+        )
     timings: list[tuple[str, float]] = []
 
     t_start = time.perf_counter()
@@ -7221,30 +7377,26 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         )
 
     sector_options = ["All sectors"] + sorted(report_df["sector"].fillna("Unspecified").unique().tolist())
-    sector_col, show_all_col = st.columns([1.4, 1.0])
-    with sector_col:
+    selected_sector = "All sectors"
+    if not screener_mode:
         selected_sector = st.selectbox(
             "Sector view",
             options=sector_options,
             index=0,
-            key="technical_scoring_sector_select",
+            key=f"{state_prefix}_sector_select",
         )
-    with show_all_col:
-        _apply_pending_show_all_company_reset("technical")
-        st.checkbox(
-            "Show all companies",
-            key="technical_show_all_companies",
-            on_change=_handle_show_all_company_toggle,
-            args=("technical",),
-        )
+    if enable_company_drilldown:
+        _apply_pending_show_all_company_reset(state_prefix)
+        st.session_state[f"{state_prefix}_show_all_companies"] = True
     t_start = time.perf_counter()
     table_df = get_technical_table_for_sector(str(source_path), selected_sector)
     _perf_mark(timings, "build table", t_start)
 
-    if selected_sector == "All sectors":
-        render_board_title_band("Cross-Sector Technical Scoring")
-    else:
-        render_board_title_band(f"{selected_sector} - Industry Technical Scoring")
+    if not screener_mode:
+        if selected_sector == "All sectors":
+            render_board_title_band("Cross-Sector Technical Scoring")
+        else:
+            render_board_title_band(f"{selected_sector} - Industry Technical Scoring")
     score_columns = [
         "Total",
         "Relative Performance",
@@ -7273,48 +7425,53 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
         selected_sector,
         "trend_on" if show_trend else "trend_off",
     )
-    _sync_drilldown_signature("technical", drilldown_signature)
-    drilldown_nonce_key = "technical_drilldown_nonce"
+    _sync_drilldown_signature(state_prefix, drilldown_signature)
+    drilldown_nonce_key = f"{state_prefix}_drilldown_nonce"
     drilldown_nonce = st.session_state.setdefault(drilldown_nonce_key, 0)
     table_widget_key = (
-        f"technical_scoring_select_{selected_eod.isoformat()}_"
+        f"{state_prefix}_select_{selected_eod.isoformat()}_"
         f"{previous_eod.isoformat()}_{selected_sector.replace(' ', '_')}_"
         f"{'trend' if show_trend else 'notrend'}_{drilldown_nonce}"
     )
 
-    t_start = time.perf_counter()
-    selected_row_index = render_pdf_like_table(
-        render_df,
-        center_all_except_first=True,
-        highlight_max_cols=score_columns,
-        value_color_rules={column: _score_color_css for column in score_columns},
-        format_map=format_map,
-        selectable=True,
-        selection_key=table_widget_key,
-    )
-    _perf_mark(timings, "render table", t_start)
-    if selected_row_index is not None:
-        next_selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
-        next_selected_mode = "sector" if selected_sector == "All sectors" else "industry"
-        show_all_active = bool(st.session_state.get("technical_show_all_companies", False))
-        selection_changed = (
-            st.session_state.get("technical_selected_key") != next_selected_key
-            or st.session_state.get("technical_selected_mode") != next_selected_mode
+    if not screener_mode:
+        t_start = time.perf_counter()
+        selected_row_index = render_pdf_like_table(
+            render_df,
+            center_all_except_first=True,
+            highlight_max_cols=score_columns,
+            value_color_rules={column: _score_color_css for column in score_columns},
+            format_map=format_map,
+            selectable=enable_company_drilldown,
+            selection_key=table_widget_key,
         )
-        if selection_changed or show_all_active:
-            if show_all_active:
-                _queue_show_all_company_reset("technical")
-            st.session_state["technical_selected_key"] = next_selected_key
-            st.session_state["technical_selected_mode"] = next_selected_mode
-            if show_all_active:
-                st.rerun()
+        _perf_mark(timings, "render table", t_start)
+        if enable_company_drilldown and selected_row_index is not None:
+            next_selected_key = str(render_df.iloc[selected_row_index, 0]).strip()
+            next_selected_mode = "sector" if selected_sector == "All sectors" else "industry"
+            show_all_active = bool(st.session_state.get(f"{state_prefix}_show_all_companies", False))
+            selection_changed = (
+                st.session_state.get(f"{state_prefix}_selected_key") != next_selected_key
+                or st.session_state.get(f"{state_prefix}_selected_mode") != next_selected_mode
+            )
+            if selection_changed or show_all_active:
+                if show_all_active:
+                    _queue_show_all_company_reset(state_prefix)
+                st.session_state[f"{state_prefix}_selected_key"] = next_selected_key
+                st.session_state[f"{state_prefix}_selected_mode"] = next_selected_mode
+                if show_all_active:
+                    st.rerun()
 
-    show_all_companies = bool(st.session_state.get("technical_show_all_companies", False))
-    selected_key = st.session_state.get("technical_selected_key")
-    selected_mode = st.session_state.get("technical_selected_mode")
-    scope_mode = "all" if show_all_companies else str(selected_mode) if selected_key and selected_mode else ""
-    scope_key = "__all__" if show_all_companies else str(selected_key or "")
-    if scope_mode:
+    show_all_companies = bool(st.session_state.get(f"{state_prefix}_show_all_companies", False))
+    selected_key = st.session_state.get(f"{state_prefix}_selected_key")
+    selected_mode = st.session_state.get(f"{state_prefix}_selected_mode")
+    if screener_mode:
+        scope_mode = "all"
+        scope_key = "__all__"
+    else:
+        scope_mode = "all" if show_all_companies else str(selected_mode) if selected_key and selected_mode else ""
+        scope_key = "__all__" if show_all_companies else str(selected_key or "")
+    if enable_company_drilldown and scope_mode:
         company_trend_enabled = bool(show_trend and previous_ready and previous_report_df is not None)
         t_start = time.perf_counter()
         details_title, company_universe, default_sectors, default_industries, details_error, regime_warning = build_company_drilldown_context_from_path(
@@ -7344,7 +7501,7 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 scope_key,
             )
             _sync_drilldown_filter_defaults(
-                "technical",
+                state_prefix,
                 filter_signature,
                 default_thematics=[],
                 default_sectors=default_sectors,
@@ -7360,14 +7517,17 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                 default_tech_trend_dir="All",
             )
             st.markdown("---")
-            st.caption(details_title)
+            if screener_mode:
+                st.caption("All companies from the technical screener universe")
+            else:
+                st.caption(details_title)
             if regime_warning:
                 st.caption(regime_warning)
             t_start = time.perf_counter()
             filtered_companies = render_company_drilldown_filters(
                 company_universe,
-                prefix="technical",
-                ticker_label="Ticker filter (Technical drilldown)",
+                prefix=state_prefix,
+                ticker_label="Ticker filter",
                 include_fundamental_momentum_filter=True,
                 include_technical_trend_filter=company_trend_enabled,
                 include_thematic_filter=True,
@@ -7389,14 +7549,41 @@ def render_technical_scoring_board(config: ReportConfig) -> None:
                     surface_id=GRID_SURFACE_TECHNICAL_COMPANY,
                     row_height=34,
                     min_height=220,
+                    preferred_visible_columns=["1M", "YTD", "TS"],
+                    default_row_limit="All",
+                    show_top_scrollbar=False,
                     fallback_styler_builder=_build_company_drilldown_styler,
+                    csv_file_name=f"{state_prefix}_{selected_eod.isoformat()}.csv",
                 )
                 _perf_mark(timings, "company render", t_start)
-            if st.button("Hide company list", key="technical_hide_company_list"):
-                _clear_drilldown_selection("technical")
+            if not screener_mode and st.button("Hide company list", key=f"{state_prefix}_hide_company_list"):
+                _clear_drilldown_selection(state_prefix)
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
                 st.rerun()
     _render_perf_timings(show_perf, timings)
+
+
+def render_technical_scoring_board(config: ReportConfig) -> None:
+    _render_technical_scoring_content(
+        config,
+        state_prefix="technical_scoring_board",
+        page_title="Technical Scoring",
+        subtitle="Technical pillar scoring with sector view and industry drill-down by selected sector.",
+        breadcrumb="Equipilot / Technical Scoring",
+        enable_company_drilldown=False,
+    )
+
+
+def render_sector_screener_board(config: ReportConfig) -> None:
+    _render_technical_scoring_content(
+        config,
+        state_prefix="sector_screener",
+        page_title="Screener",
+        subtitle="Sector/company screener with the same technical drill-down filters and company grid.",
+        breadcrumb="Equipilot / Sector / Screener",
+        enable_company_drilldown=True,
+        screener_mode=True,
+    )
 
 
 def _run_trade_idea_filter(strategy_name: str, report_df: pd.DataFrame) -> pd.DataFrame:
@@ -8491,10 +8678,10 @@ def render_market_values_subtab(config: ReportConfig) -> None:
 
     defaults = get_default_market_anchors(available_dates, market_config)
     interval_config = market_config.get("default_intervals_days", {})
-    eval_col, prev_eval_col, rsi_col = st.columns(3)
-    with eval_col:
+    date_cols = st.columns([1, 1, 1, 1, 1])
+    with date_cols[0]:
         evaluation_date = render_report_select_date_input(
-            "Evaluation date",
+            "Eval date",
             value=defaults["evaluation_date"],
             key="market_eval_date",
         )
@@ -8502,9 +8689,9 @@ def render_market_values_subtab(config: ReportConfig) -> None:
     previous_evaluation_default = (
         previous_evaluation_candidates[-1] if previous_evaluation_candidates else evaluation_date
     )
-    with prev_eval_col:
+    with date_cols[1]:
         previous_evaluation_date = render_report_select_date_input(
-            "vs prev evaluation date",
+            "Prev eval",
             value=previous_evaluation_default,
             key="market_prev_eval_date",
         )
@@ -8517,20 +8704,19 @@ def render_market_values_subtab(config: ReportConfig) -> None:
         available_dates,
         evaluation_date - timedelta(days=int(interval_config.get("week_offset_days", 7))),
     )
-    with rsi_col:
+    with date_cols[2]:
         rsi_start_date = render_report_select_date_input(
-            "RSI regime start date",
+            "RSI start",
             value=rsi_start_default,
             key="market_rsi_start_date",
         )
-    month_col, week_col = st.columns(2)
-    with month_col:
+    with date_cols[3]:
         month_anchor_date = render_report_select_date_input(
             "1 month ago date",
             value=month_default,
             key="market_month_anchor_date",
         )
-    with week_col:
+    with date_cols[4]:
         week_anchor_date = render_report_select_date_input(
             "1 week ago date",
             value=week_default,
@@ -8723,39 +8909,6 @@ def render_market_values_subtab(config: ReportConfig) -> None:
             tone="neutral",
         )
 
-    st.markdown("**Underlying components**")
-    component_rows = _build_market_component_rows(component_scores, breadth, risk_appetite, previous_payload)
-    st.dataframe(component_rows, width="stretch", hide_index=True)
-    if risk_appetite.get("warning"):
-        st.warning(str(risk_appetite.get("warning")))
-
-    st.markdown("**Family leadership**")
-    if family_scores_df.empty:
-        st.info("No family scores are available for the selected anchors.")
-    else:
-        display_family_df = family_scores_df.rename(
-            columns={
-                "family": "Family",
-                "sector_rotation_score": "Sector Rotation Score",
-                "sector_count": "Sector Count",
-            }
-        )
-        previous_family_display_df = previous_family_scores_df.rename(
-            columns={
-                "family": "Family",
-                "sector_rotation_score": "Sector Rotation Score",
-                "sector_count": "Sector Count",
-            }
-        )
-        if not previous_family_display_df.empty:
-            display_family_df = apply_trend_symbols_to_table(
-                display_family_df,
-                previous_family_display_df,
-                ["Sector Rotation Score"],
-                threshold=MARKET_TREND_THRESHOLD,
-            )
-        st.dataframe(display_family_df, width="stretch", hide_index=True)
-
     st.markdown("**Sector table**")
     if sector_df.empty:
         st.info("No sector rows are available for the selected anchors.")
@@ -8835,24 +8988,65 @@ def render_market_values_subtab(config: ReportConfig) -> None:
                 ],
                 threshold=MARKET_TREND_THRESHOLD,
             )
-            if sector_rsi_lt40_numeric is not None:
-                sector_display_df["RSI Breadth < 40"] = sector_rsi_lt40_numeric
-        def _style_sector_fit_row(row: pd.Series) -> list[str]:
-            fit_flag = str(row.get("Regime Fit Flag", "")).strip().lower()
-            if fit_flag == "favored":
-                color = "background-color: #eefbf1"
-            elif fit_flag == "avoid":
-                color = "background-color: #fff1f1"
-            else:
-                color = "background-color: #f8fafc"
-            return [color] * len(row)
+        if sector_rsi_lt40_numeric is not None:
+            previous_lt40_lookup: dict[str, object] = {}
+            if not previous_sector_display_df.empty and "Sector" in previous_sector_display_df.columns and "RSI Breadth < 40" in previous_sector_display_df.columns:
+                previous_lt40_lookup = (
+                    previous_sector_display_df.set_index("Sector")["RSI Breadth < 40"].to_dict()
+                )
+            sector_display_df["RSI Breadth < 40"] = [
+                _render_numeric_with_symbol(
+                    current_value,
+                    _metric_trend_symbol(
+                        current_value,
+                        previous_lt40_lookup.get(sector_name),
+                    ),
+                )
+                for sector_name, current_value in zip(
+                    sector_display_df["Sector"],
+                    sector_rsi_lt40_numeric,
+                )
+            ]
+        _render_company_grid(
+            sector_display_df,
+            surface_id=GRID_SURFACE_MARKET_SECTOR_TABLE,
+            row_height=34,
+            min_height=240,
+            csv_file_name=f"market_sector_table_{evaluation_date.isoformat()}.csv",
+        )
 
-        sector_styler = sector_display_df.style.apply(_style_sector_fit_row, axis=1)
-        try:
-            sector_styler = sector_styler.hide(axis="index")
-        except Exception:
-            pass
-        st.dataframe(sector_styler, width="stretch")
+    st.markdown("**Underlying components**")
+    component_rows = _build_market_component_rows(component_scores, breadth, risk_appetite, previous_payload)
+    st.dataframe(component_rows, width="stretch", hide_index=True)
+    if risk_appetite.get("warning"):
+        st.warning(str(risk_appetite.get("warning")))
+
+    st.markdown("**Family leadership**")
+    if family_scores_df.empty:
+        st.info("No family scores are available for the selected anchors.")
+    else:
+        display_family_df = family_scores_df.rename(
+            columns={
+                "family": "Family",
+                "sector_rotation_score": "Sector Rotation Score",
+                "sector_count": "Sector Count",
+            }
+        )
+        previous_family_display_df = previous_family_scores_df.rename(
+            columns={
+                "family": "Family",
+                "sector_rotation_score": "Sector Rotation Score",
+                "sector_count": "Sector Count",
+            }
+        )
+        if not previous_family_display_df.empty:
+            display_family_df = apply_trend_symbols_to_table(
+                display_family_df,
+                previous_family_display_df,
+                ["Sector Rotation Score"],
+                threshold=MARKET_TREND_THRESHOLD,
+            )
+        st.dataframe(display_family_df, width="stretch", hide_index=True)
 
     st.markdown("**Cache visibility**")
     render_chip_row(
@@ -8904,11 +9098,13 @@ def render_indices_tab() -> None:
         st.caption("Populate or refresh the cache from Home > Indices Import.")
         return
 
+    default_date_2 = available_dates[-1]
+    default_date_1 = default_date_2 - timedelta(days=7)
     date_col_1, date_col_2 = st.columns(2)
     with date_col_1:
         selected_date_1 = render_report_select_date_input(
             "Date 1",
-            value=available_dates[0],
+            value=default_date_1,
             key="indices_date_1",
         )
     with date_col_2:
@@ -9047,12 +9243,15 @@ def render_monthly_board(config: ReportConfig) -> None:
         "Configure report dates, run generation, and manage prompt/source files.",
         "Equipilot / Sector / Monthly Sector Report",
     )
-    report_date_value = render_report_select_date_input("Report date", value=config.report_date, key="monthly_report_date")
-    eod_as_of_value = render_report_select_date_input(
-        "EOD as-of date (30-day window anchor)",
-        value=config.eod_as_of_date or report_date_value,
-        key="monthly_eod_as_of_date",
-    )
+    report_col, eod_col = st.columns(2)
+    with report_col:
+        report_date_value = render_report_select_date_input("Report date", value=config.report_date, key="monthly_report_date")
+    with eod_col:
+        eod_as_of_value = render_report_select_date_input(
+            "EOD as-of date",
+            value=config.eod_as_of_date or report_date_value,
+            key="monthly_eod_as_of_date",
+        )
     if st.button("Save config", key="monthly_save_config"):
         save_report_config(ReportConfig(report_date=report_date_value, eod_as_of_date=eod_as_of_value), CONFIG_PATH)
         st.success(f"Saved config: {CONFIG_PATH}")
@@ -9192,8 +9391,8 @@ def render_sector_tab(config: ReportConfig) -> None:
         "Sector sections",
         "Switch between the monthly sector report, sector pulse, and sector scoring boards.",
     )
-    monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab = st.tabs(
-        ["Monthly Sector Report", "Sector Pulse", "Fundamental Scoring", "Technical Scoring"]
+    monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab, screener_tab = st.tabs(
+        ["Monthly Sector Report", "Sector Pulse", "Fundamental Scoring", "Technical Scoring", "Screener"]
     )
     with monthly_tab:
         render_monthly_board(config)
@@ -9203,6 +9402,8 @@ def render_sector_tab(config: ReportConfig) -> None:
         render_fundamental_scoring_board(config)
     with technical_tab:
         render_technical_scoring_board(config)
+    with screener_tab:
+        render_sector_screener_board(config)
 
 
 def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.DataFrame:
@@ -9668,6 +9869,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["sector_regime_fit_score"] = np.nan
     if "short_term_flow" not in sorted_df.columns:
         sorted_df["short_term_flow"] = pd.NA
+    if "anchor_fallback_used" not in sorted_df.columns:
+        sorted_df["anchor_fallback_used"] = False
     if "rsi_divergence_daily_flag" not in sorted_df.columns:
         sorted_df["rsi_divergence_daily_flag"] = pd.NA
     if "rsi_divergence_weekly_flag" not in sorted_df.columns:
@@ -9722,8 +9925,12 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
     )
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
+    perf_fallback_flags = sorted_df["anchor_fallback_used"].fillna(False).astype(bool).tolist()
     for perf_column in ["1W", "1M", "3M", "YTD"]:
-        display_df[perf_column] = display_df[perf_column].map(_format_percent_value)
+        display_df[perf_column] = [
+            _format_percent_value_with_fallback_marker(value, fallback_used)
+            for value, fallback_used in zip(display_df[perf_column].tolist(), perf_fallback_flags)
+        ]
     display_df["RSI Regime"] = display_df["RSI Regime"].map(_format_numeric_value)
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     for display_column, symbol_column in [
@@ -10907,6 +11114,15 @@ def _render_thematics_basket_table_v2(
 
     estimated_height = max(280, 72 + len(display_df) * 38)
     basket_table_nonce = st.session_state.setdefault("thematics_impl_basket_table_nonce", 0)
+    export_cols = st.columns([1.1, 4.0])
+    with export_cols[0]:
+        _render_dataframe_csv_download(
+            display_df,
+            surface_id=GRID_SURFACE_THEMATICS_BASKET,
+            file_name="thematics_baskets.csv",
+        )
+    with export_cols[1]:
+        st.caption("Copy/paste works directly in the table. Use Fields to show or hide columns.")
     try:
         selection_event = st.dataframe(
             styler,
@@ -11018,16 +11234,19 @@ def render_thematics_tab(config: ReportConfig) -> None:
 
     implementation_tab, lens_tab = st.tabs(["thematics-implementation", "thematic-lens"])
     with implementation_tab:
-        reference_date = render_report_select_date_input(
-            "Reference EOD date",
-            value=get_default_board_eod(config),
-            key="thematics_reference_eod",
-        )
-        previous_eod = render_report_select_date_input(
-            "Previous EOD date (for trend arrows)",
-            value=get_default_previous_board_eod(reference_date),
-            key="thematics_previous_eod",
-        )
+        date_col, previous_date_col = st.columns([1, 1])
+        with date_col:
+            reference_date = render_report_select_date_input(
+                "Reference EOD date",
+                value=get_default_board_eod(config),
+                key="thematics_reference_eod",
+            )
+        with previous_date_col:
+            previous_eod = render_report_select_date_input(
+                "Prev EOD date",
+                value=get_default_previous_board_eod(reference_date),
+                key="thematics_previous_eod",
+            )
         show_perf = st.checkbox(
             "Show perf timings",
             value=False,
@@ -11093,7 +11312,10 @@ def render_thematics_tab(config: ReportConfig) -> None:
         _perf_mark(timings, "build baskets", t_start)
         if anchor_missing:
             warnings.append(
-                f"Some tickers do not have an exact daily price for {reference_date.isoformat()}; affected 1W/1M/3M/YTD values are shown as N/A."
+                (
+                    f"Some tickers do not have an exact daily price for {reference_date.isoformat()}; "
+                    "affected 1W/1M/3M/YTD values fall back to the latest prior EOD and are highlighted with an orange border."
+                )
             )
         if current_report_df is not None and "beta" not in current_report_df.columns:
             warnings.append(
@@ -11152,7 +11374,10 @@ def render_thematics_tab(config: ReportConfig) -> None:
             _perf_mark(timings, "company universe", t_start)
             if company_anchor_missing:
                 st.warning(
-                    f"Some companies in {company_scope_name} do not have an exact anchor close for {reference_date.isoformat()}; affected rows show N/A performance."
+                    (
+                        f"Some companies in {company_scope_name} do not have an exact anchor close for {reference_date.isoformat()}; "
+                        "their performance falls back to the latest prior EOD, highlighted with an orange border."
+                    )
                 )
             if previous_ready and previous_report_df is not None and not company_universe.empty:
                 t_start = time.perf_counter()
@@ -11219,6 +11444,9 @@ def render_thematics_tab(config: ReportConfig) -> None:
                     surface_id=GRID_SURFACE_THEMATICS_COMPANY,
                     row_height=36,
                     min_height=260,
+                    default_row_limit="All",
+                    show_top_scrollbar=False,
+                    csv_file_name=f"thematics_companies_{reference_date.isoformat()}.csv",
                     fallback_styler_builder=lambda current_display: _build_thematics_company_styler(
                         current_display,
                         trend_meta_df=_build_thematics_company_trend_meta(filtered_companies),
@@ -11453,6 +11681,15 @@ def render_quadrants(default_anchor: date) -> None:
     )
 
 
+def render_portfolios_tab() -> None:
+    render_page_intro(
+        "Portfolios",
+        "Reserved for upcoming portfolio workflows and monitoring views.",
+        "Equipilot / Portfolios",
+    )
+    st.info("This tab is intentionally empty for now.")
+
+
 def main() -> None:
     st.set_page_config(page_title="Equipilot", layout="wide", page_icon=_favicon, initial_sidebar_state="expanded")
     apply_theme_styles()
@@ -11471,13 +11708,14 @@ def main() -> None:
 
     show_quadrants_tab = False
 
-    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, trade_ideas_tab, api_tab, utilities_tab = st.tabs(
+    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, portfolios_tab, trade_ideas_tab, api_tab, utilities_tab = st.tabs(
         [
             "Home",
             "Indices",
             "Market",
             "Sector",
             "Thematics",
+            "Portfolios",
             "Trade Ideas",
             "API",
             "Utilities",
@@ -11493,6 +11731,8 @@ def main() -> None:
         render_sector_tab(config)
     with thematics_tab:
         render_thematics_tab(config)
+    with portfolios_tab:
+        render_portfolios_tab()
     with trade_ideas_tab:
         render_trade_ideas(config)
     if show_quadrants_tab:
