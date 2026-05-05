@@ -175,6 +175,19 @@ GRID_SURFACE_TECHNICAL_COMPANY = "technical_company_grid"
 GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
 GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
 GRID_SURFACE_MARKET_SECTOR_TABLE = "market_sector_table"
+GRID_SURFACE_PORTFOLIO_PREFIX = "portfolio_company_grid"
+
+PORTFOLIO_JOURNAL_PATH = Path(
+    r"C:\Users\razva\Desktop\Portfolio\Trading Team\Equipicker\Portofolii\Jurnal.xlsx"
+)
+PORTFOLIO_CONFIG_PATH = CONFIG_DIR / "portfolio_config.json"
+PORTFOLIO_ALERTS_PATH = CONFIG_DIR / "portfolio_alerts.json"
+PORTFOLIO_SHEETS = {
+    "dinamic": {"sheet": "DINAMIC", "label": "Portofoliu Dinamic"},
+    "dividend": {"sheet": "DIVIDEND", "label": "Portofoliu Dividend"},
+}
+PORTFOLIO_SEGMENT_ORDER = ["Value", "Growth"]
+PORTFOLIO_DEFAULT_ALERT_LEVEL = "0"
 
 COMPANY_GRID_SCORE_COLUMNS = [
     "TS",
@@ -197,10 +210,16 @@ COMPANY_GRID_SIGN_COLUMNS = [
 COMPANY_GRID_PERFORMANCE_COLUMNS = ["1W", "1M", "3M", "YTD"]
 COMPANY_GRID_LEFT_COLUMNS = [
     "Thematic",
+    "Portfolio Segment",
     "Ticker",
     "Company",
     "Sector",
     "Industry",
+    "Transaction Price",
+    "Transaction Date",
+    "Last EOD Price",
+    "Net PnL",
+    "Alert Levels",
     "Short Term Flow",
     "Rel Strength",
     "Rel Volume",
@@ -208,11 +227,17 @@ COMPANY_GRID_LEFT_COLUMNS = [
     "AI Disruption Risk",
 ]
 COMPANY_GRID_DEFAULT_WIDTHS = {
-    "Thematic": 170,
+    "Thematic": 230,
+    "Portfolio Segment": 150,
     "Ticker": 95,
-    "Company": 240,
+    "Company": 260,
     "Sector": 150,
-    "Industry": 220,
+    "Industry": 260,
+    "Transaction Price": 165,
+    "Transaction Date": 155,
+    "Last EOD Price": 155,
+    "Net PnL": 115,
+    "Alert Levels": 260,
     "Market Cap": 120,
     "Beta": 90,
     "1W": 95,
@@ -236,7 +261,7 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "AI Revenue Exposure": 155,
     "AI Disruption Risk": 150,
 }
-COMPANY_GRID_WIDE_TEXT_COLUMNS = {"Thematic", "Company", "Sector", "Industry"}
+COMPANY_GRID_WIDE_TEXT_COLUMNS = {"Thematic", "Portfolio Segment", "Company", "Sector", "Industry", "Alert Levels"}
 COMPANY_GRID_TOP_SCROLL_COMPONENT_HEIGHT = 24
 PERFORMANCE_FALLBACK_MARKER = "\u2063"
 
@@ -3696,16 +3721,28 @@ def _company_grid_aggrid_key(
     visible_columns: Sequence[str],
     pinned_columns: Sequence[str],
     selected_row_limit: str,
+    data_signature: str,
 ) -> str:
     layout_payload = {
         "visible": list(visible_columns),
         "pinned": list(pinned_columns),
         "rows": str(selected_row_limit),
+        "data": data_signature,
     }
     layout_signature = hashlib.md5(
         json.dumps(layout_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:12]
     return f"{surface_id}_aggrid_{widget_nonce}_{layout_signature}"
+
+
+def _company_grid_data_signature(display_df: pd.DataFrame) -> str:
+    if display_df.empty:
+        return "empty"
+    try:
+        hashed_values = pd.util.hash_pandas_object(display_df.astype(str), index=False).values.tobytes()
+    except Exception:
+        hashed_values = display_df.to_csv(index=False).encode("utf-8", errors="ignore")
+    return hashlib.md5(hashed_values).hexdigest()[:12]
 
 
 def _company_grid_column_checkbox_key(surface_id: str, index: int) -> str:
@@ -3793,8 +3830,18 @@ def _build_company_grid_options(
         suppressColumnVirtualisation=False,
     )
 
-    left_align_style = {"textAlign": "left"}
-    center_style = {"textAlign": "center", "whiteSpace": "nowrap"}
+    left_align_style = {
+        "textAlign": "left",
+        "whiteSpace": "nowrap",
+        "overflow": "hidden",
+        "textOverflow": "ellipsis",
+    }
+    center_style = {
+        "textAlign": "center",
+        "whiteSpace": "nowrap",
+        "overflow": "hidden",
+        "textOverflow": "ellipsis",
+    }
 
     score_style_js = JsCode(
         """
@@ -3917,6 +3964,7 @@ function(valueA, valueB) {
         config["width"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
         if column_name in COMPANY_GRID_WIDE_TEXT_COLUMNS:
             config["minWidth"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
+        config["suppressSizeToFit"] = True
         if column_name in pinned_set:
             config["pinned"] = "left"
             config["lockPinned"] = True
@@ -3925,7 +3973,7 @@ function(valueA, valueB) {
             config["comparator"] = numeric_comparator_js
         elif column_name in COMPANY_GRID_SIGN_COLUMNS:
             config["cellStyle"] = sign_style_js
-        elif column_name in COMPANY_GRID_PERFORMANCE_COLUMNS:
+        elif column_name in COMPANY_GRID_PERFORMANCE_COLUMNS or column_name == "Net PnL":
             config["cellStyle"] = performance_style_js
             config["comparator"] = numeric_comparator_js
         elif column_name == "AI Revenue Exposure":
@@ -3934,7 +3982,7 @@ function(valueA, valueB) {
             config["cellStyle"] = ai_risk_style_js
         elif column_name == "Market Cap":
             config["comparator"] = market_cap_comparator_js
-        elif column_name == "Beta":
+        elif column_name in {"Beta", "Transaction Price", "Last EOD Price"}:
             config["comparator"] = numeric_comparator_js
         builder.configure_column(column_name, **config)
 
@@ -3961,6 +4009,37 @@ def _company_grid_custom_css() -> dict[str, dict[str, str]]:
         ".ag-header-cell-label": {
             "white-space": "normal !important",
             "line-height": "1.2 !important",
+        },
+        ".ag-cell": {
+            "overflow": "hidden !important",
+            "text-overflow": "ellipsis !important",
+            "white-space": "nowrap !important",
+            "box-sizing": "border-box !important",
+        },
+        ".ag-cell-value": {
+            "overflow": "hidden !important",
+            "text-overflow": "ellipsis !important",
+            "white-space": "nowrap !important",
+            "display": "block !important",
+            "max-width": "100% !important",
+        },
+        ".ag-cell-wrapper": {
+            "overflow": "hidden !important",
+            "max-width": "100% !important",
+            "width": "100% !important",
+            "display": "block !important",
+        },
+        ".ag-header-cell": {
+            "box-sizing": "border-box !important",
+            "overflow": "hidden !important",
+        },
+        ".ag-header-cell-text": {
+            "overflow": "hidden !important",
+            "text-overflow": "ellipsis !important",
+        },
+        ".ag-header-cell-comp-wrapper": {
+            "overflow": "hidden !important",
+            "max-width": "100% !important",
         },
     }
 
@@ -4189,6 +4268,8 @@ def _render_company_grid_column_selector(
     available_columns: Sequence[str],
     *,
     preferred_visible_columns: Optional[Sequence[str]] = None,
+    grid_label: Optional[str] = None,
+    default_to_preferred_columns: bool = False,
 ) -> tuple[list[str], list[str]]:
     available = list(available_columns)
     if not available:
@@ -4209,7 +4290,14 @@ def _render_company_grid_column_selector(
         _set_grid_visible_columns(layout_surface_id, visible_columns)
         save_grid_layout(layout_surface_id, visible_columns, GRID_LAYOUT_CONFIG_PATH)
     if not load_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH):
-        visible_columns = list(available)
+        if default_to_preferred_columns and preferred_visible_columns:
+            visible_columns = _normalize_grid_visible_columns(
+                preferred_visible_columns,
+                available,
+                default_columns=available,
+            )
+        else:
+            visible_columns = list(available)
         _set_grid_visible_columns(layout_surface_id, visible_columns)
 
     pinned_key = _company_grid_pinned_columns_key(surface_id)
@@ -4219,10 +4307,11 @@ def _render_company_grid_column_selector(
         st.session_state[pinned_key] = pinned_state
     pinned_columns = [column for column in pinned_state if column in visible_columns]
 
-    with st.expander("Fields", expanded=False):
+    label_suffix = f" - {grid_label}" if grid_label else ""
+    with st.expander(f"Fields{label_suffix}", expanded=False):
         st.caption("Frozen columns")
         pinned_columns = st.multiselect(
-            "Freeze columns on the left",
+            f"Freeze columns on the left{label_suffix}",
             options=visible_columns,
             default=pinned_columns,
             key=pinned_key,
@@ -4256,6 +4345,49 @@ def _render_company_grid_column_selector(
     return visible_columns, pinned_columns
 
 
+def _render_company_grid_shared_controls(
+    display_df: pd.DataFrame,
+    *,
+    surface_id: str,
+    preferred_visible_columns: Optional[Sequence[str]] = None,
+    grid_label: Optional[str] = None,
+    csv_file_name: Optional[str] = None,
+) -> tuple[list[str], list[str]]:
+    all_columns = display_df.columns.tolist()
+    _apply_pending_company_grid_layout_reset(surface_id, all_columns)
+    visible_columns, pinned_columns = _render_company_grid_column_selector(
+        surface_id,
+        all_columns,
+        preferred_visible_columns=preferred_visible_columns,
+        grid_label=grid_label,
+        default_to_preferred_columns=True,
+    )
+
+    action_cols = st.columns([1.35, 1.2, 4.15])
+    label_suffix = f" - {grid_label}" if grid_label else ""
+    with action_cols[0]:
+        reset_clicked = st.button(
+            f"Reset grid layout{label_suffix}",
+            key=f"{surface_id}_company_grid_reset",
+            use_container_width=True,
+        )
+    with action_cols[1]:
+        _render_dataframe_csv_download(
+            display_df.loc[:, visible_columns].copy(),
+            surface_id=surface_id,
+            file_name=csv_file_name or f"{surface_id}.csv",
+            button_label=f"Download CSV{label_suffix}",
+        )
+    with action_cols[2]:
+        st.caption("Shared layout for all portfolio sections below. Open Fields to hide/add columns, and drag headers in the grid to reorder.")
+    if reset_clicked:
+        layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
+        clear_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH)
+        _queue_company_grid_layout_reset(surface_id)
+        st.rerun()
+    return visible_columns, pinned_columns
+
+
 def _render_company_grid(
     display_df: pd.DataFrame,
     *,
@@ -4265,16 +4397,32 @@ def _render_company_grid(
     preferred_visible_columns: Optional[Sequence[str]] = None,
     default_row_limit: Optional[str] = None,
     show_top_scrollbar: bool = False,
+    grid_label: Optional[str] = None,
+    compact_height: bool = False,
+    default_to_preferred_columns: bool = False,
+    show_controls: bool = True,
+    visible_columns_override: Optional[Sequence[str]] = None,
+    pinned_columns_override: Optional[Sequence[str]] = None,
     fallback_styler_builder: Optional[Callable[[pd.DataFrame], object]] = None,
     csv_file_name: Optional[str] = None,
 ) -> None:
     all_columns = display_df.columns.tolist()
-    _apply_pending_company_grid_layout_reset(surface_id, all_columns)
-    visible_columns, pinned_columns = _render_company_grid_column_selector(
-        surface_id,
-        all_columns,
-        preferred_visible_columns=preferred_visible_columns,
-    )
+    if show_controls:
+        _apply_pending_company_grid_layout_reset(surface_id, all_columns)
+        visible_columns, pinned_columns = _render_company_grid_column_selector(
+            surface_id,
+            all_columns,
+            preferred_visible_columns=preferred_visible_columns,
+            grid_label=grid_label,
+            default_to_preferred_columns=default_to_preferred_columns,
+        )
+    else:
+        visible_columns = _normalize_grid_visible_columns(
+            visible_columns_override,
+            all_columns,
+            default_columns=all_columns,
+        )
+        pinned_columns = [column for column in list(pinned_columns_override or []) if column in visible_columns]
     display_df = display_df.loc[:, visible_columns].copy()
     total_rows = len(display_df)
     row_limit_options = [
@@ -4282,55 +4430,71 @@ def _render_company_grid(
         for limit in COMPANY_GRID_ROW_LIMIT_OPTIONS
         if limit < total_rows
     ]
-    row_limit_options.append("All")
+    all_rows_label = f"All - {grid_label}" if grid_label else "All"
+    row_limit_options.append(all_rows_label)
     computed_default_row_limit = (
-        str(COMPANY_GRID_DEFAULT_VISIBLE_ROWS) if COMPANY_GRID_DEFAULT_VISIBLE_ROWS < total_rows else "All"
+        str(COMPANY_GRID_DEFAULT_VISIBLE_ROWS) if COMPANY_GRID_DEFAULT_VISIBLE_ROWS < total_rows else all_rows_label
     )
     normalized_default_row_limit = str(default_row_limit).strip() if default_row_limit is not None else computed_default_row_limit
+    if normalized_default_row_limit == "All":
+        normalized_default_row_limit = all_rows_label
     if normalized_default_row_limit not in row_limit_options:
         normalized_default_row_limit = computed_default_row_limit
     row_limit_key = f"{surface_id}_company_grid_row_limit"
     if st.session_state.get(row_limit_key) not in row_limit_options:
         st.session_state[row_limit_key] = normalized_default_row_limit
 
-    action_cols = st.columns([1.35, 1.2, 1.0, 3.15])
-    with action_cols[0]:
-        reset_clicked = st.button(
-            "Reset grid layout",
-            key=f"{surface_id}_company_grid_reset",
-            use_container_width=True,
-        )
-    with action_cols[1]:
-        _render_dataframe_csv_download(
-            display_df,
-            surface_id=surface_id,
-            file_name=csv_file_name or f"{surface_id}.csv",
-        )
-    with action_cols[2]:
-        selected_row_limit = st.selectbox(
-            "Rows",
-            options=row_limit_options,
-            key=row_limit_key,
-            label_visibility="collapsed",
-        )
-    with action_cols[3]:
-        st.caption("All columns are visible by default. Open Fields to hide/add columns, and drag headers in the grid to reorder. Layout auto-saves.")
-    if reset_clicked:
-        layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
-        clear_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH)
-        _queue_company_grid_layout_reset(surface_id)
-        st.rerun()
+    label_suffix = f" - {grid_label}" if grid_label else ""
+    if show_controls:
+        action_cols = st.columns([1.35, 1.2, 1.0, 3.15])
+        with action_cols[0]:
+            reset_clicked = st.button(
+                f"Reset grid layout{label_suffix}",
+                key=f"{surface_id}_company_grid_reset",
+                use_container_width=True,
+            )
+        with action_cols[1]:
+            _render_dataframe_csv_download(
+                display_df,
+                surface_id=surface_id,
+                file_name=csv_file_name or f"{surface_id}.csv",
+                button_label=f"Download CSV{label_suffix}",
+            )
+        with action_cols[2]:
+            selected_row_limit = st.selectbox(
+                f"Rows{label_suffix}",
+                options=row_limit_options,
+                key=row_limit_key,
+                label_visibility="collapsed",
+            )
+        with action_cols[3]:
+            st.caption("All columns are visible by default. Open Fields to hide/add columns, and drag headers in the grid to reorder. Layout auto-saves.")
+        if reset_clicked:
+            layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
+            clear_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH)
+            _queue_company_grid_layout_reset(surface_id)
+            st.rerun()
+    else:
+        selected_row_limit = all_rows_label
 
-    if selected_row_limit != "All":
+    if selected_row_limit != all_rows_label:
         render_df = display_df.head(int(selected_row_limit)).copy()
         st.caption(f"Showing first {len(render_df)} of {total_rows} rows. Download CSV includes all filtered rows.")
     else:
         render_df = display_df
 
-    grid_height = _company_grid_height(len(render_df), row_height=row_height, min_height=min_height)
+    if compact_height:
+        grid_height = max(min_height, 98 + len(render_df) * row_height)
+    else:
+        grid_height = _company_grid_height(len(render_df), row_height=row_height, min_height=min_height)
     if AGGRID_AVAILABLE and AgGrid is not None:
         widget_nonce = int(st.session_state.get(_company_grid_widget_nonce_key(surface_id), 0) or 0)
-        grid_options = _build_company_grid_options(render_df, surface_id, pinned_columns=pinned_columns)
+        grid_options = _build_company_grid_options(
+            render_df,
+            surface_id,
+            pinned_columns=pinned_columns,
+        )
+        data_signature = _company_grid_data_signature(render_df)
         if show_top_scrollbar:
             _render_company_grid_top_scrollbar(surface_id)
         AgGrid(
@@ -4340,12 +4504,17 @@ def _render_company_grid(
             allow_unsafe_jscode=True,
             theme="streamlit",
             custom_css=_company_grid_custom_css(),
+            # This grid is display-only from Streamlit's perspective. Leaving the
+            # default update_on events enabled can trigger a rerun during AgGrid's
+            # own filter redraw cycle, which surfaces AG Grid error #252.
+            update_on=[],
             key=_company_grid_aggrid_key(
                 surface_id,
                 widget_nonce,
                 visible_columns,
                 pinned_columns,
                 selected_row_limit,
+                data_signature,
             ),
         )
         return
@@ -7499,6 +7668,7 @@ def _render_technical_scoring_content(
                 selected_sector,
                 scope_mode,
                 scope_key,
+                "screener_focus_defaults_v1" if screener_mode else "drilldown_focus_defaults_v1",
             )
             _sync_drilldown_filter_defaults(
                 state_prefix,
@@ -11681,13 +11851,651 @@ def render_quadrants(default_anchor: date) -> None:
     )
 
 
-def render_portfolios_tab() -> None:
+def _strip_us_suffix(ticker: object) -> str:
+    value = str(ticker or "").strip().upper()
+    if value.endswith(".US"):
+        return value[:-3]
+    return value
+
+
+def _portfolio_effective_decision(row: pd.Series) -> str:
+    decision = str(row.get("Decizie", "") or "").strip().upper()
+    text_prefix = str(row.get("Text", "") or "").strip().upper()[:80]
+    realized_value = pd.to_numeric(row.get("Randament"), errors="coerce")
+    if decision == "SELL" or re.search(r"\bSELL\b", text_prefix) or pd.notna(realized_value):
+        return "SELL"
+    if decision == "BUY" or re.search(r"\bBUY\b", text_prefix):
+        return "BUY"
+    return decision
+
+
+def _parse_portfolio_price_value(value: object) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return float("nan")
+    cleaned = re.sub(r"[^0-9,.\-]", "", raw)
+    if not cleaned:
+        return float("nan")
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
+    parsed = pd.to_numeric(cleaned, errors="coerce")
+    return float(parsed) if pd.notna(parsed) else float("nan")
+
+
+def _extract_portfolio_transaction_price(text: object) -> tuple[float, str]:
+    body = str(text or "").replace("\xa0", " ")
+    patterns = [
+        r"pretul\s+de\s+([0-9][0-9.,]*)\s*USD",
+        r"pre(?:t|ț|ţ)ul\s+de\s+([0-9][0-9.,]*)\s*USD",
+        r"la\s+([0-9][0-9.,]*)\s*USD",
+        r"de\s+([0-9][0-9.,]*)\s*USD",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, body, flags=re.IGNORECASE)
+        if not match:
+            continue
+        raw_value = match.group(1)
+        numeric_value = _parse_portfolio_price_value(raw_value)
+        if pd.notna(numeric_value):
+            return numeric_value, raw_value
+    return float("nan"), ""
+
+
+def _extract_ro_text_date(text: object, fallback_year: int) -> Optional[date]:
+    month_lookup = {
+        "ian": 1,
+        "ianuarie": 1,
+        "feb": 2,
+        "februarie": 2,
+        "mar": 3,
+        "martie": 3,
+        "apr": 4,
+        "aprilie": 4,
+        "mai": 5,
+        "iun": 6,
+        "iunie": 6,
+        "iul": 7,
+        "iulie": 7,
+        "aug": 8,
+        "august": 8,
+        "sep": 9,
+        "septembrie": 9,
+        "oct": 10,
+        "octombrie": 10,
+        "nov": 11,
+        "noiembrie": 11,
+        "dec": 12,
+        "decembrie": 12,
+    }
+    body = str(text or "").lower()
+    match = re.search(
+        r"\b([0-3]?\d)\s+"
+        r"(ianuarie|ian|februarie|feb|martie|mar|aprilie|apr|mai|iunie|iun|iulie|iul|august|aug|"
+        r"septembrie|sep|octombrie|oct|noiembrie|nov|decembrie|dec)"
+        r"(?:\s+(\d{4}))?\b",
+        body,
+    )
+    if not match:
+        return None
+    day_value = int(match.group(1))
+    month_value = month_lookup.get(match.group(2))
+    year_value = int(match.group(3)) if match.group(3) else fallback_year
+    if month_value is None:
+        return None
+    try:
+        return date(year_value, month_value, day_value)
+    except ValueError:
+        return None
+
+
+def _portfolio_transaction_date(row: pd.Series, reference_date: date) -> Optional[date]:
+    raw_date = pd.to_datetime(row.get("Data"), errors="coerce")
+    parsed_date = raw_date.date() if pd.notna(raw_date) else None
+    if parsed_date is not None and parsed_date <= reference_date + timedelta(days=7):
+        return parsed_date
+    fallback_year = parsed_date.year if parsed_date is not None else reference_date.year
+    text_date = _extract_ro_text_date(row.get("Text"), fallback_year)
+    return text_date or parsed_date
+
+
+def _format_portfolio_date(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, date):
+        return value.strftime("%d/%m/%Y")
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return "N/A"
+    return parsed.date().strftime("%d/%m/%Y")
+
+
+def _format_currency_usd(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "N/A"
+    return f"{float(numeric):,.2f} USD"
+
+
+def _format_portfolio_percent(value: object) -> str:
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "N/A"
+    return f"{float(numeric):.2f}%"
+
+
+@st.cache_data(show_spinner=False)
+def load_portfolio_journal(path_str: str, cache_signature: str = "") -> dict[str, pd.DataFrame]:
+    _ = cache_signature
+    path = Path(path_str)
+    sheets: dict[str, pd.DataFrame] = {}
+    for portfolio_key, metadata in PORTFOLIO_SHEETS.items():
+        sheet_name = str(metadata["sheet"])
+        try:
+            sheets[portfolio_key] = pd.read_excel(path, sheet_name=sheet_name)
+        except Exception:
+            sheets[portfolio_key] = pd.DataFrame(columns=["Data", "Ticker", "Decizie", "Text", "Randament"])
+    return sheets
+
+
+def _load_portfolio_alerts(path: Path = PORTFOLIO_ALERTS_PATH) -> dict[str, dict[str, str]]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    normalized: dict[str, dict[str, str]] = {}
+    for portfolio_name, ticker_payload in payload.items():
+        if not isinstance(ticker_payload, dict):
+            continue
+        normalized[str(portfolio_name).strip().lower()] = {
+            _strip_us_suffix(ticker): str(alert_value)
+            for ticker, alert_value in ticker_payload.items()
+        }
+    return normalized
+
+
+def _load_portfolio_config(path: Path = PORTFOLIO_CONFIG_PATH) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _portfolio_excluded_open_tickers(
+    portfolio_config: dict[str, object],
+    portfolio_key: str,
+) -> set[str]:
+    excluded_payload = portfolio_config.get("excluded_open_positions", {})
+    if not isinstance(excluded_payload, dict):
+        return set()
+    aliases = {
+        portfolio_key,
+        str(PORTFOLIO_SHEETS[portfolio_key]["sheet"]).lower(),
+        str(PORTFOLIO_SHEETS[portfolio_key]["label"]).lower(),
+    }
+    excluded: set[str] = set()
+    for alias in aliases:
+        values = excluded_payload.get(alias)
+        if not isinstance(values, list):
+            continue
+        excluded.update(_strip_us_suffix(value) for value in values if _strip_us_suffix(value))
+    return excluded
+
+
+def _portfolio_alert_level(
+    alerts: dict[str, dict[str, str]],
+    portfolio_key: str,
+    ticker: object,
+) -> str:
+    ticker_key = _strip_us_suffix(ticker)
+    portfolio_alerts = alerts.get(portfolio_key, {})
+    sheet_alerts = alerts.get(str(PORTFOLIO_SHEETS[portfolio_key]["sheet"]).lower(), {})
+    return portfolio_alerts.get(ticker_key, sheet_alerts.get(ticker_key, PORTFOLIO_DEFAULT_ALERT_LEVEL))
+
+
+def build_portfolio_open_positions(
+    journal_df: pd.DataFrame,
+    *,
+    reference_date: date,
+    excluded_tickers: Optional[set[str]] = None,
+) -> pd.DataFrame:
+    if journal_df.empty or "Ticker" not in journal_df.columns:
+        return pd.DataFrame(
+            columns=[
+                "ticker",
+                "transaction_date",
+                "transaction_price",
+                "transaction_price_raw",
+                "transaction_text",
+            ]
+        )
+    working = journal_df.copy()
+    working["ticker"] = working["Ticker"].map(normalize_price_ticker)
+    working = working[working["ticker"].astype(str).str.len() > 0].copy()
+    working["transaction_sort_date"] = pd.to_datetime(working.get("Data"), errors="coerce")
+    working["effective_decision"] = working.apply(_portfolio_effective_decision, axis=1)
+    working = working.sort_values(["ticker", "transaction_sort_date"], kind="stable")
+    latest = working.drop_duplicates(subset=["ticker"], keep="last").copy()
+    latest = latest[latest["effective_decision"].eq("BUY")].copy()
+    excluded = set(excluded_tickers or set())
+    if excluded:
+        latest = latest[~latest["ticker"].map(_strip_us_suffix).isin(excluded)].copy()
+    if latest.empty:
+        return pd.DataFrame(
+            columns=[
+                "ticker",
+                "transaction_date",
+                "transaction_price",
+                "transaction_price_raw",
+                "transaction_text",
+            ]
+        )
+    extracted = latest["Text"].map(_extract_portfolio_transaction_price)
+    latest["transaction_price"] = [entry[0] for entry in extracted]
+    latest["transaction_price_raw"] = [entry[1] for entry in extracted]
+    latest["transaction_date"] = latest.apply(
+        lambda row: _portfolio_transaction_date(row, reference_date),
+        axis=1,
+    )
+    latest["transaction_text"] = latest.get("Text", pd.Series(index=latest.index, dtype=object)).fillna("")
+    return latest[
+        [
+            "ticker",
+            "transaction_date",
+            "transaction_price",
+            "transaction_price_raw",
+            "transaction_text",
+        ]
+    ].reset_index(drop=True)
+
+
+def _portfolio_realized_average(journal_df: pd.DataFrame) -> float:
+    if "Randament" not in journal_df.columns:
+        return float("nan")
+    numeric = pd.to_numeric(journal_df["Randament"], errors="coerce").dropna()
+    if numeric.empty:
+        return float("nan")
+    return float(numeric.mean() * 100.0)
+
+
+def _portfolio_segment(row: pd.Series) -> str:
+    growth_score = pd.to_numeric(row.get("fundamental_growth"), errors="coerce")
+    value_score = pd.to_numeric(row.get("fundamental_value"), errors="coerce")
+    if pd.notna(growth_score) and pd.notna(value_score) and growth_score > value_score:
+        return "Growth"
+    return "Value"
+
+
+def _portfolio_surface_id(portfolio_key: str, segment_name: str) -> str:
+    normalized_segment = re.sub(r"[^0-9a-zA-Z]+", "_", segment_name.strip().lower()).strip("_")
+    return f"{GRID_SURFACE_PORTFOLIO_PREFIX}_v7_{portfolio_key}_{normalized_segment}"
+
+
+def _portfolio_shared_surface_id(portfolio_key: str) -> str:
+    return f"{GRID_SURFACE_PORTFOLIO_PREFIX}_v7_{portfolio_key}_shared"
+
+
+def _portfolio_preferred_columns() -> list[str]:
+    return [
+        "Ticker",
+        "Company",
+        "Thematic",
+        "Sector",
+        "Industry",
+        "Market Cap",
+        "Beta",
+        "1W",
+        "Transaction Price",
+        "Transaction Date",
+        "Last EOD Price",
+        "Net PnL",
+        "Alert Levels",
+        "1M",
+        "3M",
+        "YTD",
+        "TS",
+        "FS",
+        "Mom. FS",
+        "Growth FS",
+        "Value FS",
+        "Quality FS",
+        "Risk FS",
+    ]
+
+
+def _build_portfolio_company_universe(
+    positions_df: pd.DataFrame,
+    report_df: Optional[pd.DataFrame],
+    price_lookup: dict[str, dict[str, list[object]]],
+    reference_date: date,
+    *,
+    thematics_config_signature: str = "",
+) -> tuple[pd.DataFrame, Optional[str]]:
+    if positions_df.empty:
+        return pd.DataFrame(), None
+    warnings: list[str] = []
+    if report_df is None or report_df.empty:
+        base = positions_df[["ticker"]].drop_duplicates().copy()
+        base["company"] = base["ticker"].map(_strip_us_suffix)
+        base["sector"] = "Unspecified"
+        base["industry"] = "Unspecified"
+        base["market_cap"] = np.nan
+        base["fundamental_total_score"] = np.nan
+        base["general_technical_score"] = np.nan
+        base["beta"] = np.nan
+    else:
+        thematic_memberships = _load_all_thematic_memberships_for_config(
+            str(THEMATICS_CONFIG_PATH),
+            thematics_config_signature,
+        )
+        base, error_message = _prepare_company_drilldown_universe(
+            report_df,
+            include_beta=True,
+            thematic_memberships=thematic_memberships,
+            thematics_config_signature=thematics_config_signature,
+        )
+        if error_message or base is None:
+            warnings.append(error_message or "Portfolio company metadata could not be prepared.")
+            base = positions_df[["ticker"]].drop_duplicates().copy()
+            base["company"] = base["ticker"].map(_strip_us_suffix)
+            base["sector"] = "Unspecified"
+            base["industry"] = "Unspecified"
+            base["market_cap"] = np.nan
+            base["fundamental_total_score"] = np.nan
+            base["general_technical_score"] = np.nan
+            base["beta"] = np.nan
+
+    scope_tickers = positions_df["ticker"].dropna().astype(str).tolist()
+    base = base[base["ticker"].isin(scope_tickers)].copy()
+    missing_tickers = sorted(set(scope_tickers).difference(set(base["ticker"].astype(str))))
+    if missing_tickers:
+        missing_df = pd.DataFrame({"ticker": missing_tickers})
+        missing_df["company"] = missing_df["ticker"].map(_strip_us_suffix)
+        missing_df["sector"] = "Unspecified"
+        missing_df["industry"] = "Unspecified"
+        missing_df["market_cap"] = np.nan
+        missing_df["fundamental_total_score"] = np.nan
+        missing_df["general_technical_score"] = np.nan
+        missing_df["beta"] = np.nan
+        base = pd.concat([base, missing_df], ignore_index=True, sort=False)
+        warnings.append(f"Missing report_select metadata for: {', '.join(_strip_us_suffix(t) for t in missing_tickers)}.")
+
+    performance_df, anchor_missing = _compute_company_return_metrics(scope_tickers, price_lookup, reference_date)
+    if not performance_df.empty:
+        base = base.merge(performance_df, on="ticker", how="left")
+    else:
+        for metric_name in ["anchor_close", "1w_perf", "1m_perf", "3m_perf", "ytd_perf", "anchor_fallback_used"]:
+            base[metric_name] = np.nan
+    if anchor_missing:
+        warnings.append(
+            f"Some portfolio tickers do not have an exact daily price for {reference_date.isoformat()}; latest prior EOD was used where available."
+        )
+
+    if report_df is not None and not report_df.empty and "eod_price_used" in report_df.columns:
+        eod_lookup = report_df[["ticker", "eod_price_used"]].copy()
+        eod_lookup["ticker"] = eod_lookup["ticker"].map(normalize_price_ticker)
+        eod_lookup["eod_price_used"] = pd.to_numeric(eod_lookup["eod_price_used"], errors="coerce")
+        base = base.merge(eod_lookup.drop_duplicates("ticker", keep="last"), on="ticker", how="left")
+    else:
+        base["eod_price_used"] = np.nan
+    base["last_eod_price"] = pd.to_numeric(base["eod_price_used"], errors="coerce")
+    base["last_eod_price"] = base["last_eod_price"].where(
+        base["last_eod_price"].notna(),
+        pd.to_numeric(base.get("anchor_close"), errors="coerce"),
+    )
+
+    base = base.merge(positions_df, on="ticker", how="left")
+    base["portfolio_segment"] = base.apply(_portfolio_segment, axis=1)
+    transaction_price = pd.to_numeric(base["transaction_price"], errors="coerce")
+    last_eod_price = pd.to_numeric(base["last_eod_price"], errors="coerce")
+    base["net_pnl_pct"] = np.where(
+        transaction_price.notna() & last_eod_price.notna() & (transaction_price != 0),
+        100.0 * (last_eod_price / transaction_price - 1.0),
+        np.nan,
+    )
+    base, regime_warning = _enrich_company_universe_with_market_regime(base, reference_date)
+    base = _enrich_company_universe_with_rsi_divergence(base, reference_date)
+    if regime_warning:
+        warnings.append(regime_warning)
+    return base.reset_index(drop=True), _combine_optional_messages(*warnings)
+
+
+def _format_portfolio_company_display(
+    company_df: pd.DataFrame,
+    *,
+    alerts: dict[str, dict[str, str]],
+    portfolio_key: str,
+) -> pd.DataFrame:
+    sort_columns = ["fundamental_total_score", "general_technical_score"]
+    sorted_company_df = company_df.sort_values(
+        by=sort_columns,
+        ascending=[False, False],
+        na_position="last",
+    ).reset_index(drop=True)
+    display_df = format_company_drilldown_display(sorted_company_df, sort_by="fundamental")
+    if display_df.empty:
+        return display_df
+    meta = sorted_company_df
+    insertions = {
+        "Portfolio Segment": meta.get("portfolio_segment", pd.Series(index=meta.index, dtype=object)).fillna("Value"),
+        "Transaction Price": meta.get("transaction_price", pd.Series(index=meta.index, dtype=float)).map(_format_currency_usd),
+        "Transaction Date": meta.get("transaction_date", pd.Series(index=meta.index, dtype=object)).map(_format_portfolio_date),
+        "Last EOD Price": meta.get("last_eod_price", pd.Series(index=meta.index, dtype=float)).map(_format_currency_usd),
+        "Net PnL": meta.get("net_pnl_pct", pd.Series(index=meta.index, dtype=float)).map(_format_portfolio_percent),
+        "Alert Levels": [
+            _portfolio_alert_level(alerts, portfolio_key, ticker)
+            for ticker in meta.get("ticker", pd.Series(index=meta.index, dtype=object)).tolist()
+        ],
+    }
+    display_df["Ticker"] = display_df["Ticker"].map(_strip_us_suffix)
+    for column_name, values in reversed(list(insertions.items())):
+        if column_name in display_df.columns:
+            display_df[column_name] = values
+        else:
+            insert_at = 1 if column_name == "Portfolio Segment" else min(8, len(display_df.columns))
+            display_df.insert(insert_at, column_name, values)
+    return display_df
+
+
+def _render_portfolio_kpi_cards(
+    portfolio_label: str,
+    company_df: pd.DataFrame,
+    journal_df: pd.DataFrame,
+) -> None:
+    avg_beta = _basket_average(company_df.get("beta", pd.Series(dtype=float)))
+    avg_unrealized = _basket_average(company_df.get("net_pnl_pct", pd.Series(dtype=float)))
+    avg_realized = _portfolio_realized_average(journal_df)
+    best_row = pd.DataFrame()
+    if not company_df.empty and "net_pnl_pct" in company_df.columns:
+        valid = company_df[pd.to_numeric(company_df["net_pnl_pct"], errors="coerce").notna()].copy()
+        if not valid.empty:
+            best_row = valid.sort_values("net_pnl_pct", ascending=False).head(1)
+    best_label = "-"
+    if not best_row.empty:
+        best_ticker = _strip_us_suffix(best_row.iloc[0].get("ticker"))
+        best_company = str(best_row.iloc[0].get("company") or best_ticker)
+        best_label = f"{best_company} ({_format_portfolio_percent(best_row.iloc[0].get('net_pnl_pct'))})"
+
+    card_cols = st.columns(4)
+    with card_cols[0]:
+        render_kpi_card("Average beta", _format_numeric_value(avg_beta), portfolio_label)
+    with card_cols[1]:
+        render_kpi_card("Average unrealized PnL", _format_portfolio_percent(avg_unrealized), "Simple average")
+    with card_cols[2]:
+        render_kpi_card("Average realized PnL / trade", _format_portfolio_percent(avg_realized), "From Randament")
+    with card_cols[3]:
+        render_kpi_card("Best performer", best_label, "Open positions")
+
+
+def _render_portfolio_sheet(
+    portfolio_key: str,
+    journal_df: pd.DataFrame,
+    *,
+    report_df: Optional[pd.DataFrame],
+    reference_date: date,
+    price_lookup: dict[str, dict[str, list[object]]],
+    alerts: dict[str, dict[str, str]],
+    portfolio_config: dict[str, object],
+    thematics_config_signature: str,
+) -> None:
+    portfolio_label = str(PORTFOLIO_SHEETS[portfolio_key]["label"])
+    render_subtab_group_intro(
+        portfolio_label,
+        "Open positions are derived from the trading journal and enriched with the latest cached EOD data.",
+    )
+    positions_df = build_portfolio_open_positions(
+        journal_df,
+        reference_date=reference_date,
+        excluded_tickers=_portfolio_excluded_open_tickers(portfolio_config, portfolio_key),
+    )
+    company_df, warning_message = _build_portfolio_company_universe(
+        positions_df,
+        report_df,
+        price_lookup,
+        reference_date,
+        thematics_config_signature=thematics_config_signature,
+    )
+    if warning_message:
+        st.warning(warning_message)
+    _render_portfolio_kpi_cards(portfolio_label, company_df, journal_df)
+    if company_df.empty:
+        st.info("No open positions were found in the journal for this portfolio.")
+        return
+
+    portfolio_short_label = str(PORTFOLIO_SHEETS[portfolio_key]["label"]).replace("Portofoliu ", "")
+    full_display_df = _format_portfolio_company_display(
+        company_df,
+        alerts=alerts,
+        portfolio_key=portfolio_key,
+    )
+    shared_visible_columns, shared_pinned_columns = _render_company_grid_shared_controls(
+        full_display_df,
+        surface_id=_portfolio_shared_surface_id(portfolio_key),
+        preferred_visible_columns=_portfolio_preferred_columns(),
+        grid_label=portfolio_short_label,
+        csv_file_name=f"portfolio_{portfolio_key}_{reference_date.isoformat()}.csv",
+    )
+
+    for segment_name in PORTFOLIO_SEGMENT_ORDER:
+        segment_df = company_df[company_df["portfolio_segment"].eq(segment_name)].copy()
+        if segment_df.empty:
+            continue
+        render_board_title_band(segment_name)
+        display_df = _format_portfolio_company_display(
+            segment_df,
+            alerts=alerts,
+            portfolio_key=portfolio_key,
+        )
+        _render_company_grid(
+            display_df,
+            surface_id=_portfolio_surface_id(portfolio_key, segment_name),
+            row_height=36,
+            min_height=132,
+            preferred_visible_columns=_portfolio_preferred_columns(),
+            default_row_limit="All",
+            grid_label=f"{portfolio_short_label} / {segment_name}",
+            compact_height=True,
+            default_to_preferred_columns=True,
+            show_controls=False,
+            visible_columns_override=shared_visible_columns,
+            pinned_columns_override=shared_pinned_columns,
+            csv_file_name=f"portfolio_{portfolio_key}_{segment_name.lower()}_{reference_date.isoformat()}.csv",
+        )
+
+
+def render_portfolios_tab(config: ReportConfig) -> None:
     render_page_intro(
         "Portfolios",
-        "Reserved for upcoming portfolio workflows and monitoring views.",
+        "Monitoring cockpit for Equipicker portfolio positions, journal decisions, and alert levels.",
         "Equipilot / Portfolios",
     )
-    st.info("This tab is intentionally empty for now.")
+    reference_date = render_report_select_date_input(
+        "Reference EOD date",
+        value=get_default_board_eod(config),
+        key="portfolio_reference_eod",
+    )
+    journal_signature = _path_cache_signature(PORTFOLIO_JOURNAL_PATH)
+    if not PORTFOLIO_JOURNAL_PATH.exists():
+        st.error(f"Portfolio journal not found: {PORTFOLIO_JOURNAL_PATH}")
+        return
+
+    warnings: list[str] = []
+    report_df, report_path, report_candidates, report_error = load_report_select_for_eod(reference_date)
+    if report_path is None:
+        warnings.append(
+            f"report_select is missing for {reference_date.isoformat()}; portfolio metadata and scoring fields are shown as N/A."
+        )
+        report_df = None
+    elif report_error:
+        warnings.append(f"Could not read {report_path}: {report_error}")
+        report_df = None
+
+    prices_cache_file = prices_cache_path("daily", reference_date.year)
+    price_lookup: dict[str, dict[str, list[object]]] = {}
+    if prices_cache_file.exists():
+        try:
+            price_lookup = build_price_history_lookup(str(prices_cache_file), _path_cache_signature(prices_cache_file))
+        except Exception as exc:  # pragma: no cover - UI feedback
+            warnings.append(f"Daily prices cache could not be read ({prices_cache_file}): {exc}")
+    else:
+        warnings.append(f"Daily prices cache is missing for {reference_date.year}; latest cached prices are shown as N/A.")
+
+    chips = [
+        f"Journal: {PORTFOLIO_JOURNAL_PATH.name}",
+        f"Reference EOD: {reference_date.isoformat()}",
+    ]
+    if report_path is not None:
+        chips.append(f"Report: {report_path.name}")
+    else:
+        chips.append(f"Expected report: {report_candidates[0].name}")
+    if prices_cache_file.exists():
+        chips.append(f"Prices cache: {prices_cache_file.name}")
+    chips.append(f"Alerts: {PORTFOLIO_ALERTS_PATH.name}")
+    chips.append(f"Portfolio config: {PORTFOLIO_CONFIG_PATH.name}")
+    render_chip_row(chips)
+
+    for warning_message in dict.fromkeys(warnings):
+        st.warning(warning_message)
+
+    journal_sheets = load_portfolio_journal(str(PORTFOLIO_JOURNAL_PATH), journal_signature)
+    alerts = _load_portfolio_alerts(PORTFOLIO_ALERTS_PATH)
+    portfolio_config = _load_portfolio_config(PORTFOLIO_CONFIG_PATH)
+    portfolio_labels = {
+        str(PORTFOLIO_SHEETS["dinamic"]["label"]): "dinamic",
+        str(PORTFOLIO_SHEETS["dividend"]["label"]): "dividend",
+    }
+    selected_portfolio_label = st.radio(
+        "Portfolio view",
+        list(portfolio_labels.keys()),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="portfolio_active_view",
+    )
+    selected_portfolio_key = portfolio_labels[selected_portfolio_label]
+    thematics_config_signature = _path_cache_signature(THEMATICS_CONFIG_PATH)
+    _render_portfolio_sheet(
+        selected_portfolio_key,
+        journal_sheets.get(selected_portfolio_key, pd.DataFrame()),
+        report_df=report_df,
+        reference_date=reference_date,
+        price_lookup=price_lookup,
+        alerts=alerts,
+        portfolio_config=portfolio_config,
+        thematics_config_signature=thematics_config_signature,
+    )
 
 
 def main() -> None:
@@ -11732,7 +12540,7 @@ def main() -> None:
     with thematics_tab:
         render_thematics_tab(config)
     with portfolios_tab:
-        render_portfolios_tab()
+        render_portfolios_tab(config)
     with trade_ideas_tab:
         render_trade_ideas(config)
     if show_quadrants_tab:
