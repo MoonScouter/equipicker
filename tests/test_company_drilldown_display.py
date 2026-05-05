@@ -28,6 +28,7 @@ from equipilot_app import (
     _filter_by_optional_label_value,
     _filter_by_optional_numeric_range,
     _format_divergence_flag,
+    _company_grid_aggrid_key,
     _latest_divergence_flags_for_frequency,
     _normalize_grid_visible_columns,
     _company_grid_height,
@@ -45,6 +46,41 @@ from equipilot_app import (
 
 
 class CompanyDrilldownDisplayTests(unittest.TestCase):
+    COMPANY_DISPLAY_COLUMNS = [
+        "Thematic",
+        "Ticker",
+        "Company",
+        "Sector",
+        "Industry",
+        "Market Cap",
+        "Beta",
+        "1W",
+        "1M",
+        "3M",
+        "YTD",
+        "TS",
+        "Relative Performance",
+        "Relative Volume",
+        "Momentum",
+        "Intermediate Trend",
+        "Long-term Trend",
+        "RSI Regime",
+        "Sector Regime Fit",
+        "Short Term Flow",
+        "RSI Divergence (D)",
+        "RSI Divergence (W)",
+        "FS",
+        "Mom. FS",
+        "Growth FS",
+        "Value FS",
+        "Quality FS",
+        "Risk FS",
+        "Rel Strength",
+        "Rel Volume",
+        "AI Revenue Exposure",
+        "AI Disruption Risk",
+    ]
+
     def test_prepare_company_universe_uses_company_and_fallbacks_to_ticker(self) -> None:
         report_df = pd.DataFrame(
             [
@@ -340,31 +376,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
 
         self.assertEqual(
             rendered.columns.tolist(),
-            [
-                "Thematic",
-                "Ticker",
-                "Company",
-                "Sector",
-                "Industry",
-                "Market Cap",
-                "Beta",
-                "TS",
-                "RSI Regime",
-                "Sector Regime Fit",
-                "Short Term Flow",
-                "RSI Divergence (D)",
-                "RSI Divergence (W)",
-                "FS",
-                "Mom. FS",
-                "Growth FS",
-                "Value FS",
-                "Quality FS",
-                "Risk FS",
-                "Rel Strength",
-                "Rel Volume",
-                "AI Revenue Exposure",
-                "AI Disruption Risk",
-            ],
+            self.COMPANY_DISPLAY_COLUMNS,
         )
         self.assertEqual(rendered.iloc[0]["Thematic"], "Unassigned")
         self.assertEqual(rendered.iloc[0]["Ticker"], "HIGH.US")
@@ -405,31 +417,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
 
         self.assertEqual(
             rendered.columns.tolist(),
-            [
-                "Thematic",
-                "Ticker",
-                "Company",
-                "Sector",
-                "Industry",
-                "Market Cap",
-                "Beta",
-                "TS",
-                "RSI Regime",
-                "Sector Regime Fit",
-                "Short Term Flow",
-                "RSI Divergence (D)",
-                "RSI Divergence (W)",
-                "FS",
-                "Mom. FS",
-                "Growth FS",
-                "Value FS",
-                "Quality FS",
-                "Risk FS",
-                "Rel Strength",
-                "Rel Volume",
-                "AI Revenue Exposure",
-                "AI Disruption Risk",
-            ],
+            self.COMPANY_DISPLAY_COLUMNS,
         )
         self.assertEqual(rendered.iloc[0]["Thematic"], "Unassigned")
         self.assertEqual(rendered.iloc[0]["Company"], "Alpha Inc")
@@ -470,31 +458,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         fundamental_rendered = format_company_drilldown_display(company_df, sort_by="fundamental")
         technical_rendered = format_company_drilldown_display(company_df, sort_by="technical")
 
-        expected_columns = [
-            "Thematic",
-            "Ticker",
-            "Company",
-            "Sector",
-            "Industry",
-            "Market Cap",
-            "Beta",
-            "TS",
-            "RSI Regime",
-            "Sector Regime Fit",
-            "Short Term Flow",
-            "RSI Divergence (D)",
-            "RSI Divergence (W)",
-            "FS",
-            "Mom. FS",
-            "Growth FS",
-            "Value FS",
-            "Quality FS",
-            "Risk FS",
-            "Rel Strength",
-            "Rel Volume",
-            "AI Revenue Exposure",
-            "AI Disruption Risk",
-        ]
+        expected_columns = self.COMPANY_DISPLAY_COLUMNS
         self.assertEqual(fundamental_rendered.columns.tolist(), expected_columns)
         self.assertEqual(technical_rendered.columns.tolist(), expected_columns)
         self.assertEqual(fundamental_rendered.iloc[0]["Thematic"], "Unassigned")
@@ -1027,6 +991,26 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             ),
             available_columns,
         )
+
+    def test_company_grid_key_changes_when_data_signature_changes(self) -> None:
+        first_key = _company_grid_aggrid_key(
+            "technical_company_grid",
+            0,
+            ["Ticker", "Company"],
+            ["Ticker"],
+            "All",
+            "data-a",
+        )
+        second_key = _company_grid_aggrid_key(
+            "technical_company_grid",
+            0,
+            ["Ticker", "Company"],
+            ["Ticker"],
+            "All",
+            "data-b",
+        )
+
+        self.assertNotEqual(first_key, second_key)
 
 
     def test_apply_trend_symbols_to_table_formats_threshold_crossings_and_missing_previous(self) -> None:
