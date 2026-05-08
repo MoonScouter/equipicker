@@ -518,6 +518,16 @@ class PricesServiceTests(unittest.TestCase):
 
         self.assertTrue((flags == "none").all())
 
+    def test_compute_rsi_divergence_flags_rejects_weekly_candidates_beyond_16_bar_pair_span(self) -> None:
+        highs = [8, 9, 10, 14] + [9] * 17 + [10, 11, 12, 17, 12, 10, 9]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 74] + [52] * 17 + [54, 56, 58, 66, 58, 55, 52]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="weekly")
+
+        self.assertTrue((flags == "none").all())
+
     def test_compute_rsi_divergence_state_confirms_bullish_instance_after_post_activation_cross(self) -> None:
         df = self._build_divergence_frame(
             [10, 10, 10, 10, 10],
