@@ -1,4 +1,20 @@
 {
-  "dinamic": {},
-  "dividend": {}
+  "dinamic": {
+    "NVDA": "178",
+    "VRT": "291",
+    "HAL": "35",
+    "BMY": "51",
+    "LMT": "480",
+    "ASML": "1309"
+  },
+  "dividend": {
+    "LMT": "496",
+    "XOM": "142 - stop-loss",
+    "HAL": "35",
+    "BMY": "51",
+    "PR": "16",
+    "CVX": "182",
+    "MRK": "108",
+    "AAPL": "243"
+  }
 }

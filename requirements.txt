@@ -1,10 +1,12 @@
 fastapi
+duckdb
 langchain
 numpy
 openpyxl
 pandas
 pandas_market_calendars
 plotly
+pyarrow
 requests
 reportlab
 scikit-learn

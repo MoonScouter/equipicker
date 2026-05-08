@@ -13,12 +13,22 @@ import requests
 from sqlalchemy import bindparam, text
 
 from equipicker_connect import CACHE_DIR, make_engine, run_query_to_df
+from perf_store import load_prices_cached
 
 PricesFrequency = Literal["daily", "weekly"]
 RSI_PERIOD = 14
 DIVERGENCE_OB_LEVEL = 70.0
 DIVERGENCE_OS_LEVEL = 30.0
 DIVERGENCE_SAME_SWING_TOLERANCE_PCT = 0.001
+RSI_DIVERGENCE_FLAGS = {
+    "positive",
+    "potential-positive",
+    "extension-positive",
+    "negative",
+    "potential-negative",
+    "extension-negative",
+    "none",
+}
 
 
 @dataclass(frozen=True)
@@ -29,6 +39,8 @@ class DivergenceSettings:
     min_pivot_move_pct: float
     max_pivot_pair_span: int
     max_age_pivot2_from_last: int
+    max_potential_anchor_age: int
+    max_extension_age_after_confirmation: int
 
 
 @dataclass(frozen=True)
@@ -64,6 +76,8 @@ DIVERGENCE_SETTINGS_BY_FREQUENCY: dict[PricesFrequency, DivergenceSettings] = {
         min_pivot_move_pct=0.01,
         max_pivot_pair_span=60,
         max_age_pivot2_from_last=60,
+        max_potential_anchor_age=25,
+        max_extension_age_after_confirmation=25,
     ),
     "weekly": DivergenceSettings(
         pivot_window_l=2,
@@ -71,7 +85,9 @@ DIVERGENCE_SETTINGS_BY_FREQUENCY: dict[PricesFrequency, DivergenceSettings] = {
         min_bars_between_same_type_pivots=3,
         min_pivot_move_pct=0.01,
         max_pivot_pair_span=30,
-        max_age_pivot2_from_last=30,
+        max_age_pivot2_from_last=12,
+        max_potential_anchor_age=8,
+        max_extension_age_after_confirmation=8,
     ),
 }
 
@@ -251,7 +267,7 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     )
     working_df["rsi_divergence_flag"] = divergence_series.astype("string").str.strip().str.lower()
     working_df.loc[
-        ~working_df["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
+        ~working_df["rsi_divergence_flag"].isin(RSI_DIVERGENCE_FLAGS),
         "rsi_divergence_flag",
     ] = pd.NA
     confirmed_series = working_df["rsi_divergence_confirmed"].map(_normalize_optional_boolean_value)
@@ -311,10 +327,31 @@ def fetch_prices_history(
     return _canonicalize_prices_df(pd.concat(parts, ignore_index=True))
 
 
-def load_prices_cache(cache_file: Path) -> pd.DataFrame:
+def _load_prices_cache_source(cache_file: Path) -> pd.DataFrame:
     if not cache_file.exists() or cache_file.stat().st_size == 0:
         return empty_prices_cache_df()
     loaded_df = pd.read_json(cache_file, orient="records", lines=True)
+    return _canonicalize_prices_df(loaded_df)
+
+
+def _prices_cache_identity(cache_file: Path) -> tuple[PricesFrequency, int] | None:
+    match = re.match(r"^prices_(daily|weekly)_(\d{4})\.jsonl$", cache_file.name)
+    if not match:
+        return None
+    return match.group(1), int(match.group(2))
+
+
+def load_prices_cache(cache_file: Path) -> pd.DataFrame:
+    cache_identity = _prices_cache_identity(cache_file)
+    if cache_identity is None:
+        return _load_prices_cache_source(cache_file)
+    frequency, cache_year = cache_identity
+    loaded_df = load_prices_cached(
+        cache_file,
+        frequency=frequency,
+        cache_year=cache_year,
+        loader=_load_prices_cache_source,
+    )
     return _canonicalize_prices_df(loaded_df)
 
 
@@ -546,6 +583,123 @@ def _build_active_divergence_series(
     return active_by_row
 
 
+def _build_potential_divergence_series(
+    *,
+    pivots: list[PivotPoint],
+    settings: DivergenceSettings,
+    row_count: int,
+    current_price_series: pd.Series,
+    current_rsi_series: pd.Series,
+    anchor_threshold: float,
+    anchor_cmp,
+    anchor_break_cmp,
+    price_divergence_cmp,
+    rsi_divergence_cmp,
+    prefer_more_extreme_cmp,
+) -> list[ActiveDivergence | None]:
+    events: dict[int, list[PivotPoint]] = {}
+    for pivot in pivots:
+        if pivot.confirmation_index >= row_count:
+            continue
+        events.setdefault(pivot.confirmation_index, []).append(pivot)
+
+    potential_by_row: list[ActiveDivergence | None] = [None] * row_count
+    anchor: PivotPoint | None = None
+    best_divergence: tuple[PivotPoint, PivotPoint] | None = None
+    best_potential: tuple[PivotPoint, ActiveDivergence] | None = None
+    current_prices = pd.to_numeric(current_price_series, errors="coerce")
+    current_rsi_values = pd.to_numeric(current_rsi_series, errors="coerce")
+
+    for row_index in range(row_count):
+        for pivot in events.get(row_index, []):
+            if anchor is None:
+                if anchor_cmp(pivot.rsi, anchor_threshold):
+                    anchor = pivot
+                best_divergence = None
+                best_potential = None
+                continue
+
+            if (pivot.index - anchor.index) > settings.max_potential_anchor_age:
+                anchor = pivot if anchor_cmp(pivot.rsi, anchor_threshold) else None
+                best_divergence = None
+                best_potential = None
+                continue
+
+            if (pivot.index - anchor.index) > settings.max_pivot_pair_span:
+                anchor = pivot if anchor_cmp(pivot.rsi, anchor_threshold) else None
+                best_divergence = None
+                best_potential = None
+                continue
+
+            if anchor_break_cmp(pivot.rsi, anchor.rsi):
+                anchor = pivot if anchor_cmp(pivot.rsi, anchor_threshold) else None
+                best_divergence = None
+                best_potential = None
+                continue
+
+            if price_divergence_cmp(pivot.price, anchor.price) and rsi_divergence_cmp(pivot.rsi, anchor.rsi):
+                if best_divergence is None or prefer_more_extreme_cmp(pivot.price, best_divergence[1].price):
+                    best_divergence = (anchor, pivot)
+                    best_potential = None
+
+        if best_divergence is not None:
+            pivot2 = best_divergence[1]
+            if (row_index - pivot2.index) <= settings.max_age_pivot2_from_last:
+                continue
+            best_divergence = None
+
+        if anchor is None:
+            continue
+        if (row_index - anchor.index) > settings.max_potential_anchor_age:
+            best_potential = None
+            continue
+        if best_potential is not None and (row_index - best_potential[1].pivot2_index) > settings.pivot_window_r:
+            best_potential = None
+        if row_index <= anchor.index or (row_index - anchor.index) > settings.max_pivot_pair_span:
+            if best_potential is not None:
+                potential_by_row[row_index] = best_potential[1]
+            continue
+
+        current_price = current_prices.iloc[row_index]
+        current_rsi = current_rsi_values.iloc[row_index]
+        if pd.isna(current_price) or pd.isna(current_rsi):
+            if best_potential is not None:
+                potential_by_row[row_index] = best_potential[1]
+            continue
+        current_has_potential = (
+            price_divergence_cmp(float(current_price), anchor.price)
+            and rsi_divergence_cmp(float(current_rsi), anchor.rsi)
+        )
+        current_is_more_extreme_than_potential = (
+            best_potential is not None
+            and prefer_more_extreme_cmp(float(current_price), best_potential[1].pivot2_price)
+        )
+        if not current_has_potential:
+            if current_is_more_extreme_than_potential:
+                best_potential = None
+                continue
+            if best_potential is not None:
+                potential_by_row[row_index] = best_potential[1]
+            continue
+        if best_potential is not None and not current_is_more_extreme_than_potential:
+            potential_by_row[row_index] = best_potential[1]
+            continue
+
+        best_potential = (
+            anchor,
+            ActiveDivergence(
+                anchor_index=anchor.index,
+                pivot2_index=row_index,
+                confirmation_index=row_index,
+                pivot2_price=float(current_price),
+                pivot2_rsi=float(current_rsi),
+            ),
+        )
+        potential_by_row[row_index] = best_potential[1]
+
+    return potential_by_row
+
+
 def _rsi_crosses_confirmation_threshold(
     previous_rsi: object,
     current_rsi: object,
@@ -650,19 +804,48 @@ def compute_rsi_divergence_state(
         rsi_divergence_cmp=lambda current, anchor: current > anchor,
         prefer_more_extreme_cmp=lambda current, previous: current < previous,
     )
+    potential_bearish = _build_potential_divergence_series(
+        pivots=pivot_highs,
+        settings=settings,
+        row_count=row_count,
+        current_price_series=highs,
+        current_rsi_series=rsi_values,
+        anchor_threshold=DIVERGENCE_OB_LEVEL,
+        anchor_cmp=lambda current, threshold: current > threshold,
+        anchor_break_cmp=lambda current, anchor: current > anchor,
+        price_divergence_cmp=lambda current, anchor: current > anchor,
+        rsi_divergence_cmp=lambda current, anchor: current < anchor,
+        prefer_more_extreme_cmp=lambda current, previous: current > previous,
+    )
+    potential_bullish = _build_potential_divergence_series(
+        pivots=pivot_lows,
+        settings=settings,
+        row_count=row_count,
+        current_price_series=lows,
+        current_rsi_series=rsi_values,
+        anchor_threshold=DIVERGENCE_OS_LEVEL,
+        anchor_cmp=lambda current, threshold: current < threshold,
+        anchor_break_cmp=lambda current, anchor: current < anchor,
+        price_divergence_cmp=lambda current, anchor: current < anchor,
+        rsi_divergence_cmp=lambda current, anchor: current > anchor,
+        prefer_more_extreme_cmp=lambda current, previous: current < previous,
+    )
 
     divergence_flags = np.full(row_count, "none", dtype=object)
     divergence_confirmed = pd.array([False] * row_count, dtype="boolean")
     active_instance_key: tuple[str, tuple[int, int, int]] | None = None
     active_instance_start: int | None = None
     confirmation_latched = False
+    confirmation_latch_index: int | None = None
     refresh_extreme_price: float | None = None
+    replacement_extension_instance_key: tuple[str, tuple[int, int, int]] | None = None
 
     for row_index in range(row_count):
         bullish_state = bullish_active[row_index]
         bearish_state = bearish_active[row_index]
         selected_flag = "none"
         selected_state: ActiveDivergence | None = None
+        selected_is_potential = False
         if bullish_state is not None and bearish_state is None:
             selected_flag = "positive"
             selected_state = bullish_state
@@ -676,22 +859,69 @@ def compute_rsi_divergence_state(
             else:
                 selected_flag = "negative"
                 selected_state = bearish_state
+        else:
+            potential_bullish_state = potential_bullish[row_index]
+            potential_bearish_state = potential_bearish[row_index]
+            if potential_bullish_state is not None and potential_bearish_state is None:
+                selected_flag = "potential-positive"
+                selected_state = potential_bullish_state
+                selected_is_potential = True
+            elif potential_bearish_state is not None and potential_bullish_state is None:
+                selected_flag = "potential-negative"
+                selected_state = potential_bearish_state
+                selected_is_potential = True
+            elif potential_bullish_state is not None and potential_bearish_state is not None:
+                selected_is_potential = True
+                if potential_bullish_state.recency_key > potential_bearish_state.recency_key:
+                    selected_flag = "potential-positive"
+                    selected_state = potential_bullish_state
+                else:
+                    selected_flag = "potential-negative"
+                    selected_state = potential_bearish_state
 
         divergence_flags[row_index] = selected_flag
         if selected_state is None:
             active_instance_key = None
             active_instance_start = None
             confirmation_latched = False
+            confirmation_latch_index = None
             refresh_extreme_price = None
+            replacement_extension_instance_key = None
+            divergence_confirmed[row_index] = False
+            continue
+        if selected_is_potential:
+            active_instance_key = None
+            active_instance_start = None
+            confirmation_latched = False
+            confirmation_latch_index = None
+            refresh_extreme_price = None
+            replacement_extension_instance_key = None
             divergence_confirmed[row_index] = False
             continue
 
         current_instance_key = (selected_flag, selected_state.instance_key)
         if current_instance_key != active_instance_key:
+            previous_instance_key = active_instance_key
+            previous_was_confirmed = confirmation_latched
+            previous_confirmation_index = confirmation_latch_index
+            is_same_anchor_replacement = (
+                previous_instance_key is not None
+                and previous_instance_key[0] == selected_flag
+                and previous_instance_key[1][0] == selected_state.anchor_index
+                and previous_instance_key[1] != selected_state.instance_key
+            )
+            is_fresh_confirmed_replacement = (
+                is_same_anchor_replacement
+                and previous_was_confirmed
+                and previous_confirmation_index is not None
+                and (row_index - previous_confirmation_index) <= settings.max_extension_age_after_confirmation
+            )
             active_instance_key = current_instance_key
             active_instance_start = row_index
             confirmation_latched = False
+            confirmation_latch_index = None
             refresh_extreme_price = None
+            replacement_extension_instance_key = current_instance_key if is_fresh_confirmed_replacement else None
 
         refresh_triggered, refresh_price = _is_developing_refresh_triggered(
             divergence_flag=selected_flag,
@@ -710,9 +940,20 @@ def compute_rsi_divergence_state(
             elif selected_flag == "negative" and refresh_price > refresh_extreme_price:
                 should_refresh = True
             if should_refresh:
-                active_instance_start = row_index
-                confirmation_latched = False
                 refresh_extreme_price = refresh_price
+                if confirmation_latched:
+                    if (
+                        confirmation_latch_index is not None
+                        and (row_index - confirmation_latch_index) <= settings.max_extension_age_after_confirmation
+                    ):
+                        selected_flag = f"extension-{selected_flag}"
+                        divergence_flags[row_index] = selected_flag
+                        divergence_confirmed[row_index] = False
+                        continue
+                else:
+                    active_instance_start = row_index
+                    confirmation_latched = False
+                    confirmation_latch_index = None
 
         if (
             not confirmation_latched
@@ -725,6 +966,13 @@ def compute_rsi_divergence_state(
             )
         ):
             confirmation_latched = True
+            confirmation_latch_index = row_index
+            replacement_extension_instance_key = None
+
+        if replacement_extension_instance_key == current_instance_key:
+            divergence_flags[row_index] = f"extension-{selected_flag}"
+            divergence_confirmed[row_index] = False
+            continue
 
         divergence_confirmed[row_index] = confirmation_latched
 

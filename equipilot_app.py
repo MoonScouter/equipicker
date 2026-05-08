@@ -64,6 +64,14 @@ from prices_service import (
     parse_manual_price_tickers,
     prices_cache_path,
 )
+from perf_store import (
+    PERF_CACHE_DIR,
+    PERF_CACHE_SCHEMA_VERSION,
+    clear_performance_cache,
+    load_company_universe_cached,
+    load_report_select_cached,
+    save_company_universe_cached,
+)
 from report_select_service import generate_report_select_cache
 from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
 from grid_layout_config import clear_grid_layout, load_grid_layout, save_grid_layout
@@ -159,12 +167,36 @@ TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["f
 SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
 DIVERGENCE_FILTER_OPTIONS = [
     "All",
+    "Emerging Positive",
     "Positive",
     "Positive - Confirmed",
+    "Positive Extension",
+    "Emerging Negative",
     "Negative",
     "Negative - Confirmed",
+    "Negative Extension",
     "None",
 ]
+RSI_DIVERGENCE_FLAG_VALUES = {
+    "positive",
+    "positive-confirmed",
+    "potential-positive",
+    "extension-positive",
+    "negative",
+    "negative-confirmed",
+    "potential-negative",
+    "extension-negative",
+    "none",
+}
+RSI_DIVERGENCE_RAW_FLAG_VALUES = {
+    "positive",
+    "potential-positive",
+    "extension-positive",
+    "negative",
+    "potential-negative",
+    "extension-negative",
+    "none",
+}
 SHORT_TERM_FLOW_FILTER_OPTIONS = ["All", "Positive", "Negative", "Neutral"]
 AI_REVENUE_FILTER_OPTIONS = ["All", "direct", "indirect", "none"]
 AI_DISRUPTION_FILTER_OPTIONS = ["All", "high", "medium", "low", "none"]
@@ -653,6 +685,10 @@ def ensure_required_columns(df: pd.DataFrame, required: set[str], path: Path) ->
 def load_report_select(path_str: str, cache_signature: str = "") -> pd.DataFrame:
     _ = cache_signature
     path = Path(path_str)
+    return load_report_select_cached(path, _load_report_select_source, normalizer=normalize_report_columns)
+
+
+def _load_report_select_source(path: Path) -> pd.DataFrame:
     if path.suffix == ".csv":
         return pd.read_csv(path)
     return pd.read_excel(path)
@@ -1105,7 +1141,7 @@ def normalize_prices_cache_for_check(cache_df: pd.DataFrame) -> pd.DataFrame:
         .str.lower()
     )
     working_df.loc[
-        ~working_df["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
+        ~working_df["rsi_divergence_flag"].isin(RSI_DIVERGENCE_RAW_FLAG_VALUES),
         "rsi_divergence_flag",
     ] = pd.NA
     if "rsi_divergence_confirmed" not in working_df.columns:
@@ -3863,6 +3899,10 @@ function(params) {
   const label = String(params.value ?? "").trim().toLowerCase();
   if (label === "positive-confirmed" || label === "positive - confirmed") return { color: "#5FA777", fontWeight: "700" };
   if (label === "negative-confirmed" || label === "negative - confirmed") return { color: "#D97B7B", fontWeight: "700" };
+  if (label === "extension-positive" || label === "positive extension") return { color: "#2F855A", fontWeight: "700" };
+  if (label === "extension-negative" || label === "negative extension") return { color: "#C2410C", fontWeight: "700" };
+  if (label === "potential-positive" || label === "emerging positive" || label === "potential positive") return { color: "#66A80F", fontWeight: "700" };
+  if (label === "potential-negative" || label === "emerging negative" || label === "potential negative") return { color: "#D97706", fontWeight: "700" };
   if (label === "positive") return { color: "#15803D", fontWeight: "700" };
   if (label === "negative") return { color: "#B42318", fontWeight: "700" };
   return { color: "#7B8BA0" };
@@ -4922,10 +4962,12 @@ def _compose_divergence_flag_label(
     if divergence_flag is None or pd.isna(divergence_flag):
         return pd.NA
     label = str(divergence_flag).strip().lower()
-    if label not in {"positive", "negative", "none"}:
+    if label not in RSI_DIVERGENCE_RAW_FLAG_VALUES:
         return pd.NA
     if label == "none":
         return "none"
+    if label.startswith("potential-") or label.startswith("extension-"):
+        return label
 
     normalized_confirmed = _normalize_optional_boolean_value(divergence_confirmed)
     if normalized_confirmed is True:
@@ -4960,7 +5002,7 @@ def _latest_divergence_flags_for_frequency(
         .str.lower()
     )
     working.loc[
-        ~working["rsi_divergence_flag"].isin({"positive", "negative", "none"}),
+        ~working["rsi_divergence_flag"].isin(RSI_DIVERGENCE_RAW_FLAG_VALUES),
         "rsi_divergence_flag",
     ] = pd.NA
     working = working[
@@ -5000,7 +5042,9 @@ def _latest_divergence_flags_for_frequency(
 @st.cache_data(show_spinner=False)
 def _load_company_divergence_metrics_for_date(
     evaluation_date: date,
+    cache_signature: str,
 ) -> pd.DataFrame:
+    del cache_signature
     daily_df = _latest_divergence_flags_for_frequency("daily", evaluation_date).rename(
         columns={"rsi_divergence_flag": "rsi_divergence_daily_flag"}
     )
@@ -5173,7 +5217,10 @@ def _enrich_company_universe_with_rsi_divergence(
     if enriched.empty:
         return enriched
 
-    divergence_df = _load_company_divergence_metrics_for_date(evaluation_date)
+    divergence_df = _load_company_divergence_metrics_for_date(
+        evaluation_date,
+        _company_divergence_cache_signature(),
+    )
     if divergence_df.empty:
         return enriched
 
@@ -5216,14 +5263,22 @@ def _format_divergence_flag(value: object) -> str:
     if value is None or pd.isna(value):
         return "N/A"
     label = str(value).strip().lower()
+    if label == "potential-positive":
+        return "Emerging Positive"
     if label == "positive":
         return "Positive"
     if label == "positive-confirmed":
         return "Positive - Confirmed"
+    if label == "extension-positive":
+        return "Positive Extension"
+    if label == "potential-negative":
+        return "Emerging Negative"
     if label == "negative":
         return "Negative"
     if label == "negative-confirmed":
         return "Negative - Confirmed"
+    if label == "extension-negative":
+        return "Negative Extension"
     if label == "none":
         return "None"
     return "N/A"
@@ -5484,7 +5539,21 @@ def _load_prepared_company_universe_for_report_path(
     prices_cache_path_str: str,
     prices_cache_signature: str,
 ) -> tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
-    _ = market_cache_signature, divergence_cache_signature
+    cache_signatures = {
+        "report": report_cache_signature,
+        "evaluation_date": evaluation_date.isoformat(),
+        "thematics": thematics_config_signature,
+        "market": market_cache_signature,
+        "divergence": divergence_cache_signature,
+        "prices_path": prices_cache_path_str,
+        "prices": prices_cache_signature,
+        "schema": PERF_CACHE_SCHEMA_VERSION,
+    }
+    cached_universe = load_company_universe_cached(evaluation_date, cache_signatures)
+    if cached_universe is not None:
+        cached_df, cached_warning = cached_universe
+        return cached_df, None, cached_warning
+
     try:
         report_df = normalize_report_columns(load_report_select(report_path_str, report_cache_signature).copy())
     except Exception as exc:  # pragma: no cover - defensive cache wrapper
@@ -5542,7 +5611,17 @@ def _load_prepared_company_universe_for_report_path(
         company_universe,
         evaluation_date,
     )
-    return company_universe, None, _combine_optional_messages(performance_warning, regime_warning)
+    combined_warning = _combine_optional_messages(performance_warning, regime_warning)
+    try:
+        save_company_universe_cached(
+            company_universe,
+            eod_date=evaluation_date,
+            signatures=cache_signatures,
+            warning_message=combined_warning,
+        )
+    except Exception:
+        pass
+    return company_universe, None, combined_warning
 
 
 def build_company_drilldown_context_from_path(
@@ -6348,10 +6427,14 @@ def render_company_drilldown_filters(
         column="rsi_divergence_daily_flag",
         selected_value=daily_rsi_divergence_value,
         label_map={
+            "Emerging Positive": "potential-positive",
             "Positive": "positive",
             "Positive - Confirmed": "positive-confirmed",
+            "Positive Extension": "extension-positive",
+            "Emerging Negative": "potential-negative",
             "Negative": "negative",
             "Negative - Confirmed": "negative-confirmed",
+            "Negative Extension": "extension-negative",
             "None": "none",
         },
     )
@@ -6360,10 +6443,14 @@ def render_company_drilldown_filters(
         column="rsi_divergence_weekly_flag",
         selected_value=weekly_rsi_divergence_value,
         label_map={
+            "Emerging Positive": "potential-positive",
             "Positive": "positive",
             "Positive - Confirmed": "positive-confirmed",
+            "Positive Extension": "extension-positive",
+            "Emerging Negative": "potential-negative",
             "Negative": "negative",
             "Negative - Confirmed": "negative-confirmed",
+            "Negative Extension": "extension-negative",
             "None": "none",
         },
     )
@@ -8684,6 +8771,78 @@ def render_home_prices_import_subtab() -> None:
             ])
 
 
+def warm_performance_cache_for_eod(eod_date: date) -> tuple[bool, str]:
+    report_path, expected_candidates = resolve_report_select_path(eod_date)
+    if report_path is None:
+        return (
+            False,
+            f"Missing report_select source. Expected {expected_candidates[0].name} or {expected_candidates[1].name}.",
+        )
+    title, company_df, _default_sectors, _default_industries, error_message, warning_message = (
+        build_company_drilldown_context_from_path(
+            report_path,
+            evaluation_date=eod_date,
+            selected_sector="All sectors",
+            selected_mode="all",
+            selected_key="All companies",
+        )
+    )
+    if error_message:
+        return False, error_message
+    row_count = len(company_df) if isinstance(company_df, pd.DataFrame) else 0
+    detail = f"Warmed {title or 'company universe'} for {eod_date.isoformat()} ({row_count} rows)."
+    if warning_message:
+        detail = f"{detail} {warning_message}"
+    return True, detail
+
+
+def render_home_performance_cache_subtab(config: ReportConfig) -> None:
+    render_subtab_group_intro(
+        "Performance Cache",
+        "Warm or clear the local DuckDB/Parquet cache used by report, price, market, and company-grid workflows.",
+    )
+    default_eod = get_default_board_eod(config)
+    selected_eod = render_report_select_date_input(
+        "Performance cache EOD",
+        value=default_eod,
+        key="home_perf_cache_eod",
+    )
+    latest_dates = get_available_report_select_dates()
+    latest_eod = latest_dates[-1] if latest_dates else None
+    render_chip_row(
+        [
+            f"Schema version: {PERF_CACHE_SCHEMA_VERSION}",
+            f"Cache root: {PERF_CACHE_DIR}",
+            f"Latest report EOD: {latest_eod.isoformat() if latest_eod else 'n/a'}",
+        ]
+    )
+    action_cols = st.columns(3)
+    with action_cols[0]:
+        if st.button("Warm selected EOD", use_container_width=True, key="home_perf_warm_selected"):
+            with st.spinner("Warming performance cache..."):
+                ok, message = warm_performance_cache_for_eod(selected_eod)
+            st.success(message) if ok else st.error(message)
+    with action_cols[1]:
+        if st.button("Warm latest EOD", use_container_width=True, key="home_perf_warm_latest"):
+            if latest_eod is None:
+                st.error("No report_select files are available to warm.")
+            else:
+                with st.spinner("Warming latest performance cache..."):
+                    ok, message = warm_performance_cache_for_eod(latest_eod)
+                st.success(message) if ok else st.error(message)
+    with action_cols[2]:
+        if st.button("Clear performance cache", use_container_width=True, key="home_perf_clear"):
+            try:
+                clear_performance_cache()
+                load_report_select.clear()
+                load_prices_cache_file.clear()
+                _load_prepared_company_universe_for_report_path.clear()
+            except Exception as exc:  # pragma: no cover - UI feedback
+                st.error(f"Performance cache clear failed: {exc}")
+            else:
+                st.success(f"Cleared performance cache under {PERF_CACHE_DIR}.")
+
+
 def _bands_to_df(bands: list[dict[str, object]], score_name: str) -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -9392,10 +9551,10 @@ def render_home(config: ReportConfig) -> None:
     )
     render_subtab_group_intro(
         "Home sections",
-        "Use the sub-tabs below to validate imports, generate report Excel files, refresh index data, and import ticker price history.",
+        "Use the sub-tabs below to validate imports, generate report Excel files, refresh index data, import ticker price history, and manage fast local caches.",
     )
-    check_tab, report_tab, indices_import_tab, prices_import_tab = st.tabs(
-        ["Check", "Report Excel Import", "Indices Import", "Prices Import"]
+    check_tab, report_tab, indices_import_tab, prices_import_tab, perf_cache_tab = st.tabs(
+        ["Check", "Report Excel Import", "Indices Import", "Prices Import", "Performance Cache"]
     )
     with check_tab:
         render_home_check_subtab(config)
@@ -9405,6 +9564,8 @@ def render_home(config: ReportConfig) -> None:
         render_home_indices_import_subtab()
     with prices_import_tab:
         render_home_prices_import_subtab()
+    with perf_cache_tab:
+        render_home_performance_cache_subtab(config)
 
 
 def render_monthly_board(config: ReportConfig) -> None:
@@ -10546,6 +10707,14 @@ def _style_sign_label_value(value: object) -> str:
         return "color:#5FA777; font-weight:700;"
     if label in {"negative-confirmed", "negative - confirmed"}:
         return "color:#D97B7B; font-weight:700;"
+    if label in {"extension-positive", "positive extension"}:
+        return "color:#2F855A; font-weight:700;"
+    if label in {"extension-negative", "negative extension"}:
+        return "color:#C2410C; font-weight:700;"
+    if label in {"potential-positive", "emerging positive", "potential positive"}:
+        return "color:#66A80F; font-weight:700;"
+    if label in {"potential-negative", "emerging negative", "potential negative"}:
+        return "color:#D97706; font-weight:700;"
     if label.startswith("positive"):
         return "color:#15803D; font-weight:700;"
     if label.startswith("negative"):
