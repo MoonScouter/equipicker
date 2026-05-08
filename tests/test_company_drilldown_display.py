@@ -546,6 +546,82 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertIn("#5FA777", html)
         self.assertIn("#D97B7B", html)
 
+    def test_company_drilldown_styler_colors_emerging_divergence_labels(self) -> None:
+        display_df = pd.DataFrame(
+            [
+                {
+                    "Thematic": "AI Infra",
+                    "Ticker": "AAA.US",
+                    "Company": "Alpha Inc",
+                    "Sector": "Technology",
+                    "Industry": "Software",
+                    "Market Cap": "1.50B",
+                    "Beta": "1.1",
+                    "TS": "70.0",
+                    "RSI Regime": "50.0",
+                    "Sector Regime Fit": "50.0",
+                    "Short Term Flow": "N/A",
+                    "RSI Divergence (D)": "Emerging Positive",
+                    "RSI Divergence (W)": "Emerging Negative",
+                    "FS": "70.0",
+                    "Mom. FS": "70.0",
+                    "Growth FS": "70.0",
+                    "Value FS": "70.0",
+                    "Quality FS": "70.0",
+                    "Risk FS": "70.0",
+                    "Rel Strength": "N/A",
+                    "Rel Volume": "N/A",
+                    "AI Revenue Exposure": "none",
+                    "AI Disruption Risk": "none",
+                }
+            ]
+        )
+
+        html = _build_company_drilldown_styler(display_df).to_html()
+
+        self.assertIn("Emerging Positive", html)
+        self.assertIn("Emerging Negative", html)
+        self.assertIn("#66A80F", html)
+        self.assertIn("#D97706", html)
+
+    def test_company_drilldown_styler_colors_extension_divergence_labels(self) -> None:
+        display_df = pd.DataFrame(
+            [
+                {
+                    "Thematic": "AI Infra",
+                    "Ticker": "AAA.US",
+                    "Company": "Alpha Inc",
+                    "Sector": "Technology",
+                    "Industry": "Software",
+                    "Market Cap": "1.50B",
+                    "Beta": "1.1",
+                    "TS": "70.0",
+                    "RSI Regime": "50.0",
+                    "Sector Regime Fit": "50.0",
+                    "Short Term Flow": "N/A",
+                    "RSI Divergence (D)": "Positive Extension",
+                    "RSI Divergence (W)": "Negative Extension",
+                    "FS": "70.0",
+                    "Mom. FS": "70.0",
+                    "Growth FS": "70.0",
+                    "Value FS": "70.0",
+                    "Quality FS": "70.0",
+                    "Risk FS": "70.0",
+                    "Rel Strength": "N/A",
+                    "Rel Volume": "N/A",
+                    "AI Revenue Exposure": "none",
+                    "AI Disruption Risk": "none",
+                }
+            ]
+        )
+
+        html = _build_company_drilldown_styler(display_df).to_html()
+
+        self.assertIn("Positive Extension", html)
+        self.assertIn("Negative Extension", html)
+        self.assertIn("#2F855A", html)
+        self.assertIn("#C2410C", html)
+
     def test_enrich_company_universe_merges_daily_and_weekly_divergence_flags(self) -> None:
         company_df = pd.DataFrame(
             [
@@ -586,6 +662,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 {"ticker": "CCC.US", "date": "2026-01-05", "rsi_divergence_flag": "positive", "rsi_divergence_confirmed": False},
                 {"ticker": "DDD.US", "date": "2026-01-05", "rsi_divergence_flag": "none", "rsi_divergence_confirmed": False},
                 {"ticker": "EEE.US", "date": "2026-01-05", "rsi_divergence_flag": "positive", "rsi_divergence_confirmed": pd.NA},
+                {"ticker": "FFF.US", "date": "2026-01-05", "rsi_divergence_flag": "potential-negative", "rsi_divergence_confirmed": True},
+                {"ticker": "GGG.US", "date": "2026-01-05", "rsi_divergence_flag": "extension-negative", "rsi_divergence_confirmed": True},
             ]
         )
 
@@ -604,6 +682,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(by_ticker.loc["CCC.US", "rsi_divergence_flag"], "positive")
         self.assertEqual(by_ticker.loc["DDD.US", "rsi_divergence_flag"], "none")
         self.assertEqual(by_ticker.loc["EEE.US", "rsi_divergence_flag"], "positive")
+        self.assertEqual(by_ticker.loc["FFF.US", "rsi_divergence_flag"], "potential-negative")
+        self.assertEqual(by_ticker.loc["GGG.US", "rsi_divergence_flag"], "extension-negative")
 
     def test_latest_divergence_flags_handle_older_cache_without_confirmed_column(self) -> None:
         cache_df = pd.DataFrame(
@@ -637,6 +717,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 {"ticker": "DDD.US", "rsi_divergence_daily_flag": pd.NA},
                 {"ticker": "EEE.US", "rsi_divergence_daily_flag": "positive-confirmed"},
                 {"ticker": "FFF.US", "rsi_divergence_daily_flag": "negative-confirmed"},
+                {"ticker": "GGG.US", "rsi_divergence_daily_flag": "potential-positive"},
+                {"ticker": "HHH.US", "rsi_divergence_daily_flag": "extension-negative"},
             ]
         )
         short_term_df = pd.DataFrame(
@@ -667,8 +749,43 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             label_map={
                 "Positive": "positive",
                 "Positive - Confirmed": "positive-confirmed",
+                "Emerging Positive": "potential-positive",
+                "Positive Extension": "extension-positive",
                 "Negative": "negative",
                 "Negative - Confirmed": "negative-confirmed",
+                "Negative Extension": "extension-negative",
+                "None": "none",
+            },
+        )
+        potential_positive_filtered, potential_positive_applied = _filter_by_optional_label_value(
+            df,
+            column="rsi_divergence_daily_flag",
+            selected_value="Emerging Positive",
+            label_map={
+                "Positive": "positive",
+                "Positive - Confirmed": "positive-confirmed",
+                "Emerging Positive": "potential-positive",
+                "Positive Extension": "extension-positive",
+                "Negative": "negative",
+                "Negative - Confirmed": "negative-confirmed",
+                "Emerging Negative": "potential-negative",
+                "Negative Extension": "extension-negative",
+                "None": "none",
+            },
+        )
+        negative_extension_filtered, negative_extension_applied = _filter_by_optional_label_value(
+            df,
+            column="rsi_divergence_daily_flag",
+            selected_value="Negative Extension",
+            label_map={
+                "Positive": "positive",
+                "Positive - Confirmed": "positive-confirmed",
+                "Emerging Positive": "potential-positive",
+                "Positive Extension": "extension-positive",
+                "Negative": "negative",
+                "Negative - Confirmed": "negative-confirmed",
+                "Emerging Negative": "potential-negative",
+                "Negative Extension": "extension-negative",
                 "None": "none",
             },
         )
@@ -685,12 +802,20 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(none_filtered["ticker"].tolist(), ["CCC.US"])
         self.assertTrue(positive_confirmed_applied)
         self.assertEqual(positive_confirmed_filtered["ticker"].tolist(), ["EEE.US"])
+        self.assertTrue(potential_positive_applied)
+        self.assertEqual(potential_positive_filtered["ticker"].tolist(), ["GGG.US"])
+        self.assertTrue(negative_extension_applied)
+        self.assertEqual(negative_extension_filtered["ticker"].tolist(), ["HHH.US"])
         self.assertTrue(neutral_applied)
         self.assertEqual(neutral_filtered["ticker"].tolist(), ["CCC.US"])
 
     def test_format_divergence_flag_supports_confirmed_labels(self) -> None:
         self.assertEqual(_format_divergence_flag("positive-confirmed"), "Positive - Confirmed")
         self.assertEqual(_format_divergence_flag("negative-confirmed"), "Negative - Confirmed")
+        self.assertEqual(_format_divergence_flag("potential-positive"), "Emerging Positive")
+        self.assertEqual(_format_divergence_flag("potential-negative"), "Emerging Negative")
+        self.assertEqual(_format_divergence_flag("extension-positive"), "Positive Extension")
+        self.assertEqual(_format_divergence_flag("extension-negative"), "Negative Extension")
         self.assertEqual(_format_divergence_flag("positive"), "Positive")
         self.assertEqual(_format_divergence_flag("negative"), "Negative")
         self.assertEqual(_format_divergence_flag("none"), "None")

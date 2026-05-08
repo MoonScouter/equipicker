@@ -350,7 +350,10 @@ class PricesServiceTests(unittest.TestCase):
 
         flags = compute_rsi_divergence_flags(df, frequency="daily")
 
-        self.assertTrue((flags.iloc[:17] == "none").all())
+        self.assertTrue((flags.iloc[:14] == "none").all())
+        self.assertEqual(flags.iloc[14], "potential-negative")
+        self.assertEqual(flags.iloc[15], "potential-negative")
+        self.assertEqual(flags.iloc[16], "potential-negative")
         self.assertEqual(flags.iloc[17], "negative")
         self.assertEqual(flags.iloc[18], "negative")
         self.assertEqual(flags.iloc[19], "negative")
@@ -363,7 +366,10 @@ class PricesServiceTests(unittest.TestCase):
 
         flags = compute_rsi_divergence_flags(df, frequency="daily")
 
-        self.assertTrue((flags.iloc[:17] == "none").all())
+        self.assertTrue((flags.iloc[:14] == "none").all())
+        self.assertEqual(flags.iloc[14], "potential-positive")
+        self.assertEqual(flags.iloc[15], "potential-positive")
+        self.assertEqual(flags.iloc[16], "potential-positive")
         self.assertEqual(flags.iloc[17], "positive")
         self.assertEqual(flags.iloc[18], "positive")
         self.assertEqual(flags.iloc[19], "positive")
@@ -376,9 +382,78 @@ class PricesServiceTests(unittest.TestCase):
 
         flags = compute_rsi_divergence_flags(df, frequency="weekly")
 
-        self.assertTrue((flags.iloc[:10] == "none").all())
+        self.assertTrue((flags.iloc[:7] == "none").all())
+        self.assertEqual(flags.iloc[7], "potential-negative")
+        self.assertEqual(flags.iloc[8], "potential-negative")
+        self.assertEqual(flags.iloc[9], "potential-negative")
         self.assertEqual(flags.iloc[10], "negative")
         self.assertEqual(flags.iloc[11], "negative")
+
+    def test_compute_rsi_divergence_flags_detects_unconfirmed_bearish_potential(self) -> None:
+        highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 18]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 58, 56, 54, 74, 55, 54, 53, 54, 56, 58, 60, 66, 65]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].iloc[-2], "potential-negative")
+        self.assertEqual(state["rsi_divergence_flag"].iloc[-1], "potential-negative")
+        self.assertFalse(bool(state["rsi_divergence_confirmed"].iloc[-1]))
+
+    def test_compute_rsi_divergence_flags_rejects_stale_bearish_potential_anchor(self) -> None:
+        highs = [8, 9, 10, 14, 10, 9, 9, 9, 9, 9, 9, 9, 9, 17, 16, 15]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 74, 55, 54, 54, 54, 54, 54, 54, 54, 54, 66, 60, 58]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="weekly")
+
+        self.assertEqual(flags.iloc[13], "none")
+
+    def test_compute_rsi_divergence_flags_detects_unconfirmed_bullish_potential(self) -> None:
+        lows = [12, 11, 10, 9, 10, 11, 6, 11, 12, 11, 10, 9, 8, 7, 5, 4]
+        highs = [value + 4 for value in lows]
+        rsi_values = [50, 48, 45, 42, 44, 46, 26, 44, 45, 46, 44, 42, 40, 38, 34, 35]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].iloc[-2], "potential-positive")
+        self.assertEqual(state["rsi_divergence_flag"].iloc[-1], "potential-positive")
+        self.assertFalse(bool(state["rsi_divergence_confirmed"].iloc[-1]))
+
+    def test_compute_rsi_divergence_flags_rejects_stale_bullish_potential_anchor(self) -> None:
+        lows = [12, 11, 10, 6, 10, 11, 11, 11, 11, 11, 11, 11, 11, 4, 5, 6]
+        highs = [value + 4 for value in lows]
+        rsi_values = [50, 48, 45, 26, 45, 46, 46, 46, 46, 46, 46, 46, 46, 34, 40, 42]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="weekly")
+
+        self.assertEqual(flags.iloc[13], "none")
+
+    def test_compute_rsi_divergence_flags_clears_bearish_potential_when_rsi_reclaims_anchor(self) -> None:
+        highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 18]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 58, 56, 54, 74, 55, 54, 53, 54, 56, 58, 60, 66, 75]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertEqual(flags.iloc[-2], "potential-negative")
+        self.assertEqual(flags.iloc[-1], "none")
+
+    def test_compute_rsi_divergence_flags_clears_bullish_potential_when_rsi_breaks_anchor(self) -> None:
+        lows = [12, 11, 10, 9, 10, 11, 6, 11, 12, 11, 10, 9, 8, 7, 5, 4]
+        highs = [value + 4 for value in lows]
+        rsi_values = [50, 48, 45, 42, 44, 46, 26, 44, 45, 46, 44, 42, 40, 38, 34, 25]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertEqual(flags.iloc[-2], "potential-positive")
+        self.assertEqual(flags.iloc[-1], "none")
 
     def test_compute_rsi_divergence_flags_keeps_same_anchor_only_when_new_high_is_more_extreme(self) -> None:
         highs = [
@@ -421,6 +496,17 @@ class PricesServiceTests(unittest.TestCase):
 
         self.assertEqual(flags.iloc[74], "negative")
         self.assertEqual(flags.iloc[75], "none")
+
+    def test_compute_rsi_divergence_flags_expires_weekly_after_12_bars(self) -> None:
+        highs = [8, 9, 10, 14, 10, 9, 11, 13, 17, 12, 10, 9] + [9] * 10
+        lows = [value - 4 for value in highs]
+        rsi_values = [48, 50, 52, 74, 58, 56, 57, 60, 66, 58, 55, 52] + [50] * 10
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="weekly")
+
+        self.assertEqual(flags.iloc[20], "negative")
+        self.assertEqual(flags.iloc[21], "none")
 
     def test_compute_rsi_divergence_flags_rejects_candidates_beyond_pair_span(self) -> None:
         highs = [8, 9, 10, 11, 10, 9, 14] + [9] * 60 + [10, 11, 12, 13, 17, 12, 10, 9]
@@ -483,6 +569,205 @@ class PricesServiceTests(unittest.TestCase):
 
         self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "negative", "negative", "negative", "negative"])
         self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, True])
+
+    def test_compute_rsi_divergence_state_marks_bearish_extension_after_confirmation(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 12],
+            [6, 6, 6, 6, 6],
+            [55, 53, 51, 49, 48],
+        )
+        bearish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=10.0,
+            pivot2_rsi=51.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, bearish_state, bearish_state, bearish_state, bearish_state],
+                [None, None, None, None, None],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(
+            state["rsi_divergence_flag"].tolist(),
+            ["none", "negative", "negative", "negative", "extension-negative"],
+        )
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, False])
+
+    def test_compute_rsi_divergence_state_marks_bullish_extension_after_confirmation(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 10],
+            [6, 6, 6, 6, 5],
+            [45, 47, 49, 51, 52],
+        )
+        bullish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=6.0,
+            pivot2_rsi=49.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, None, None, None, None],
+                [None, bullish_state, bullish_state, bullish_state, bullish_state],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(
+            state["rsi_divergence_flag"].tolist(),
+            ["none", "positive", "positive", "positive", "extension-positive"],
+        )
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, False])
+
+    def test_compute_rsi_divergence_state_does_not_mark_stale_bearish_extension(self) -> None:
+        highs = [10] * 31
+        highs[-1] = 12
+        lows = [6] * 31
+        rsi_values = [55, 53, 51, 49] + [48] * 27
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+        bearish_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=10.0,
+            pivot2_rsi=51.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None] + [bearish_state] * 30,
+                [None] * 31,
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(state["rsi_divergence_flag"].iloc[-1], "negative")
+        self.assertTrue(bool(state["rsi_divergence_confirmed"].iloc[-1]))
+
+    def test_compute_rsi_divergence_state_marks_same_anchor_bearish_replacement_as_extension(self) -> None:
+        df = self._build_divergence_frame(
+            [10, 10, 10, 10, 11, 12, 12],
+            [6, 6, 6, 6, 6, 6, 6],
+            [55, 53, 51, 49, 55, 55, 54],
+        )
+        first_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=10.0,
+            pivot2_rsi=51.0,
+        )
+        refreshed_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=4,
+            confirmation_index=5,
+            pivot2_price=12.0,
+            pivot2_rsi=50.0,
+        )
+
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                [None, first_state, first_state, first_state, first_state, refreshed_state, refreshed_state],
+                [None, None, None, None, None, None, None],
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertEqual(
+            state["rsi_divergence_flag"].tolist(),
+            ["none", "negative", "negative", "negative", "negative", "extension-negative", "extension-negative"],
+        )
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, True, False, False])
+
+    def test_compute_rsi_divergence_state_does_not_refresh_lifecycle_after_weekly_divergence_expires(self) -> None:
+        highs = [10] * 31
+        lows = [6] * 31
+        rsi_values = [55] * 31
+        rsi_values[9] = 51
+        rsi_values[10] = 49
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+        first_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=10.0,
+            pivot2_rsi=51.0,
+        )
+        refreshed_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=17,
+            confirmation_index=17,
+            pivot2_price=12.0,
+            pivot2_rsi=50.0,
+        )
+
+        bearish_states = [None] + [first_state] * 14 + [None, None] + [refreshed_state] * 13 + [None]
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                bearish_states,
+                [None] * 31,
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="weekly")
+
+        self.assertEqual(state["rsi_divergence_flag"].iloc[14], "negative")
+        self.assertTrue(bool(state["rsi_divergence_confirmed"].iloc[14]))
+        self.assertEqual(state["rsi_divergence_flag"].iloc[15], "none")
+        self.assertEqual(state["rsi_divergence_flag"].iloc[17], "negative")
+        self.assertEqual(state["rsi_divergence_flag"].iloc[29], "negative")
+        self.assertEqual(state["rsi_divergence_flag"].iloc[30], "none")
+        self.assertFalse(bool(state["rsi_divergence_confirmed"].iloc[17]))
+
+    def test_compute_rsi_divergence_state_refreshes_lifecycle_for_active_same_anchor_weekly_extension(self) -> None:
+        highs = [10] * 29
+        lows = [6] * 29
+        rsi_values = [55] * 29
+        rsi_values[9] = 51
+        rsi_values[10] = 49
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+        first_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=2,
+            confirmation_index=3,
+            pivot2_price=10.0,
+            pivot2_rsi=51.0,
+        )
+        refreshed_state = self._active_divergence(
+            anchor_index=1,
+            pivot2_index=14,
+            confirmation_index=14,
+            pivot2_price=12.0,
+            pivot2_rsi=50.0,
+        )
+
+        bearish_states = [None] + [first_state] * 13 + [refreshed_state] * 14 + [None]
+        with patch(
+            "prices_service._build_active_divergence_series",
+            side_effect=[
+                bearish_states,
+                [None] * 29,
+            ],
+        ):
+            state = compute_rsi_divergence_state(df, frequency="weekly")
+
+        self.assertEqual(state["rsi_divergence_flag"].iloc[13], "negative")
+        self.assertTrue(bool(state["rsi_divergence_confirmed"].iloc[13]))
+        self.assertEqual(state["rsi_divergence_flag"].iloc[14], "extension-negative")
+        self.assertEqual(state["rsi_divergence_flag"].iloc[26], "extension-negative")
+        self.assertEqual(state["rsi_divergence_flag"].iloc[28], "none")
+        self.assertFalse(bool(state["rsi_divergence_confirmed"].iloc[14]))
 
     def test_compute_rsi_divergence_state_resets_confirmation_when_newer_same_sign_instance_replaces_old(self) -> None:
         df = self._build_divergence_frame(
@@ -602,7 +887,7 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "positive"])
         self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, False])
 
-    def test_compute_rsi_divergence_state_resets_confirmation_on_developing_bullish_refresh(self) -> None:
+    def test_compute_rsi_divergence_state_marks_bullish_extension_on_post_confirmation_refresh(self) -> None:
         df = self._build_divergence_frame(
             [10, 10, 10, 10, 10, 10, 10],
             [6.4, 6.2, 6.0, 6.3, 5.8, 6.0, 6.2],
@@ -625,8 +910,11 @@ class PricesServiceTests(unittest.TestCase):
         ):
             state = compute_rsi_divergence_state(df, frequency="daily")
 
-        self.assertEqual(state["rsi_divergence_flag"].tolist(), ["none", "positive", "positive", "positive", "positive", "positive", "positive"])
-        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, False, False, True])
+        self.assertEqual(
+            state["rsi_divergence_flag"].tolist(),
+            ["none", "positive", "positive", "positive", "extension-positive", "positive", "positive"],
+        )
+        self.assertEqual(state["rsi_divergence_confirmed"].tolist(), [False, False, False, True, False, True, True])
 
     def test_import_prices_cache_uses_frequency_specific_divergence_seed_history_lengths(self) -> None:
         build_seed_calls: list[int] = []

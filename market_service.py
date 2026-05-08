@@ -8,6 +8,7 @@ from typing import Any, Mapping, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from perf_store import load_market_bundle_frame, save_market_bundle_frame
 from prices_service import list_prices_cache_paths, load_prices_cache, normalize_price_ticker
 from weekly_scoring_board import compute_sector_overview_stats
 
@@ -1143,6 +1144,11 @@ def save_market_bundle(
     snapshot_file = market_snapshot_path(signature, directory)
     _json_ready_df(stock_rsi_regime_df).to_json(stock_file, orient="records", lines=True, force_ascii=False)
     _json_ready_df(setup_readiness_df).to_json(setup_file, orient="records", lines=True, force_ascii=False)
+    try:
+        save_market_bundle_frame(signature, "stock_rsi_regime", _json_ready_df(stock_rsi_regime_df))
+        save_market_bundle_frame(signature, "setup_readiness", _json_ready_df(setup_readiness_df))
+    except Exception:
+        pass
     payload = json.loads(json.dumps(market_snapshot_payload, default=_to_iso))
     payload["cache_files"] = {
         "market_snapshot": snapshot_file.name,
@@ -1164,10 +1170,16 @@ def load_market_bundle(signature: str, cache_dir: Path | None = None) -> dict[st
     setup_file = setup_readiness_path(signature, directory)
     if not (snapshot_file.exists() and stock_file.exists() and setup_file.exists()):
         raise FileNotFoundError(f"Market cache files are incomplete for signature: {signature}")
+    stock_rsi_regime_df = load_market_bundle_frame(signature, "stock_rsi_regime")
+    if stock_rsi_regime_df is None:
+        stock_rsi_regime_df = pd.read_json(stock_file, orient="records", lines=True)
+    setup_readiness_df = load_market_bundle_frame(signature, "setup_readiness")
+    if setup_readiness_df is None:
+        setup_readiness_df = pd.read_json(setup_file, orient="records", lines=True)
     return {
         "market_snapshot_payload": json.loads(snapshot_file.read_text(encoding="utf-8")),
-        "stock_rsi_regime_df": pd.read_json(stock_file, orient="records", lines=True),
-        "setup_readiness_df": pd.read_json(setup_file, orient="records", lines=True),
+        "stock_rsi_regime_df": stock_rsi_regime_df,
+        "setup_readiness_df": setup_readiness_df,
         "paths": {
             "market_snapshot": snapshot_file,
             "stock_rsi_regime": stock_file,
