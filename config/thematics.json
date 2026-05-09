@@ -69,7 +69,17 @@
         "NTAP",
         "TT",
         "CARR",
-        "JCI"
+        "JCI",
+        "AEIS",
+        "MTZ",
+        "SLNH",
+        "DGXX",
+        "COHR",
+        "AAOI",
+        "FN",
+        "FLEX",
+        "P",
+        "VICR"
       ]
     },
     "AI Infra: Power Generation": {
@@ -107,7 +117,9 @@
         "EOSE",
         "TT",
         "CARR",
-        "JCI"
+        "JCI",
+        "AEIS",
+        "VICR"
       ]
     },
     "AI Infra: Engineering & Construction": {
@@ -121,7 +133,8 @@
         "FIX",
         "IESC",
         "PWR",
-        "MYRG"
+        "MYRG",
+        "MTZ"
       ]
     },
     "AI Infra: Data Center Operators": {
@@ -142,7 +155,9 @@
         "WULF",
         "CIFR",
         "BITF",
-        "HIVE"
+        "HIVE",
+        "SLNH",
+        "DGXX"
       ]
     },
     "AI Infra: Networking & Optical": {
@@ -159,7 +174,10 @@
         "CSCO",
         "APH",
         "TEL",
-        "CLS"
+        "CLS",
+        "COHR",
+        "AAOI",
+        "FN"
       ]
     },
     "AI Infra: Server & Compute Hardware": {
@@ -172,7 +190,9 @@
         "DELL",
         "HPE",
         "PSTG",
-        "NTAP"
+        "NTAP",
+        "FLEX",
+        "P"
       ]
     },
     "AI Silicon": {
@@ -217,7 +237,16 @@
         "INTC",
         "GFS",
         "CDNS",
-        "SNPS"
+        "SNPS",
+        "AEIS",
+        "CAMT",
+        "STM",
+        "NVTS",
+        "ASX",
+        "AMKR",
+        "AXTI",
+        "AEHR",
+        "RMBS"
       ]
     },
     "AI Silicon: Compute & Accelerators": {
@@ -244,7 +273,8 @@
         "MU",
         "WDC",
         "SNDK",
-        "STX"
+        "STX",
+        "RMBS"
       ]
     },
     "AI Silicon: Semiconductor Equipment": {
@@ -260,7 +290,11 @@
         "KLAC",
         "TER",
         "ENTG",
-        "Q"
+        "Q",
+        "AEIS",
+        "CAMT",
+        "AXTI",
+        "AEHR"
       ]
     },
     "AI Silicon: Analog & Edge Chips": {
@@ -277,7 +311,9 @@
         "MCHP",
         "MPWR",
         "ON",
-        "SWKS"
+        "SWKS",
+        "STM",
+        "NVTS"
       ]
     },
     "AI Silicon: Foundries": {
@@ -289,7 +325,9 @@
       "tickers": [
         "TSM",
         "INTC",
-        "GFS"
+        "GFS",
+        "ASX",
+        "AMKR"
       ]
     },
     "AI Silicon: EDA & Design Tools": {
@@ -390,7 +428,9 @@
         "SNOW",
         "MDB",
         "DDOG",
-        "GDDY"
+        "GDDY",
+        "ZM",
+        "INOD"
       ]
     },
     "AI Apps: Software & Workflow": {
@@ -414,7 +454,8 @@
         "ZETA",
         "INTU",
         "FICO",
-        "SHOP"
+        "SHOP",
+        "ZM"
       ]
     },
     "AI Apps: Cybersecurity": {
@@ -445,7 +486,8 @@
       "tickers": [
         "TEM",
         "SDGR",
-        "RXRX"
+        "RXRX",
+        "INOD"
       ]
     },
     "AI Apps: Vibe Coding & Dev Agents": {
@@ -616,7 +658,9 @@
         "ALB",
         "LAC",
         "MP",
-        "TMQ"
+        "TMQ",
+        "UUUU",
+        "USAR"
       ]
     },
     "Crypto & Digital Assets": {
@@ -638,7 +682,9 @@
         "CIFR",
         "CORZ",
         "IREN",
-        "GLXY"
+        "GLXY",
+        "SLNH",
+        "DGXX"
       ]
     },
     "Defense & Rearming": {
@@ -746,7 +792,8 @@
         "PTEN",
         "NBR",
         "CCJ",
-        "LEU"
+        "LEU",
+        "UUUU"
       ]
     },
     "Energy: Oil & Gas Integrated": {
@@ -876,7 +923,8 @@
       "article_narrative": "Uranium is small relative to oil and gas in market-cap terms, but strategically important. It gives the Energy article a bridge into energy security, baseload electricity, and the power needs of an increasingly electrified economy.",
       "tickers": [
         "CCJ",
-        "LEU"
+        "LEU",
+        "UUUU"
       ]
     },
     "High-Yield Energy Income": {
@@ -906,7 +954,8 @@
         "NEXT",
         "CCJ",
         "LEU",
-        "TPL"
+        "TPL",
+        "UUUU"
       ]
     },
     "Energy Transition": {
@@ -937,7 +986,10 @@
         "ALB",
         "LAC",
         "MP",
-        "TE"
+        "TE",
+        "MTZ",
+        "NVTS",
+        "USAR"
       ]
     },
     "EV & Autonomous Vehicles": {
@@ -1118,7 +1170,8 @@
         "LEU",
         "OKLO",
         "SMR",
-        "BWXT"
+        "BWXT",
+        "UUUU"
       ]
     },
     "Pet Economy": {
@@ -1195,7 +1248,15 @@
         "GE",
         "TSM",
         "INTC",
-        "GFS"
+        "GFS",
+        "MTZ",
+        "AEIS",
+        "COHR",
+        "ASX",
+        "AMKR",
+        "CAMT",
+        "FN",
+        "FLEX"
       ]
     },
     "Robotics & Automation": {
@@ -1211,7 +1272,8 @@
         "TER",
         "KEYS",
         "DE",
-        "ISRG"
+        "ISRG",
+        "VPG"
       ]
     },
     "Shipping & Logistics": {
@@ -1252,7 +1314,9 @@
         "SATL",
         "LUNR",
         "RDW",
-        "VOYG"
+        "VOYG",
+        "SATS",
+        "FLY"
       ]
     },
     "Streaming & Digital Entertainment": {
@@ -1613,7 +1677,32 @@
   "TXN": {
     "ai_revenue_exposure": "indirect",
     "ai_disruption_risk": "none"
-  }
+  },
+  "INOD": { "ai_revenue_exposure": "direct", "ai_disruption_risk": "none" },
+  "ZM": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "low" },
+  "AEIS": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "COHR": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "SATS": { "ai_revenue_exposure": "none", "ai_disruption_risk": "none" },
+  "MTZ": { "ai_revenue_exposure": "none", "ai_disruption_risk": "none" },
+  "AAOI": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "ASX": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "AMKR": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "CAMT": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "FN": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "FLEX": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "STM": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "NVTS": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "UUUU": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "USAR": { "ai_revenue_exposure": "none", "ai_disruption_risk": "none" },
+  "P": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "SLNH": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "DGXX": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "AXTI": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "AEHR": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "RMBS": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "VICR": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+  "VPG": { "ai_revenue_exposure": "none", "ai_disruption_risk": "none" },
+  "FLY": { "ai_revenue_exposure": "none", "ai_disruption_risk": "none" }
 }
     }
   }

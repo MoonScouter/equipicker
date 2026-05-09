@@ -1641,13 +1641,13 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             thematics["Energy: Oilfield Services & Drilling"]["tickers"],
             ["SLB", "HAL", "BKR", "NOV", "FTI", "LBRT", "PTEN", "NBR"],
         )
-        self.assertEqual(thematics["Energy Security & Geopolitics"]["tickers"], ["LNG", "NEXT", "CCJ", "LEU", "TPL"])
+        self.assertEqual(thematics["Energy Security & Geopolitics"]["tickers"], ["LNG", "NEXT", "CCJ", "LEU", "TPL", "UUUU"])
         self.assertEqual(
             thematics["Nuclear Renaissance"],
             {
                 "description": "Nuclear generation, fuel-cycle exposure, and SMR-linked beneficiaries driven by clean baseload demand.",
                 "tier": 2,
-                "tickers": ["CEG", "VST", "TLN", "CCJ", "LEU", "OKLO", "SMR", "BWXT"],
+                "tickers": ["CEG", "VST", "TLN", "CCJ", "LEU", "OKLO", "SMR", "BWXT", "UUUU"],
             },
         )
         self.assertIn("Energy Transition", thematics)
