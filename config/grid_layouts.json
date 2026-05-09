@@ -98,6 +98,7 @@
   },
   "thematics_company_grid_company_visible_columns_v2": {
     "visible_columns": [
+      "Thematic",
       "Ticker",
       "Company",
       "Sector",

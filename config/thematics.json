@@ -430,7 +430,8 @@
         "DDOG",
         "GDDY",
         "ZM",
-        "INOD"
+        "INOD",
+        "PGY"
       ]
     },
     "AI Apps: Software & Workflow": {
@@ -487,7 +488,8 @@
         "TEM",
         "SDGR",
         "RXRX",
-        "INOD"
+        "INOD",
+        "PGY"
       ]
     },
     "AI Apps: Vibe Coding & Dev Agents": {
@@ -1034,6 +1036,7 @@
         "CPAY",
         "SOFI",
         "UPST",
+        "PGY",
         "AFRM",
         "LC",
         "HOOD",
@@ -1484,6 +1487,7 @@
       "PYPL": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "low" },
       "SOFI": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
       "UPST": { "ai_revenue_exposure": "direct", "ai_disruption_risk": "none" },
+      "PGY": { "ai_revenue_exposure": "direct", "ai_disruption_risk": "none" },
       "LMND": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
       "ROOT": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
       "OSCR": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
