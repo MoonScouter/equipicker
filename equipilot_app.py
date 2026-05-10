@@ -208,12 +208,14 @@ GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
 GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
 GRID_SURFACE_MARKET_SECTOR_TABLE = "market_sector_table"
 GRID_SURFACE_PORTFOLIO_PREFIX = "portfolio_company_grid"
+GRID_SURFACE_WATCHLIST_COMPANY = "watchlist_company_grid"
 
 PORTFOLIO_JOURNAL_PATH = Path(
     r"C:\Users\razva\Desktop\Portfolio\Trading Team\Equipicker\Portofolii\Jurnal.xlsx"
 )
 PORTFOLIO_CONFIG_PATH = CONFIG_DIR / "portfolio_config.json"
 PORTFOLIO_ALERTS_PATH = CONFIG_DIR / "portfolio_alerts.json"
+WATCHLIST_CONFIG_PATH = CONFIG_DIR / "watchlist.json"
 PORTFOLIO_SHEETS = {
     "dinamic": {"sheet": "DINAMIC", "label": "Portofoliu Dinamic"},
     "dividend": {"sheet": "DIVIDEND", "label": "Portofoliu Dividend"},
@@ -5927,6 +5929,38 @@ def _filter_company_grid_by_ticker_list(company_df: pd.DataFrame, raw_ticker_que
     return company_df[normalized_company_tickers.isin(normalized_query_set)].copy()
 
 
+def _normalize_watchlist_tickers(raw_payload: object) -> list[str]:
+    if isinstance(raw_payload, dict):
+        raw_entries = raw_payload.get("stocks", raw_payload.get("tickers", []))
+    else:
+        raw_entries = raw_payload
+    if not isinstance(raw_entries, list):
+        return []
+
+    normalized: list[str] = []
+    for entry in raw_entries:
+        raw_ticker: object
+        if isinstance(entry, dict):
+            raw_ticker = entry.get("ticker", "")
+        else:
+            raw_ticker = entry
+        ticker = normalize_price_ticker(raw_ticker)
+        if ticker and ticker not in normalized:
+            normalized.append(ticker)
+    return normalized
+
+
+def load_watchlist_tickers(path: Path | str = WATCHLIST_CONFIG_PATH) -> tuple[list[str], Optional[str]]:
+    config_path = Path(path)
+    if not config_path.exists():
+        return [], f"Watchlist config not found: {config_path}"
+    try:
+        raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [], f"Could not read watchlist config {config_path}: {exc}"
+    return _normalize_watchlist_tickers(raw_payload), None
+
+
 def _sync_drilldown_filter_defaults(
     prefix: str,
     signature: tuple[str, ...],
@@ -8146,6 +8180,159 @@ div.st-key-{button_key} button {{
         board_title=f"Trade Ideas / {selected_spec['name']}",
         strategy_subtitle=str(selected_spec["subtitle"]),
         required_columns=set(selected_spec["required_columns"]),
+    )
+
+
+def render_watchlist_tab(config: ReportConfig) -> None:
+    render_page_intro(
+        "Watchlist",
+        "Favorite stocks to track with the same fields, filters, and grid controls as the screener.",
+        "Equipilot / Watchlist",
+    )
+    default_eod = get_default_board_eod(config)
+    date_col, previous_date_col = st.columns(2)
+    with date_col:
+        selected_eod = render_report_select_date_input(
+            "EOD date",
+            value=default_eod,
+            key="watchlist_eod",
+        )
+    with previous_date_col:
+        previous_eod = render_report_select_date_input(
+            "Prev EOD",
+            value=get_default_previous_board_eod(selected_eod),
+            key="watchlist_prev_eod",
+        )
+
+    watchlist_tickers, watchlist_error = load_watchlist_tickers(WATCHLIST_CONFIG_PATH)
+    if watchlist_error:
+        st.warning(watchlist_error)
+
+    with st.spinner("Loading watchlist companies..."):
+        report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
+    if source_path is None:
+        render_missing_report_select(selected_eod, candidates)
+        return
+    if load_error:
+        st.error(f"Failed reading {source_path}: {load_error}")
+        return
+
+    previous_report_df: Optional[pd.DataFrame] = None
+    previous_path: Optional[Path] = None
+    previous_ready = False
+    previous_df, previous_path, previous_candidates, previous_error = load_report_select_for_eod(previous_eod)
+    if previous_path is None:
+        st.warning(
+            f"Previous report_select file is missing for {previous_eod.isoformat()}; trend arrows are hidden."
+        )
+    elif previous_error:
+        st.warning(f"Could not read previous report_select file {previous_path}: {previous_error}")
+    else:
+        previous_report_df = previous_df
+        previous_ready = True
+
+    chips = [
+        f"Watchlist config: {WATCHLIST_CONFIG_PATH.name}",
+        f"Tickers: {len(watchlist_tickers)}",
+        f"Current file: {source_path.name}",
+        f"EOD: {selected_eod.isoformat()}",
+    ]
+    if previous_path is not None:
+        chips.append(f"Previous file: {previous_path.name}")
+        chips.append(f"Previous EOD: {previous_eod.isoformat()}")
+    render_chip_row(chips)
+
+    if not watchlist_tickers:
+        st.info(f"Add tickers to {WATCHLIST_CONFIG_PATH} to populate this watchlist.")
+        return
+
+    details_title, company_universe, _default_sectors, _default_industries, details_error, regime_warning = (
+        build_company_drilldown_context_from_path(
+            source_path,
+            evaluation_date=selected_eod,
+            selected_sector="All sectors",
+            selected_mode="all",
+            selected_key="__all__",
+        )
+    )
+    if details_error:
+        st.warning(details_error)
+        return
+    if company_universe is None:
+        st.info("No companies available for the selected EOD.")
+        return
+    if previous_ready and previous_report_df is not None:
+        company_universe = _annotate_company_score_trends(
+            company_universe,
+            previous_report_df,
+            threshold=5.0,
+        )
+
+    watchlist_df = _filter_company_grid_by_ticker_list(company_universe, ",".join(watchlist_tickers))
+    found_tickers = set(
+        watchlist_df.get("ticker", pd.Series(dtype=object)).map(normalize_price_ticker).tolist()
+    )
+    missing_tickers = [ticker for ticker in watchlist_tickers if ticker not in found_tickers]
+    if missing_tickers:
+        st.warning(f"Not found in the selected EOD universe: {', '.join(missing_tickers)}")
+    if regime_warning:
+        st.caption(regime_warning)
+    st.caption(f"{details_title}: {len(watchlist_df)} watchlist companies found.")
+
+    filter_signature = (
+        selected_eod.isoformat(),
+        previous_eod.isoformat(),
+        ",".join(watchlist_tickers),
+        "watchlist_all_filters_v1",
+    )
+    _sync_drilldown_filter_defaults(
+        "watchlist",
+        filter_signature,
+        default_thematics=[],
+        default_sectors=[],
+        default_industries=[],
+        default_cap_buckets=[],
+        default_fund_range=(0.0, 100.0),
+        default_tech_range=(0.0, 100.0),
+        default_rsi_regime_range=(0.0, 100.0),
+        default_sector_regime_fit_range=(0.0, 100.0),
+        default_fund_momentum_range=(0.0, 100.0),
+        default_tech_trend_dir="All",
+        default_daily_rsi_divergence="All",
+        default_weekly_rsi_divergence="All",
+        default_short_term_flow="All",
+        default_rel_strength="All",
+        default_rel_volume="All",
+        default_ai_revenue_exposure="All",
+        default_ai_disruption_risk="All",
+        default_beta_range=(0.0, 5.0),
+    )
+    filtered_companies = render_company_drilldown_filters(
+        watchlist_df,
+        prefix="watchlist",
+        ticker_label="Ticker filter (Watchlist)",
+        include_fundamental_momentum_filter=True,
+        include_technical_trend_filter=previous_ready,
+        include_thematic_filter=True,
+        include_rel_strength_filter=True,
+        include_rel_volume_filter=True,
+        include_ai_exposure_filters=True,
+        include_beta_filter=True,
+    )
+    st.caption(f"Companies after filters: {len(filtered_companies)}")
+    display_df = format_company_drilldown_display(filtered_companies, sort_by="technical")
+    if display_df.empty:
+        st.info("No watchlist companies match the current filters.")
+        return
+    _render_company_grid(
+        display_df,
+        surface_id=GRID_SURFACE_WATCHLIST_COMPANY,
+        row_height=34,
+        min_height=220,
+        preferred_visible_columns=["1M", "YTD", "TS"],
+        default_row_limit="All",
+        fallback_styler_builder=_build_company_drilldown_styler,
+        csv_file_name=f"watchlist_{selected_eod.isoformat()}.csv",
     )
 
 
@@ -12685,7 +12872,18 @@ def main() -> None:
 
     show_quadrants_tab = False
 
-    home_tab, indices_tab, market_tab, sector_tab, thematics_tab, portfolios_tab, trade_ideas_tab, api_tab, utilities_tab = st.tabs(
+    (
+        home_tab,
+        indices_tab,
+        market_tab,
+        sector_tab,
+        thematics_tab,
+        portfolios_tab,
+        watchlist_tab,
+        trade_ideas_tab,
+        api_tab,
+        utilities_tab,
+    ) = st.tabs(
         [
             "Home",
             "Indices",
@@ -12693,6 +12891,7 @@ def main() -> None:
             "Sector",
             "Thematics",
             "Portfolios",
+            "Watchlist",
             "Trade Ideas",
             "API",
             "Utilities",
@@ -12710,6 +12909,8 @@ def main() -> None:
         render_thematics_tab(config)
     with portfolios_tab:
         render_portfolios_tab(config)
+    with watchlist_tab:
+        render_watchlist_tab(config)
     with trade_ideas_tab:
         render_trade_ideas(config)
     if show_quadrants_tab:

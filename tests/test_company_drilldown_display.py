@@ -31,6 +31,7 @@ from equipilot_app import (
     _company_grid_aggrid_key,
     _latest_divergence_flags_for_frequency,
     _normalize_grid_visible_columns,
+    _normalize_watchlist_tickers,
     _company_grid_height,
     _compute_company_return_metrics,
     _load_market_regime_company_metrics_for_date,
@@ -1230,6 +1231,22 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         filtered = _filter_company_grid_by_ticker_list(company_df, "MSF")
 
         self.assertTrue(filtered.empty)
+
+    def test_normalize_watchlist_tickers_accepts_stock_objects_and_lists(self) -> None:
+        self.assertEqual(
+            _normalize_watchlist_tickers(
+                {
+                    "stocks": [
+                        {"ticker": "msft"},
+                        {"ticker": "GOOG.US"},
+                        {"ticker": "msft"},
+                        {"note": "missing ticker"},
+                    ]
+                }
+            ),
+            ["MSFT.US", "GOOG.US"],
+        )
+        self.assertEqual(_normalize_watchlist_tickers({"tickers": ["aapl", " AAPL.US ", "AMN"]}), ["AAPL.US", "AMN.US"])
 
     def test_company_grid_height_caps_large_result_sets(self) -> None:
         height = _company_grid_height(1000, row_height=34, min_height=220)
