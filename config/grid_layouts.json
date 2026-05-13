@@ -3,9 +3,7 @@
     "visible_columns": [
       "Name",
       "Beta",
-      "1M",
-      "RS %",
-      "Vol %",
+      "YTD",
       "FS",
       "Mom. FS",
       "Growth FS",
@@ -101,24 +99,13 @@
       "Thematic",
       "Ticker",
       "Company",
-      "Sector",
-      "Market Cap",
-      "1M",
-      "TS",
-      "RSI Regime",
-      "Short Term Flow",
-      "RSI Divergence (D)",
-      "RSI Divergence (W)",
+      "YTD",
       "FS",
       "Mom. FS",
       "Growth FS",
       "Value FS",
       "Quality FS",
-      "Risk FS",
-      "Rel Strength",
-      "Rel Volume",
-      "AI Revenue Exposure",
-      "AI Disruption Risk"
+      "Risk FS"
     ]
   },
   "market_sector_table_company_visible_columns_v2": {
