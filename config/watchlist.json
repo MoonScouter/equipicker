@@ -1,3 +1,43 @@
 {
-  "stocks": []
+  "stocks": [
+    {
+      "ticker": "DELL"
+    },
+    {
+      "ticker": "IREN"
+    },
+    {
+      "ticker": "BE"
+    },
+    {
+      "ticker": "MU"
+    },
+    {
+      "ticker": "NBIS"
+    },
+    {
+      "ticker": "AMD"
+    },
+    {
+      "ticker": "PGY"
+    },
+    {
+      "ticker": "NOW"
+    },
+    {
+      "ticker": "VSAT"
+    },
+    {
+      "ticker": "SATL"
+    },
+    {
+      "ticker": "RKLB"
+    },
+    {
+      "ticker": "SNDK"
+    },
+    {
+      "ticker": "ASTS"
+    }
+  ]
 }

@@ -813,7 +813,7 @@
       "tier": 1,
       "value_chain_layer": 1.2,
       "parent": "Energy Sector",
-      "article_narrative": "E&P is the purest listed expression of commodity exposure. Inside this layer, it helps to separate oil-weighted names, gas-weighted names, and royalty-linked models because the drivers, volatility, and valuation logic are not the same. For article use, the practical split is: oil-weighted = EOG, COP, FANG, DVN, OVV, MTDR, PR, APA, OXY; gas-weighted = EQT, EXE; royalty / mineral = TPL, KRP, BSM, DMLP. Merged-company exposure remains tracked through DVN.",
+      "article_narrative": "E&P is the purest listed expression of commodity exposure. Inside this layer, it helps to separate oil-weighted names, gas-weighted names, and royalty-linked models because the drivers, volatility, and valuation logic are not the same. For article use, the practical split is: oil-weighted = EOG, COP, FANG, DVN, OVV, MTDR, PR, APA, OXY; gas-weighted = EQT, EXE; royalty / mineral = TPL, VNOM, KRP, BSM, DMLP. Merged-company exposure remains tracked through DVN.",
       "tickers": [
         "EOG",
         "COP",
@@ -827,6 +827,7 @@
         "EQT",
         "EXE",
         "TPL",
+        "VNOM",
         "KRP",
         "BSM",
         "DMLP"
@@ -853,7 +854,6 @@
         "OKE",
         "ET",
         "MPLX",
-        "VNOM",
         "NEXT"
       ]
     },
@@ -882,8 +882,7 @@
         "EPD",
         "ENB",
         "OKE",
-        "MPLX",
-        "VNOM"
+        "MPLX"
       ]
     },
     "Energy: Oil & Gas Refining & Marketing": {

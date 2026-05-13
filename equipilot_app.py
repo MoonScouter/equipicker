@@ -41,12 +41,6 @@ from equipicker_connect import (
     report_cache_path,
     scoring_cache_path,
 )
-from equipicker_filters import (
-    accel_down_weak,
-    accel_up_weak,
-    extreme_accel_down,
-    extreme_accel_up,
-)
 from indices_service import (
     INDEX_TICKER_TO_NAME,
     INDEX_TICKERS,
@@ -206,6 +200,7 @@ GRID_SURFACE_FUNDAMENTAL_COMPANY = "fundamental_company_grid"
 GRID_SURFACE_TECHNICAL_COMPANY = "technical_company_grid"
 GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
 GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
+GRID_SURFACE_TRADE_IDEAS_PREFIX = "trade_ideas_company_grid"
 GRID_SURFACE_MARKET_SECTOR_TABLE = "market_sector_table"
 GRID_SURFACE_PORTFOLIO_PREFIX = "portfolio_company_grid"
 GRID_SURFACE_WATCHLIST_COMPANY = "watchlist_company_grid"
@@ -225,6 +220,11 @@ PORTFOLIO_DEFAULT_ALERT_LEVEL = "0"
 
 COMPANY_GRID_SCORE_COLUMNS = [
     "TS",
+    "Relative Performance",
+    "Relative Volume",
+    "Momentum",
+    "Intermediate Trend",
+    "Long-term Trend",
     "RSI Regime",
     "Sector Regime Fit",
     "FS",
@@ -5388,8 +5388,21 @@ def _prepare_company_drilldown_universe(
             selected_columns.append(pillar_column)
     if "rs_monthly" in report_df.columns:
         selected_columns.append("rs_monthly")
-    if "obvm_monthly" in report_df.columns:
-        selected_columns.append("obvm_monthly")
+    for technical_setup_column in [
+        "obvm_monthly",
+        "obvm_weekly",
+        "rsi_daily",
+        "rsi_weekly",
+        "eod_price_used",
+        "sma_daily_20",
+        "sma_daily_50",
+        "sma_daily_200",
+    ]:
+        if technical_setup_column in report_df.columns:
+            selected_columns.append(technical_setup_column)
+    for proximity_column in ["near_ma20_5pct", "near_ma50_5pct", "near_ma200_5pct"]:
+        if proximity_column in report_df.columns:
+            selected_columns.append(proximity_column)
     for short_term_column in ["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]:
         if short_term_column in report_df.columns:
             selected_columns.append(short_term_column)
@@ -5441,6 +5454,22 @@ def _prepare_company_drilldown_universe(
         working["obvm_monthly"] = pd.to_numeric(working["obvm_monthly"], errors="coerce")
     else:
         working["obvm_monthly"] = np.nan
+    for technical_setup_column in [
+        "obvm_weekly",
+        "rsi_daily",
+        "rsi_weekly",
+        "eod_price_used",
+        "sma_daily_20",
+        "sma_daily_50",
+        "sma_daily_200",
+    ]:
+        if technical_setup_column in working.columns:
+            working[technical_setup_column] = pd.to_numeric(working[technical_setup_column], errors="coerce")
+        else:
+            working[technical_setup_column] = np.nan
+    for proximity_column in ["near_ma20_5pct", "near_ma50_5pct", "near_ma200_5pct"]:
+        if proximity_column not in working.columns:
+            working[proximity_column] = ""
     for short_term_column in ["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]:
         if short_term_column in working.columns:
             working[short_term_column] = pd.to_numeric(working[short_term_column], errors="coerce")
@@ -5550,6 +5579,7 @@ def _load_prepared_company_universe_for_report_path(
         "prices_path": prices_cache_path_str,
         "prices": prices_cache_signature,
         "schema": PERF_CACHE_SCHEMA_VERSION,
+        "company_universe_columns": "trade_ideas_raw_indicators_v1",
     }
     cached_universe = load_company_universe_cached(evaluation_date, cache_signatures)
     if cached_universe is not None:
@@ -7877,57 +7907,297 @@ def render_sector_screener_board(config: ReportConfig) -> None:
     )
 
 
-def _run_trade_idea_filter(strategy_name: str, report_df: pd.DataFrame) -> pd.DataFrame:
-    working_df = report_df.copy()
-    if strategy_name == "extreme_accel_up":
-        return extreme_accel_up(working_df, DATA_DIR, save_output=False)
-    if strategy_name == "accel_up_weak":
-        return accel_up_weak(working_df, DATA_DIR, save_output=False)
-    if strategy_name == "extreme_accel_down":
-        return extreme_accel_down(working_df, DATA_DIR, save_output=False)
-    if strategy_name == "accel_down_weak":
-        return accel_down_weak(working_df, DATA_DIR, save_output=False)
-    raise ValueError(f"Unsupported trade-idea strategy: {strategy_name}")
+TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
+    {
+        "key": "quality_leaders",
+        "name": "Quality Leaders",
+        "subtitle": "High-quality companies where relative strength, volume, RSI regime, and trend structure confirm the fundamental story.",
+        "sort_by": "fundamental",
+    },
+    {
+        "key": "early_turn_wakeup",
+        "name": "Early Turn",
+        "subtitle": "Earlier rerating candidates: decent fundamentals, constructive demand, and emerging or formed bullish divergence before the full trend looks obvious.",
+        "sort_by": "technical",
+    },
+    {
+        "key": "pullback_repair",
+        "name": "Pullback Repair",
+        "subtitle": "Strong uptrends that have cooled tactically and are showing signs that the pullback is stabilizing.",
+        "sort_by": "technical",
+    },
+    {
+        "key": "technical_acceleration",
+        "name": "Acceleration",
+        "subtitle": "Breakout and momentum-expansion leaders with strong RS, volume, RSI, and moving-average alignment.",
+        "sort_by": "technical",
+    },
+    {
+        "key": "fundamental_follow_through",
+        "name": "Fundamental Follow-Through",
+        "subtitle": "Companies with improving fundamental momentum where price action and flows are starting to agree.",
+        "sort_by": "fundamental",
+    },
+    {
+        "key": "speculative_growth",
+        "name": "Speculative Growth",
+        "subtitle": "Higher-risk demand-surge ideas: emerging growth stories with decent fundamental momentum and improving technical demand.",
+        "sort_by": "technical",
+    },
+    {
+        "key": "late_cycle_watch",
+        "name": "Late-Cycle Watch",
+        "subtitle": "Strong names that may be getting crowded or tired; useful as a take-profit or risk-monitoring watchlist, not a fresh long basket.",
+        "sort_by": "technical",
+    },
+    {
+        "key": "bearish_avoid",
+        "name": "Bearish / Avoid",
+        "subtitle": "Weak trend, weak flow, poor RSI regime, and bearish divergence evidence. This is a risk-control list, not a long-idea list.",
+        "sort_by": "technical",
+    },
+]
 
 
-def _trade_idea_display_frame(df: pd.DataFrame) -> pd.DataFrame:
-    preferred_columns = [
-        "ticker",
-        "company",
-        "sector",
-        "industry",
-        "market_cap",
-        "general_technical_score",
-        "relative_performance",
-        "relative_volume",
-        "momentum",
-        "intermediate_trend",
-        "long_term_trend",
-        "fundamental_total_score",
-        "eod_price_used",
-        "near_1y_high_5pct",
-        "near_1y_low_5pct",
-        "near_ma20_5pct",
-        "near_ma50_5pct",
-        "near_ma200_5pct",
-        "eod_price_date",
-    ]
-    available = [col for col in preferred_columns if col in df.columns]
-    if available:
-        return df.loc[:, available]
-    return df
+def _trade_ideas_num(df: pd.DataFrame, column: str) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(np.nan, index=df.index)
+    return pd.to_numeric(df[column], errors="coerce")
 
 
-def _render_trade_idea_strategy(
+def _trade_ideas_text(df: pd.DataFrame, column: str) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series("", index=df.index, dtype=object)
+    return df[column].fillna("").astype(str).str.strip().str.lower()
+
+
+def _trade_ideas_cap_in(df: pd.DataFrame, allowed: set[str]) -> pd.Series:
+    return df.get("market_cap_bucket", pd.Series("", index=df.index)).fillna("").astype(str).isin(allowed)
+
+
+def _trade_ideas_near_yes(df: pd.DataFrame, column: str) -> pd.Series:
+    return _trade_ideas_text(df, column).isin({"yes", "true", "1"})
+
+
+def _trade_ideas_any_divergence(df: pd.DataFrame, allowed: set[str]) -> pd.Series:
+    daily = _trade_ideas_text(df, "rsi_divergence_daily_flag")
+    weekly = _trade_ideas_text(df, "rsi_divergence_weekly_flag")
+    return daily.isin(allowed) | weekly.isin(allowed)
+
+
+def _trade_ideas_no_divergence(df: pd.DataFrame, blocked: set[str]) -> pd.Series:
+    daily = _trade_ideas_text(df, "rsi_divergence_daily_flag")
+    weekly = _trade_ideas_text(df, "rsi_divergence_weekly_flag")
+    return ~(daily.isin(blocked) | weekly.isin(blocked))
+
+
+def _trade_ideas_base_mask(df: pd.DataFrame) -> pd.Series:
+    return pd.Series(True, index=df.index)
+
+
+def _filter_trade_idea_basket(company_df: pd.DataFrame, basket_key: str) -> pd.DataFrame:
+    df = company_df.copy()
+    m = _trade_ideas_base_mask(df)
+
+    fs = _trade_ideas_num(df, "fundamental_total_score")
+    fm = _trade_ideas_num(df, "fundamental_momentum")
+    growth = _trade_ideas_num(df, "fundamental_growth")
+    quality = _trade_ideas_num(df, "fundamental_quality")
+    risk = _trade_ideas_num(df, "fundamental_risk")
+    rsi_regime = _trade_ideas_num(df, "stock_rsi_regime_score")
+    rsi_d = _trade_ideas_num(df, "rsi_daily")
+    rsi_w = _trade_ideas_num(df, "rsi_weekly")
+    rs_d = _trade_ideas_num(df, "rs_daily")
+    rs_sma = _trade_ideas_num(df, "rs_sma20")
+    rs_m = _trade_ideas_num(df, "rs_monthly")
+    obvm_d = _trade_ideas_num(df, "obvm_daily")
+    obvm_sma = _trade_ideas_num(df, "obvm_sma20")
+    obvm_m = _trade_ideas_num(df, "obvm_monthly")
+    obvm_w = _trade_ideas_num(df, "obvm_weekly")
+    price = _trade_ideas_num(df, "eod_price_used")
+    sma20 = _trade_ideas_num(df, "sma_daily_20")
+    sma50 = _trade_ideas_num(df, "sma_daily_50")
+    sma200 = _trade_ideas_num(df, "sma_daily_200")
+    flow = _trade_ideas_text(df, "short_term_flow")
+
+    bullish_divergence = {"potential-positive", "positive", "positive-confirmed"}
+    bearish_divergence = {"potential-negative", "negative", "negative-confirmed", "extension-negative"}
+    late_bearish_divergence = {"negative-confirmed", "extension-negative"}
+
+    if basket_key == "quality_leaders":
+        m &= _trade_ideas_cap_in(df, {"Large", "Mega"})
+        m &= fs >= 65
+        m &= quality >= 65
+        m &= risk >= 60
+        m &= fm >= 50
+        m &= rsi_regime >= 60
+        m &= rsi_w >= 55
+        m &= rsi_d.between(55, 75, inclusive="both")
+        m &= rs_m > 0
+        m &= rs_d > rs_sma
+        m &= obvm_m > 0
+        m &= obvm_d > obvm_sma
+        m &= price > sma50
+        m &= price > sma200
+        m &= flow == "positive"
+        m &= _trade_ideas_no_divergence(df, {"negative-confirmed", "extension-negative"})
+    elif basket_key == "early_turn_wakeup":
+        m &= _trade_ideas_cap_in(df, {"Mid", "Large", "Mega"})
+        m &= fs >= 55
+        m &= (growth >= 55) | (fm >= 60)
+        m &= quality >= 50
+        m &= risk >= 50
+        m &= rsi_regime >= 50
+        m &= rsi_w.between(45, 60, inclusive="both")
+        m &= rsi_d.between(48, 68, inclusive="both")
+        m &= rs_m > -1
+        m &= rs_d > rs_sma
+        m &= obvm_m >= 0
+        m &= obvm_d > obvm_sma
+        m &= price > sma200
+        m &= (price >= sma50) | _trade_ideas_near_yes(df, "near_ma50_5pct")
+        m &= flow.isin({"neutral", "positive"})
+        m &= _trade_ideas_any_divergence(df, {"potential-positive", "positive"})
+        m &= _trade_ideas_no_divergence(df, late_bearish_divergence)
+    elif basket_key == "pullback_repair":
+        m &= fs >= 60
+        m &= quality >= 55
+        m &= risk >= 55
+        m &= rsi_regime >= 55
+        m &= rsi_w >= 55
+        m &= rsi_d.between(40, 65, inclusive="both")
+        m &= rs_m > 0
+        m &= rs_d >= (rs_sma * 0.95)
+        m &= obvm_m > 0
+        m &= obvm_d >= (obvm_sma * 0.95)
+        m &= price > sma50
+        m &= price > sma200
+        m &= sma50 > sma200
+        m &= flow.isin({"neutral", "positive"})
+        m &= _trade_ideas_any_divergence(df, bullish_divergence)
+        m &= _trade_ideas_no_divergence(df, {"extension-negative"})
+    elif basket_key == "technical_acceleration":
+        m &= fs >= 50
+        m &= risk >= 50
+        m &= rsi_regime >= 65
+        m &= rsi_w > 60
+        m &= rsi_d > 70
+        m &= rs_m > 0
+        m &= rs_d > rs_sma
+        m &= obvm_m > 0
+        m &= obvm_w > 0
+        m &= obvm_d > obvm_sma
+        m &= price > sma20
+        m &= price > sma50
+        m &= price > sma200
+        m &= sma20 > sma50
+        m &= sma50 > sma200
+        m &= flow == "positive"
+        m &= _trade_ideas_no_divergence(df, late_bearish_divergence)
+    elif basket_key == "fundamental_follow_through":
+        m &= fs >= 60
+        m &= fm >= 70
+        m &= growth >= 55
+        m &= quality >= 55
+        m &= risk >= 50
+        m &= rsi_regime >= 55
+        m &= rsi_w >= 50
+        m &= rsi_d >= 50
+        m &= rs_m > 0
+        m &= rs_d > rs_sma
+        m &= obvm_d > obvm_sma
+        m &= price > sma50
+        m &= flow == "positive"
+        m &= _trade_ideas_no_divergence(df, {"extension-negative"})
+    elif basket_key == "speculative_growth":
+        m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large"})
+        m &= fs >= 45
+        m &= fm >= 50
+        m &= growth >= 55
+        m &= quality >= 35
+        m &= risk >= 35
+        m &= rsi_regime >= 50
+        m &= rsi_w >= 45
+        m &= rsi_d >= 50
+        m &= rs_m > 0
+        m &= rs_d > rs_sma
+        m &= obvm_d > obvm_sma
+        m &= (price > sma50) | (price > sma200)
+        m &= flow.isin({"neutral", "positive"})
+        m &= _trade_ideas_no_divergence(df, late_bearish_divergence)
+    elif basket_key == "late_cycle_watch":
+        m &= fs >= 55
+        m &= rsi_regime >= 55
+        m &= rs_m > 0
+        m &= (price > sma50) | (price > sma200)
+        m &= _trade_ideas_any_divergence(
+            df,
+            {"potential-negative", "negative", "negative-confirmed", "extension-negative"},
+        )
+        m &= (rsi_d > 70) | (obvm_d < obvm_sma) | flow.isin({"neutral", "negative"})
+    elif basket_key == "bearish_avoid":
+        m &= (fs < 55) | (risk < 50)
+        m &= rsi_regime <= 45
+        m &= rsi_w < 45
+        m &= rsi_d < 45
+        m &= rs_m < 0
+        m &= rs_d < rs_sma
+        m &= obvm_m < 0
+        m &= obvm_w < 0
+        m &= obvm_d < obvm_sma
+        m &= price < sma50
+        m &= price < sma200
+        m &= flow == "negative"
+        m &= _trade_ideas_any_divergence(df, bearish_divergence)
+    else:
+        raise ValueError(f"Unsupported trade-idea basket: {basket_key}")
+
+    return df.loc[m.fillna(False)].copy()
+
+
+def _render_trade_idea_basket(
     *,
+    basket_spec: dict[str, object],
+    company_universe: pd.DataFrame,
     selected_eod: date,
-    strategy_name: str,
-    board_title: str,
-    strategy_subtitle: str,
-    required_columns: set[str],
 ) -> None:
-    st.caption(strategy_subtitle)
-    with st.spinner(f"Loading {strategy_name} candidates..."):
+    basket_key = str(basket_spec["key"])
+    st.caption(str(basket_spec["subtitle"]))
+    ideas_df = _filter_trade_idea_basket(company_universe, basket_key)
+    st.caption(f"Stocks in basket: {len(ideas_df)}")
+    if ideas_df.empty:
+        st.info("No stocks matched this basket for the selected EOD.")
+        return
+
+    display_df = format_company_drilldown_display(
+        ideas_df,
+        sort_by=str(basket_spec.get("sort_by", "technical")),
+    )
+    _render_company_grid(
+        display_df,
+        surface_id=f"{GRID_SURFACE_TRADE_IDEAS_PREFIX}_{basket_key}",
+        row_height=36,
+        min_height=260,
+        default_row_limit="All",
+        show_top_scrollbar=False,
+        csv_file_name=f"trade_ideas_{basket_key}_{selected_eod.isoformat()}.csv",
+        fallback_styler_builder=_build_company_drilldown_styler,
+    )
+
+
+def render_trade_ideas(config: ReportConfig) -> None:
+    render_page_intro(
+        "Trade Ideas",
+        "Curated high-conviction baskets built from fundamentals, RSI regime, divergence lifecycle, relative strength, volume, and trend structure.",
+        "Equipilot / Trade Ideas",
+    )
+    selected_eod = render_report_select_date_input(
+        "EOD date",
+        value=get_default_board_eod(config),
+        key="trade_ideas_eod",
+    )
+
+    with st.spinner("Loading Trade Ideas universe..."):
         report_df, source_path, candidates, load_error = load_report_select_for_eod(selected_eod)
     if source_path is None:
         render_missing_report_select(selected_eod, candidates)
@@ -7935,252 +8205,47 @@ def _render_trade_idea_strategy(
     if load_error:
         st.error(f"Failed reading {source_path}: {load_error}")
         return
-    render_chip_row([f"Source file: {source_path}", f"EOD: {selected_eod.isoformat()}"])
-    if not validate_required_columns(report_df, required_columns, source_path, board_title):
-        return
 
-    try:
-        ideas_df = _run_trade_idea_filter(strategy_name, report_df)
-    except Exception as exc:  # pragma: no cover - UI feedback
-        st.error(f"{board_title}: filter execution failed: {exc}")
-        return
-
-    st.caption(f"Stocks passing filter: {len(ideas_df)}")
-    display_df = _trade_idea_display_frame(ideas_df)
-    if display_df.empty:
-        st.info("No stocks matched this filter for the selected EOD.")
-        return
-
-    ticker_filter_query = st.text_input(
-        "Ticker filter (Trade ideas)",
-        key=f"{strategy_name}_trade_ideas_ticker_filter",
-        placeholder="Type ticker symbol...",
-    ).strip()
-    grid_df = display_df.copy()
-    if ticker_filter_query and "ticker" in grid_df.columns:
-        ticker_mask = grid_df["ticker"].fillna("").astype(str).str.contains(
-            ticker_filter_query,
-            case=False,
-            na=False,
-            regex=False,
-        )
-        grid_df = grid_df[ticker_mask].copy()
-
-    if grid_df.empty:
-        st.info("No stocks matched this filter/ticker selection for the selected EOD.")
-        return
-
-    if "sector" in grid_df.columns:
-        sector_counts = (
-            grid_df["sector"]
-            .fillna("Unspecified")
-            .astype(str)
-            .str.strip()
-            .replace("", "Unspecified")
-            .value_counts()
-        )
-        if not sector_counts.empty:
-            sector_pie = go.Figure(
-                data=[
-                    go.Pie(
-                        labels=sector_counts.index.tolist(),
-                        values=sector_counts.values.tolist(),
-                        textinfo="label+percent",
-                        hole=0.35,
-                    )
-                ]
-            )
-            sector_pie.update_layout(
-                margin=dict(l=10, r=10, t=10, b=10),
-                height=320,
-            )
-            st.plotly_chart(
-                sector_pie,
-                use_container_width=True,
-                key=f"{strategy_name}_trade_ideas_sector_pie",
-            )
-
-    export_cols = st.columns([1, 1, 4])
-    csv_data = grid_df.to_csv(index=False).encode("utf-8")
-    with export_cols[0]:
-        st.download_button(
-            "Download CSV",
-            data=csv_data,
-            file_name=f"{strategy_name}_{selected_eod.isoformat()}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key=f"{strategy_name}_trade_ideas_download_csv",
-        )
-    with export_cols[1]:
-        st.download_button(
-            "Download JSON",
-            data=grid_df.to_json(orient="records", force_ascii=False, indent=2),
-            file_name=f"{strategy_name}_{selected_eod.isoformat()}.json",
-            mime="application/json",
-            use_container_width=True,
-            key=f"{strategy_name}_trade_ideas_download_json",
-        )
-
-    estimated_height = max(260, 72 + len(grid_df) * 38)
-    st.dataframe(grid_df, use_container_width=True, height=estimated_height, hide_index=True)
-
-
-def render_trade_ideas(config: ReportConfig) -> None:
-    render_page_intro(
-        "Trade Ideas",
-        "Actionable candidates from curated acceleration filters.",
-        "Equipilot / Trade Ideas",
+    company_universe, universe_error, universe_warning = _load_prepared_company_universe_for_report_path(
+        str(source_path),
+        _path_cache_signature(source_path),
+        selected_eod,
+        _path_cache_signature(THEMATICS_CONFIG_PATH),
+        _market_regime_company_metrics_cache_signature(selected_eod),
+        _company_divergence_cache_signature(),
+        str(prices_cache_path("daily", selected_eod.year)) if prices_cache_path("daily", selected_eod.year).exists() else "",
+        _path_cache_signature(prices_cache_path("daily", selected_eod.year)),
     )
+    if universe_error:
+        st.error(universe_error)
+        return
+    assert company_universe is not None
+
     render_chip_row(
         [
-            "Strategies currently active: extreme_accel_up, accel_up_weak, accel_down_weak, extreme_accel_down",
-            "Data source: report_select_<EOD> file",
+            f"Source file: {source_path.name}",
+            f"EOD: {selected_eod.isoformat()}",
+            "Sector regime fit excluded",
+            "Baskets are independent; a ticker may appear in more than one story.",
         ]
     )
-    selected_eod = render_report_select_date_input(
-        "EOD date",
-        value=get_default_board_eod(config),
-        key="trade_ideas_eod",
-    )
-    strategy_specs = [
-        {
-            "name": "extreme_accel_up",
-            "subtitle": "Highest-conviction bullish acceleration setup with strict technical and thrust constraints.",
-            "required_columns": {
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_20",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-            "style": ("#16A34A", "#FFFFFF", "#15803D"),
-        },
-        {
-            "name": "accel_up_weak",
-            "subtitle": "Moderate bullish acceleration profile with constructive but cooling momentum behavior.",
-            "required_columns": {
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-            "style": ("#BBF7D0", "#14532D", "#4ADE80"),
-        },
-        {
-            "name": "accel_down_weak",
-            "subtitle": "Moderate bearish acceleration profile with early downside follow-through behavior.",
-            "required_columns": {
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-            "style": ("#FECACA", "#7F1D1D", "#FCA5A5"),
-        },
-        {
-            "name": "extreme_accel_down",
-            "subtitle": "Highest-conviction bearish acceleration setup with strict downside momentum and trend constraints.",
-            "required_columns": {
-                "rs_daily",
-                "rs_sma20",
-                "rs_monthly",
-                "obvm_daily",
-                "obvm_sma20",
-                "obvm_monthly",
-                "obvm_weekly",
-                "rsi_weekly",
-                "rsi_daily",
-                "eod_price_used",
-                "sma_daily_20",
-                "sma_daily_50",
-                "sma_daily_200",
-            },
-            "style": ("#DC2626", "#FFFFFF", "#B91C1C"),
-        },
-    ]
-    strategy_names = [entry["name"] for entry in strategy_specs]
-    selected_strategy_key = "trade_ideas_selected_strategy"
-    if st.session_state.get(selected_strategy_key) not in strategy_names:
-        st.session_state[selected_strategy_key] = "extreme_accel_up"
-    selected_strategy = str(st.session_state.get(selected_strategy_key))
+    if universe_warning:
+        st.warning(universe_warning)
 
-    strategy_css_rules: list[str] = []
-    for spec in strategy_specs:
-        bg_color, text_color, border_color = spec["style"]
-        button_key = f"trade_ideas_btn_{spec['name']}"
-        strategy_css_rules.append(
-            f"""
-div.st-key-{button_key} button {{
-  background-color: {bg_color} !important;
-  color: {text_color} !important;
-  border: 1px solid {border_color} !important;
-}}
-div.st-key-{button_key} button p {{
-  color: {text_color} !important;
-}}
-div.st-key-{button_key} button:hover {{
-  filter: brightness(0.96);
-}}
-            """
-        )
-        if spec["name"] == selected_strategy:
-            strategy_css_rules.append(
-                f"""
-div.st-key-{button_key} button {{
-  border-width: 3px !important;
-  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.22) !important;
-}}
-                """
+    render_subtab_group_intro(
+        "Trade Ideas baskets",
+        "Each tab shows one narrative basket with the same grid and Fields picker used by Thematics, Screener, and Watchlist. There are no extra Trade Ideas filters in this view.",
+    )
+
+    basket_tabs = st.tabs([str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS])
+    for basket_tab, basket_spec in zip(basket_tabs, TRADE_IDEA_BASKET_SPECS):
+        with basket_tab:
+            render_board_title_band(str(basket_spec["name"]))
+            _render_trade_idea_basket(
+                basket_spec=basket_spec,
+                company_universe=company_universe,
+                selected_eod=selected_eod,
             )
-    st.markdown(
-        f"""
-<style>
-{''.join(strategy_css_rules)}
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    selector_cols = st.columns(4)
-    for idx, spec in enumerate(strategy_specs):
-        with selector_cols[idx]:
-            if st.button(spec["name"], key=f"trade_ideas_btn_{spec['name']}", use_container_width=True):
-                st.session_state[selected_strategy_key] = spec["name"]
-                st.rerun()
-
-    selected_spec = next(entry for entry in strategy_specs if entry["name"] == selected_strategy)
-    render_board_title_band(f"Trade Ideas - {selected_spec['name']}")
-    _render_trade_idea_strategy(
-        selected_eod=selected_eod,
-        strategy_name=selected_spec["name"],
-        board_title=f"Trade Ideas / {selected_spec['name']}",
-        strategy_subtitle=str(selected_spec["subtitle"]),
-        required_columns=set(selected_spec["required_columns"]),
-    )
 
 
 def render_watchlist_tab(config: ReportConfig) -> None:
@@ -12604,6 +12669,7 @@ def _build_portfolio_company_universe(
         eod_lookup = report_df[["ticker", "eod_price_used"]].copy()
         eod_lookup["ticker"] = eod_lookup["ticker"].map(normalize_price_ticker)
         eod_lookup["eod_price_used"] = pd.to_numeric(eod_lookup["eod_price_used"], errors="coerce")
+        base = base.drop(columns=["eod_price_used"], errors="ignore")
         base = base.merge(eod_lookup.drop_duplicates("ticker", keep="last"), on="ticker", how="left")
     else:
         base["eod_price_used"] = np.nan
