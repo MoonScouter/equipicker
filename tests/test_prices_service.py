@@ -444,6 +444,18 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(flags.iloc[-2], "potential-negative")
         self.assertEqual(flags.iloc[-1], "none")
 
+    def test_compute_rsi_divergence_flags_invalidates_bearish_anchor_after_live_rsi_reclaim(self) -> None:
+        highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 18, 19]
+        lows = [value - 4 for value in highs]
+        rsi_values = [50, 52, 55, 58, 56, 54, 74, 55, 54, 53, 54, 56, 58, 60, 66, 75, 65]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertEqual(flags.iloc[-3], "potential-negative")
+        self.assertEqual(flags.iloc[-2], "none")
+        self.assertEqual(flags.iloc[-1], "none")
+
     def test_compute_rsi_divergence_flags_clears_bullish_potential_when_rsi_breaks_anchor(self) -> None:
         lows = [12, 11, 10, 9, 10, 11, 6, 11, 12, 11, 10, 9, 8, 7, 5, 4]
         highs = [value + 4 for value in lows]
@@ -453,6 +465,18 @@ class PricesServiceTests(unittest.TestCase):
         flags = compute_rsi_divergence_flags(df, frequency="daily")
 
         self.assertEqual(flags.iloc[-2], "potential-positive")
+        self.assertEqual(flags.iloc[-1], "none")
+
+    def test_compute_rsi_divergence_flags_invalidates_bullish_anchor_after_live_rsi_break(self) -> None:
+        lows = [12, 11, 10, 9, 10, 11, 6, 11, 12, 11, 10, 9, 8, 7, 5, 4, 3]
+        highs = [value + 4 for value in lows]
+        rsi_values = [50, 48, 45, 42, 44, 46, 26, 44, 45, 46, 44, 42, 40, 38, 34, 25, 35]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        flags = compute_rsi_divergence_flags(df, frequency="daily")
+
+        self.assertEqual(flags.iloc[-3], "potential-positive")
+        self.assertEqual(flags.iloc[-2], "none")
         self.assertEqual(flags.iloc[-1], "none")
 
     def test_compute_rsi_divergence_flags_keeps_same_anchor_only_when_new_high_is_more_extreme(self) -> None:
@@ -483,7 +507,8 @@ class PricesServiceTests(unittest.TestCase):
         flags = compute_rsi_divergence_flags(df, frequency="daily")
 
         self.assertEqual(flags.iloc[17], "negative")
-        self.assertEqual(flags.iloc[24], "negative")
+        self.assertEqual(flags.iloc[22], "none")
+        self.assertEqual(flags.iloc[24], "none")
         self.assertEqual(flags.iloc[25], "none")
 
     def test_compute_rsi_divergence_flags_expires_after_max_active_age(self) -> None:

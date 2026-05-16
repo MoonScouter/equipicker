@@ -525,6 +525,8 @@ def _build_active_divergence_series(
     pivots: list[PivotPoint],
     settings: DivergenceSettings,
     row_count: int,
+    current_price_series: pd.Series,
+    current_rsi_series: pd.Series,
     anchor_threshold: float,
     anchor_cmp,
     anchor_break_cmp,
@@ -541,6 +543,8 @@ def _build_active_divergence_series(
     active_by_row: list[ActiveDivergence | None] = [None] * row_count
     anchor: PivotPoint | None = None
     best_divergence: tuple[PivotPoint, PivotPoint] | None = None
+    current_prices = pd.to_numeric(current_price_series, errors="coerce")
+    current_rsi_values = pd.to_numeric(current_rsi_series, errors="coerce")
     for row_index in range(row_count):
         for pivot in events.get(row_index, []):
             if anchor is None:
@@ -562,6 +566,18 @@ def _build_active_divergence_series(
             if price_divergence_cmp(pivot.price, anchor.price) and rsi_divergence_cmp(pivot.rsi, anchor.rsi):
                 if best_divergence is None or prefer_more_extreme_cmp(pivot.price, best_divergence[1].price):
                     best_divergence = (anchor, pivot)
+
+        if anchor is not None and row_index > anchor.index:
+            current_price = current_prices.iloc[row_index]
+            current_rsi = current_rsi_values.iloc[row_index]
+            if (
+                not pd.isna(current_price)
+                and not pd.isna(current_rsi)
+                and price_divergence_cmp(float(current_price), anchor.price)
+                and anchor_break_cmp(float(current_rsi), anchor.rsi)
+            ):
+                anchor = None
+                best_divergence = None
 
         if best_divergence is None:
             active_by_row[row_index] = None
@@ -665,6 +681,14 @@ def _build_potential_divergence_series(
         if pd.isna(current_price) or pd.isna(current_rsi):
             if best_potential is not None:
                 potential_by_row[row_index] = best_potential[1]
+            continue
+        if (
+            price_divergence_cmp(float(current_price), anchor.price)
+            and anchor_break_cmp(float(current_rsi), anchor.rsi)
+        ):
+            anchor = None
+            best_divergence = None
+            best_potential = None
             continue
         current_has_potential = (
             price_divergence_cmp(float(current_price), anchor.price)
@@ -786,6 +810,8 @@ def compute_rsi_divergence_state(
         pivots=pivot_highs,
         settings=settings,
         row_count=row_count,
+        current_price_series=highs,
+        current_rsi_series=rsi_values,
         anchor_threshold=DIVERGENCE_OB_LEVEL,
         anchor_cmp=lambda current, threshold: current > threshold,
         anchor_break_cmp=lambda current, anchor: current > anchor,
@@ -797,6 +823,8 @@ def compute_rsi_divergence_state(
         pivots=pivot_lows,
         settings=settings,
         row_count=row_count,
+        current_price_series=lows,
+        current_rsi_series=rsi_values,
         anchor_threshold=DIVERGENCE_OS_LEVEL,
         anchor_cmp=lambda current, threshold: current < threshold,
         anchor_break_cmp=lambda current, anchor: current < anchor,
