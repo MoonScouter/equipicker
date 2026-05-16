@@ -20,6 +20,7 @@ REPORT_SELECT_CACHE_DIR = PERF_CACHE_DIR / "report_select"
 PRICES_CACHE_DIR = PERF_CACHE_DIR / "prices"
 COMPANY_UNIVERSE_CACHE_DIR = PERF_CACHE_DIR / "company_universe"
 MARKET_BUNDLE_CACHE_DIR = PERF_CACHE_DIR / "market_bundle"
+THEMATICS_BASKET_METRICS_CACHE_DIR = PERF_CACHE_DIR / "thematics_basket_metrics"
 
 
 class PerfCacheUnavailable(RuntimeError):
@@ -215,6 +216,69 @@ def save_company_universe_cached(
     saved_path = _write_parquet_cache(df, parquet_path, source=source, extra=extra)
     saved_path.with_suffix(f"{saved_path.suffix}.warning.json").write_text(
         json.dumps({"warning_message": warning_message}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return saved_path
+
+
+def _thematics_basket_metrics_cache_key(
+    *,
+    eod_date: date,
+    signatures: Mapping[str, object],
+) -> str:
+    return cache_key_for_payload(
+        {
+            "kind": "thematics_basket_metrics",
+            "schema_version": PERF_CACHE_SCHEMA_VERSION,
+            "eod_date": eod_date.isoformat(),
+            "signatures": dict(signatures),
+        }
+    )
+
+
+def thematics_basket_metrics_parquet_path(eod_date: date, signatures: Mapping[str, object]) -> Path:
+    cache_key = _thematics_basket_metrics_cache_key(eod_date=eod_date, signatures=signatures)
+    return (
+        THEMATICS_BASKET_METRICS_CACHE_DIR
+        / f"eod={eod_date.isoformat()}"
+        / f"basket_metrics_{cache_key}.parquet"
+    )
+
+
+def load_thematics_basket_metrics_cached(
+    eod_date: date,
+    signatures: Mapping[str, object],
+) -> Optional[tuple[pd.DataFrame, bool]]:
+    parquet_path = thematics_basket_metrics_parquet_path(eod_date, signatures)
+    source = {"eod_date": eod_date.isoformat(), "signatures": dict(signatures)}
+    extra = {"kind": "thematics_basket_metrics"}
+    if not is_cache_fresh(parquet_path, source=source, extra=extra):
+        return None
+    try:
+        df = pd.read_parquet(parquet_path)
+        state_path = parquet_path.with_suffix(f"{parquet_path.suffix}.state.json")
+        anchor_missing = False
+        if state_path.exists():
+            state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+            anchor_missing = bool(state_payload.get("anchor_missing", False))
+        return df, anchor_missing
+    except Exception:
+        return None
+
+
+def save_thematics_basket_metrics_cached(
+    df: pd.DataFrame,
+    *,
+    eod_date: date,
+    signatures: Mapping[str, object],
+    anchor_missing: bool = False,
+) -> Path:
+    parquet_path = thematics_basket_metrics_parquet_path(eod_date, signatures)
+    source = {"eod_date": eod_date.isoformat(), "signatures": dict(signatures)}
+    extra = {"kind": "thematics_basket_metrics"}
+    saved_path = _write_parquet_cache(df, parquet_path, source=source, extra=extra)
+    saved_path.with_suffix(f"{saved_path.suffix}.state.json").write_text(
+        json.dumps({"anchor_missing": bool(anchor_missing)}, indent=2, sort_keys=True),
         encoding="utf-8",
     )
     return saved_path
