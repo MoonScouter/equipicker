@@ -11,7 +11,9 @@ from perf_store import (
     is_cache_fresh,
     load_prices_cached,
     load_report_select_cached,
+    load_thematics_basket_metrics_cached,
     save_company_universe_cached,
+    save_thematics_basket_metrics_cached,
     source_signature,
 )
 
@@ -124,6 +126,33 @@ class PerfStoreTests(unittest.TestCase):
             self.assertEqual(warning_message, "fallback used")
             self.assertEqual(cached_df["ticker"].tolist(), ["AAA.US"])
             self.assertEqual(cached_df["thematic_memberships"].iloc[0].tolist(), ["AI", "Cloud"])
+
+    def test_thematics_basket_metrics_cache_round_trips_anchor_state(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            cache_root = Path(tmp_dir) / "perf_cache" / "thematics_basket_metrics"
+            signatures = {"catalog": "c1", "report": "r1", "prices": "p1"}
+            source_df = pd.DataFrame(
+                [
+                    {
+                        "name": "AI",
+                        "ticker_count": 12,
+                        "technical_scoring": 74.5,
+                    }
+                ]
+            )
+            with patch.object(perf_store, "THEMATICS_BASKET_METRICS_CACHE_DIR", cache_root):
+                save_thematics_basket_metrics_cached(
+                    source_df,
+                    eod_date=date(2026, 5, 7),
+                    signatures=signatures,
+                    anchor_missing=True,
+                )
+                cached = load_thematics_basket_metrics_cached(date(2026, 5, 7), signatures)
+
+            self.assertIsNotNone(cached)
+            cached_df, anchor_missing = cached
+            self.assertTrue(anchor_missing)
+            pd.testing.assert_frame_equal(cached_df, source_df, check_dtype=False)
 
 
 if __name__ == "__main__":

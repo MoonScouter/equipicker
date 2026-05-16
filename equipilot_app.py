@@ -64,7 +64,9 @@ from perf_store import (
     clear_performance_cache,
     load_company_universe_cached,
     load_report_select_cached,
+    load_thematics_basket_metrics_cached,
     save_company_universe_cached,
+    save_thematics_basket_metrics_cached,
 )
 from report_select_service import generate_report_select_cache
 from report_config import DEFAULT_CONFIG_PATH, ReportConfig, load_report_config, save_report_config
@@ -2134,8 +2136,15 @@ def render_api_templates_subtab() -> None:
                 height=220,
             )
 
-        web_tab, file_tab = st.tabs(["Web Search", "File Search"])
-        with web_tab:
+        tool_section = st.radio(
+            "Tool configuration",
+            ["Web Search", "File Search"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="api_template_tool_section",
+        )
+        filter_rows = st.session_state.get("api_template_file_filter_rows", [])
+        if tool_section == "Web Search":
             st.checkbox("Enable web search", key="api_template_web_enabled")
             st.checkbox("External web access", key="api_template_web_external_access")
             st.text_area(
@@ -2154,7 +2163,7 @@ def render_api_templates_subtab() -> None:
             with location_cols[3]:
                 st.text_input("Timezone", key="api_template_web_timezone")
 
-        with file_tab:
+        else:
             st.checkbox("Enable file search", key="api_template_file_enabled")
             st.text_input(
                 "Vector store IDs",
@@ -2301,12 +2310,18 @@ def render_api_tab() -> None:
         "API cockpit",
         "Save reusable OpenAI Responses API templates, manage prompt files, and load saved output text files.",
     )
-    template_tab, outputs_tab, prompts_tab = st.tabs(["Templates", "Outputs", "Prompts"])
-    with template_tab:
+    section = st.radio(
+        "API section",
+        ["Templates", "Outputs", "Prompts"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="api_section",
+    )
+    if section == "Templates":
         render_api_templates_subtab()
-    with outputs_tab:
+    elif section == "Outputs":
         render_api_outputs_subtab()
-    with prompts_tab:
+    else:
         render_api_prompts_subtab()
 
 
@@ -2861,10 +2876,16 @@ def render_utilities_tab() -> None:
         "Utilities",
         "Operational checks and saved helper outputs for Equipicker workflows.",
     )
-    get_splits_tab, get_dividends_tab = st.tabs(["get_splits", "get_dividends"])
-    with get_splits_tab:
+    section = st.radio(
+        "Utilities section",
+        ["get_splits", "get_dividends"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="utilities_section",
+    )
+    if section == "get_splits":
         render_utilities_get_splits_subtab()
-    with get_dividends_tab:
+    else:
         render_utilities_get_dividends_subtab()
 
 
@@ -9742,12 +9763,18 @@ def render_market_tab(config: ReportConfig) -> None:
         "Deterministic market regime, sector fit, and setup-readiness layer built on report_select snapshots plus cached RSI histories.",
         "Equipilot / Market",
     )
-    values_tab, methodology_tab, ai_commentary_tab = st.tabs(["Values", "Methodology", "AI commentary"])
-    with values_tab:
+    section = st.radio(
+        "Market section",
+        ["Values", "Methodology", "AI commentary"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="market_section",
+    )
+    if section == "Values":
         render_market_values_subtab(config)
-    with methodology_tab:
+    elif section == "Methodology":
         render_market_methodology_subtab()
-    with ai_commentary_tab:
+    else:
         render_market_ai_commentary_subtab()
 
 
@@ -9899,18 +9926,22 @@ def render_home(config: ReportConfig) -> None:
         "Home sections",
         "Use the sub-tabs below to validate imports, generate report Excel files, refresh index data, import ticker price history, and manage fast local caches.",
     )
-    check_tab, report_tab, indices_import_tab, prices_import_tab, perf_cache_tab = st.tabs(
-        ["Check", "Report Excel Import", "Indices Import", "Prices Import", "Performance Cache"]
+    section = st.radio(
+        "Home section",
+        ["Check", "Report Excel Import", "Indices Import", "Prices Import", "Performance Cache"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="home_section",
     )
-    with check_tab:
+    if section == "Check":
         render_home_check_subtab(config)
-    with report_tab:
+    elif section == "Report Excel Import":
         render_home_report_excel_import(config)
-    with indices_import_tab:
+    elif section == "Indices Import":
         render_home_indices_import_subtab()
-    with prices_import_tab:
+    elif section == "Prices Import":
         render_home_prices_import_subtab()
-    with perf_cache_tab:
+    else:
         render_home_performance_cache_subtab(config)
 
 
@@ -9964,11 +9995,15 @@ def render_monthly_board(config: ReportConfig) -> None:
             st.session_state["force_sync"] = True
             st.rerun()
 
-    logs_tab, prompt_tab, sector_tab, summary_tab, final_prompt_tab = st.tabs(
-        ["Logs", "Summary Prompt", "Sector Data Tables", "Summary Text (JSON)", "Summary Prompt Final"]
+    monthly_section = st.radio(
+        "Monthly sector report section",
+        ["Logs", "Summary Prompt", "Sector Data Tables", "Summary Text (JSON)", "Summary Prompt Final"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="monthly_section",
     )
 
-    with logs_tab:
+    if monthly_section == "Logs":
         placeholder = st.empty()
         st.session_state["log_placeholder"] = placeholder
         placeholder.code(st.session_state.get("logs", "") or "(no logs yet)")
@@ -9979,7 +10014,7 @@ def render_monthly_board(config: ReportConfig) -> None:
 
     bundle = st.session_state["file_bundle"]
 
-    with prompt_tab:
+    if monthly_section == "Summary Prompt":
         st.caption(f"File: {PROMPT_PATH} (last updated: {_format_ts(PROMPT_PATH)})")
         prompt_text = st.text_area(
             "Prompt contents",
@@ -9998,7 +10033,7 @@ def render_monthly_board(config: ReportConfig) -> None:
         with c2:
             copy_button(prompt_text, "monthly_prompt_copy")
 
-    with sector_tab:
+    elif monthly_section == "Sector Data Tables":
         sector_path_str = bundle.get("sector_path")
         if not sector_path_str:
             st.warning("No sector_data_tables file found. Generate the PDF first.")
@@ -10022,7 +10057,7 @@ def render_monthly_board(config: ReportConfig) -> None:
             with c2:
                 copy_button(sector_text, "monthly_sector_copy")
 
-    with summary_tab:
+    elif monthly_section == "Summary Text (JSON)":
         st.caption(f"File: {SUMMARY_JSON_PATH} (last updated: {_format_ts(SUMMARY_JSON_PATH)})")
         summary_text = st.text_area(
             "Summary JSON",
@@ -10047,7 +10082,7 @@ def render_monthly_board(config: ReportConfig) -> None:
         with c2:
             copy_button(summary_text, "monthly_summary_copy")
 
-    with final_prompt_tab:
+    elif monthly_section == "Summary Prompt Final":
         final_prompt = compose_summary_prompt_final(
             st.session_state.get("prompt_content", ""),
             st.session_state.get("sector_content", ""),
@@ -10068,18 +10103,22 @@ def render_sector_tab(config: ReportConfig) -> None:
         "Sector sections",
         "Switch between the monthly sector report, sector pulse, and sector scoring boards.",
     )
-    monthly_tab, sector_pulse_tab, fundamental_tab, technical_tab, screener_tab = st.tabs(
-        ["Monthly Sector Report", "Sector Pulse", "Fundamental Scoring", "Technical Scoring", "Screener"]
+    section = st.radio(
+        "Sector section",
+        ["Monthly Sector Report", "Sector Pulse", "Fundamental Scoring", "Technical Scoring", "Screener"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="sector_section",
     )
-    with monthly_tab:
+    if section == "Monthly Sector Report":
         render_monthly_board(config)
-    with sector_pulse_tab:
+    elif section == "Sector Pulse":
         render_sector_pulse_board(config)
-    with fundamental_tab:
+    elif section == "Fundamental Scoring":
         render_fundamental_scoring_board(config)
-    with technical_tab:
+    elif section == "Technical Scoring":
         render_technical_scoring_board(config)
-    with screener_tab:
+    else:
         render_sector_screener_board(config)
 
 
@@ -10350,7 +10389,23 @@ def _build_thematics_company_universe_for_scope_cached(
     market_cache_signature: str,
     divergence_cache_signature: str,
 ) -> tuple[pd.DataFrame, bool]:
-    _ = market_cache_signature, divergence_cache_signature
+    cache_signatures = {
+        "scope_mode": scope_mode,
+        "scope_name": scope_name,
+        "catalog": catalog_cache_signature,
+        "current_report": current_report_cache_signature,
+        "prices_path": prices_cache_path_str,
+        "prices": prices_cache_signature,
+        "market": market_cache_signature,
+        "divergence": divergence_cache_signature,
+        "schema": PERF_CACHE_SCHEMA_VERSION,
+        "company_universe_columns": "thematics_scope_v1",
+    }
+    cached_universe = load_company_universe_cached(reference_date, cache_signatures)
+    if cached_universe is not None:
+        cached_df, cached_warning = cached_universe
+        return cached_df, bool(cached_warning)
+
     catalog = build_thematics_catalog(catalog_path_str, catalog_cache_signature)
     current_report_df: Optional[pd.DataFrame] = None
     if current_report_path_str:
@@ -10361,21 +10416,32 @@ def _build_thematics_company_universe_for_scope_cached(
     if prices_cache_path_str:
         price_lookup = build_price_history_lookup(prices_cache_path_str, prices_cache_signature)
     if scope_mode == "show_all":
-        return _build_all_thematics_company_universe(
+        company_universe, anchor_missing = _build_all_thematics_company_universe(
             catalog,
             current_report_df,
             price_lookup,
             reference_date,
             thematics_config_signature=catalog_cache_signature,
         )
-    return _build_thematics_company_universe(
-        scope_name,
-        catalog,
-        current_report_df,
-        price_lookup,
-        reference_date,
-        thematics_config_signature=catalog_cache_signature,
-    )
+    else:
+        company_universe, anchor_missing = _build_thematics_company_universe(
+            scope_name,
+            catalog,
+            current_report_df,
+            price_lookup,
+            reference_date,
+            thematics_config_signature=catalog_cache_signature,
+        )
+    try:
+        save_company_universe_cached(
+            company_universe,
+            eod_date=reference_date,
+            signatures=cache_signatures,
+            warning_message="anchor_missing" if anchor_missing else None,
+        )
+    except Exception:
+        pass
+    return company_universe, anchor_missing
 
 
 def _build_thematics_basket_metrics(
@@ -10509,6 +10575,76 @@ def _build_thematics_basket_metrics(
             }
         )
     return pd.DataFrame(rows), anchor_missing
+
+
+@st.cache_data(show_spinner=False)
+def _build_thematics_basket_metrics_materialized(
+    catalog_path_str: str,
+    catalog_cache_signature: str,
+    current_report_path_str: str,
+    current_report_cache_signature: str,
+    previous_report_path_str: str,
+    previous_report_cache_signature: str,
+    prices_cache_path_str: str,
+    prices_cache_signature: str,
+    reference_date: date,
+) -> tuple[pd.DataFrame, bool, Optional[str]]:
+    cache_signatures = {
+        "catalog": catalog_cache_signature,
+        "current_report": current_report_cache_signature,
+        "previous_report": previous_report_cache_signature,
+        "prices_path": prices_cache_path_str,
+        "prices": prices_cache_signature,
+        "schema": PERF_CACHE_SCHEMA_VERSION,
+        "basket_metrics_columns": "thematics_basket_metrics_v1",
+    }
+    cached_metrics = load_thematics_basket_metrics_cached(reference_date, cache_signatures)
+    if cached_metrics is not None:
+        cached_df, cached_anchor_missing = cached_metrics
+        return cached_df, cached_anchor_missing, None
+
+    catalog = build_thematics_catalog(catalog_path_str, catalog_cache_signature)
+    current_report_df: Optional[pd.DataFrame] = None
+    if current_report_path_str:
+        current_report_df = normalize_report_columns(
+            load_report_select(current_report_path_str, current_report_cache_signature).copy()
+        )
+    previous_report_df: Optional[pd.DataFrame] = None
+    if previous_report_path_str:
+        previous_report_df = normalize_report_columns(
+            load_report_select(previous_report_path_str, previous_report_cache_signature).copy()
+        )
+
+    price_warning: Optional[str] = None
+    price_lookup: dict[str, dict[str, list[object]]] = {}
+    if prices_cache_path_str:
+        try:
+            price_lookup = build_price_history_lookup(prices_cache_path_str, prices_cache_signature)
+        except Exception as exc:  # pragma: no cover - defensive cache wrapper
+            price_warning = f"Daily prices cache could not be read ({prices_cache_path_str}): {exc}"
+    else:
+        price_warning = (
+            f"Daily prices cache is missing for {reference_date.year}; "
+            "price performance fields are shown as N/A."
+        )
+
+    metrics_df, anchor_missing = _build_thematics_basket_metrics(
+        catalog,
+        current_report_df,
+        previous_report_df,
+        price_lookup,
+        reference_date,
+    )
+    try:
+        save_thematics_basket_metrics_cached(
+            metrics_df,
+            eod_date=reference_date,
+            signatures=cache_signatures,
+            anchor_missing=anchor_missing,
+        )
+    except Exception:
+        pass
+    return metrics_df, anchor_missing, price_warning
 
 
 def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
@@ -11942,8 +12078,14 @@ def render_thematics_tab(config: ReportConfig) -> None:
         st.error(f"Missing thematics config: {THEMATICS_CONFIG_PATH}")
         return
 
-    implementation_tab, lens_tab = st.tabs(["thematics-implementation", "thematic-lens"])
-    with implementation_tab:
+    section = st.radio(
+        "Thematics section",
+        ["thematics-implementation", "thematic-lens"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="thematics_section",
+    )
+    if section == "thematics-implementation":
         date_col, previous_date_col = st.columns([1, 1])
         with date_col:
             reference_date = render_report_select_date_input(
@@ -11998,28 +12140,22 @@ def render_thematics_tab(config: ReportConfig) -> None:
 
         prices_cache_file = prices_cache_path("daily", reference_date.year)
         prices_cache_signature = _path_cache_signature(prices_cache_file) if prices_cache_file.exists() else ""
-        price_lookup: dict[str, dict[str, list[object]]] = {}
-        if prices_cache_file.exists():
-            try:
-                t_start = time.perf_counter()
-                price_lookup = build_price_history_lookup(str(prices_cache_file), prices_cache_signature)
-                _perf_mark(timings, "load prices", t_start)
-            except Exception as exc:  # pragma: no cover - UI feedback
-                warnings.append(f"Daily prices cache could not be read ({prices_cache_file}): {exc}")
-        else:
-            warnings.append(
-                f"Daily prices cache is missing for {reference_date.year}; price performance fields are shown as N/A."
-            )
 
         t_start = time.perf_counter()
-        basket_metrics_df, anchor_missing = _build_thematics_basket_metrics(
-            catalog,
-            current_report_df,
-            previous_report_df if previous_ready else None,
-            price_lookup,
+        basket_metrics_df, anchor_missing, basket_price_warning = _build_thematics_basket_metrics_materialized(
+            str(THEMATICS_CONFIG_PATH),
+            thematics_config_signature,
+            str(current_report_path) if current_report_path is not None else "",
+            _path_cache_signature(current_report_path) if current_report_path is not None else "",
+            str(previous_report_path) if previous_ready and previous_report_path is not None else "",
+            _path_cache_signature(previous_report_path) if previous_ready and previous_report_path is not None else "",
+            str(prices_cache_file) if prices_cache_file.exists() else "",
+            prices_cache_signature,
             reference_date,
         )
         _perf_mark(timings, "build baskets", t_start)
+        if basket_price_warning:
+            warnings.append(basket_price_warning)
         if anchor_missing:
             warnings.append(
                 (
@@ -12168,7 +12304,23 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 _queue_show_all_company_reset("thematics_impl")
                 st.rerun()
         _render_perf_timings(show_perf, timings)
-    with lens_tab:
+    else:
+        reference_date = render_report_select_date_input(
+            "Reference EOD date",
+            value=get_default_board_eod(config),
+            key="thematics_lens_reference_eod",
+        )
+        current_report_df, current_report_path, current_candidates, current_error = load_report_select_for_eod(reference_date)
+        if current_report_path is None:
+            st.warning(
+                f"Metadata/scoring report is missing for {reference_date.isoformat()}; constituents may show limited metadata."
+            )
+            current_report_df = None
+        elif current_error:
+            st.warning(
+                f"Current report_select file could not be read ({current_report_path}); constituents may show limited metadata."
+            )
+            current_report_df = None
         _render_thematics_lens_tab(catalog, current_report_df)
 
 def render_quadrants(default_anchor: date) -> None:
@@ -13059,55 +13211,45 @@ def main() -> None:
     config = render_sidebar(config)
     render_header()
 
-    show_quadrants_tab = False
-
-    (
-        home_tab,
-        indices_tab,
-        market_tab,
-        sector_tab,
-        thematics_tab,
-        portfolios_tab,
-        watchlist_tab,
-        trade_ideas_tab,
-        api_tab,
-        utilities_tab,
-    ) = st.tabs(
-        [
-            "Home",
-            "Indices",
-            "Market",
-            "Sector",
-            "Thematics",
-            "Portfolios",
-            "Watchlist",
-            "Trade Ideas",
-            "API",
-            "Utilities",
-        ]
+    app_sections = [
+        "Home",
+        "Indices",
+        "Market",
+        "Sector",
+        "Thematics",
+        "Portfolios",
+        "Watchlist",
+        "Trade Ideas",
+        "API",
+        "Utilities",
+    ]
+    selected_section = st.sidebar.radio(
+        "Workspace",
+        app_sections,
+        index=app_sections.index(st.session_state.get("app_section", "Home"))
+        if st.session_state.get("app_section", "Home") in app_sections
+        else 0,
+        key="app_section",
     )
-    with home_tab:
+    if selected_section == "Home":
         render_home(config)
-    with indices_tab:
+    elif selected_section == "Indices":
         render_indices_tab()
-    with market_tab:
+    elif selected_section == "Market":
         render_market_tab(config)
-    with sector_tab:
+    elif selected_section == "Sector":
         render_sector_tab(config)
-    with thematics_tab:
+    elif selected_section == "Thematics":
         render_thematics_tab(config)
-    with portfolios_tab:
+    elif selected_section == "Portfolios":
         render_portfolios_tab(config)
-    with watchlist_tab:
+    elif selected_section == "Watchlist":
         render_watchlist_tab(config)
-    with trade_ideas_tab:
+    elif selected_section == "Trade Ideas":
         render_trade_ideas(config)
-    if show_quadrants_tab:
-        default_anchor = config.eod_as_of_date or config.report_date
-        render_quadrants(default_anchor)
-    with api_tab:
+    elif selected_section == "API":
         render_api_tab()
-    with utilities_tab:
+    elif selected_section == "Utilities":
         render_utilities_tab()
 
     render_footer()
