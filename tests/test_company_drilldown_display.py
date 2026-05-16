@@ -55,6 +55,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         "Industry",
         "Market Cap",
         "Beta",
+        "PEG",
+        "PER Trailing",
+        "PER Fwd",
+        "P/S TTM",
         "1W",
         "1M",
         "3M",
@@ -94,6 +98,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_total_score": 84.0,
                     "fundamental_momentum": 77.0,
                     "general_technical_score": 88.0,
+                    "peg_ratio": 1.4,
+                    "per_trailing": 28.5,
+                    "per_forward": 23.2,
+                    "price_to_sales_ttm": 7.1,
                     "rs_daily": 12.0,
                     "rs_sma20": 10.0,
                     "obvm_daily": 105.0,
@@ -126,6 +134,11 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         assert prepared is not None
         self.assertEqual(prepared["company"].tolist(), ["Alpha Inc", "BBB.US"])
         self.assertEqual(prepared["fundamental_momentum"].tolist(), [77.0, 55.0])
+        self.assertAlmostEqual(float(prepared.loc[0, "peg_ratio"]), 1.4)
+        self.assertAlmostEqual(float(prepared.loc[0, "per_trailing"]), 28.5)
+        self.assertAlmostEqual(float(prepared.loc[0, "per_forward"]), 23.2)
+        self.assertAlmostEqual(float(prepared.loc[0, "price_to_sales_ttm"]), 7.1)
+        self.assertTrue(pd.isna(prepared.loc[1, "peg_ratio"]))
         self.assertEqual(prepared["rel_strength"].tolist(), ["Positive", "Negative"])
         self.assertEqual(prepared["rel_volume"].tolist(), ["Negative", "Positive"])
         self.assertEqual(prepared["short_term_flow"].tolist(), ["positive", "negative"])
@@ -936,6 +949,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Industry",
                 "Market Cap",
                 "Beta",
+                "PEG",
+                "PER Trailing",
+                "PER Fwd",
+                "P/S TTM",
                 "1W",
                 "1M",
                 "3M",
@@ -1366,6 +1383,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "fundamental_risk": 68.0,
                     "general_technical_score": 82.0,
                     "fundamental_momentum": 70.0,
+                    "peg_ratio": 1.4,
+                    "per_trailing": 28.5,
+                    "per_forward": 23.2,
+                    "price_to_sales_ttm": 7.1,
                     "rs_monthly": 0.5,
                     "obvm_monthly": 0.4,
                 },
@@ -1416,6 +1437,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "fundamental_value"]), 61.0)
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "fundamental_quality"]), 74.0)
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "fundamental_risk"]), 68.0)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "peg_ratio"]), 1.4)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "per_trailing"]), 28.5)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "per_forward"]), 23.2)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "price_to_sales_ttm"]), 7.1)
 
     def test_build_thematics_company_universe_normalizes_raw_tickers_for_price_metrics(self) -> None:
         catalog = {

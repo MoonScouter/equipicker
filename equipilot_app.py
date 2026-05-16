@@ -242,6 +242,7 @@ COMPANY_GRID_SIGN_COLUMNS = [
     "Rel Volume",
 ]
 COMPANY_GRID_PERFORMANCE_COLUMNS = ["1W", "1M", "3M", "YTD"]
+COMPANY_GRID_VALUATION_COLUMNS = ["PEG", "PER Trailing", "PER Fwd", "P/S TTM"]
 COMPANY_GRID_LEFT_COLUMNS = [
     "Thematic",
     "Portfolio Segment",
@@ -274,6 +275,10 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "Alert Levels": 260,
     "Market Cap": 120,
     "Beta": 90,
+    "PEG": 85,
+    "PER Trailing": 110,
+    "PER Fwd": 95,
+    "P/S TTM": 95,
     "1W": 95,
     "1M": 95,
     "3M": 95,
@@ -3730,7 +3735,8 @@ def _company_divergence_cache_signature() -> str:
 
 
 def _company_grid_height(row_count: int, *, row_height: int, min_height: int) -> int:
-    return min(COMPANY_GRID_MAX_HEIGHT, max(min_height, 72 + row_count * row_height))
+    adjusted_min_height = min(min_height, 116 + max(row_count, 1) * row_height)
+    return min(COMPANY_GRID_MAX_HEIGHT, max(adjusted_min_height, 72 + row_count * row_height))
 
 
 def _use_fast_company_grid_render(row_count: int) -> bool:
@@ -3852,7 +3858,7 @@ def _build_company_grid_options(
         resizable=True,
         filter=False,
         floatingFilter=False,
-        minWidth=105,
+        minWidth=56,
         width=128,
         wrapHeaderText=True,
         autoHeaderHeight=True,
@@ -3866,6 +3872,62 @@ def _build_company_grid_options(
         debounceVerticalScrollbar=True,
         suppressRowVirtualisation=False,
         suppressColumnVirtualisation=False,
+        onGridReady=JsCode(
+            """
+function(params) {
+  let lastWidth = 0;
+  function refreshGridLayout() {
+    if (!params || !params.api) return;
+    window.requestAnimationFrame(function() {
+      try {
+        const root = document.querySelector(".ag-root-wrapper");
+        const width = root ? Math.round(root.getBoundingClientRect().width || 0) : 0;
+        if (width <= 0) return;
+        if (params.api.doLayout) params.api.doLayout();
+        if (params.api.onGridSizeChanged) params.api.onGridSizeChanged();
+        params.api.refreshHeader();
+        params.api.refreshCells({ force: true });
+        params.api.resetRowHeights();
+        if (width !== lastWidth) {
+          lastWidth = width;
+          window.dispatchEvent(new Event("resize"));
+        }
+      } catch (err) {}
+    });
+  }
+  refreshGridLayout();
+  window.setTimeout(refreshGridLayout, 100);
+  window.setTimeout(refreshGridLayout, 350);
+  window.setTimeout(refreshGridLayout, 900);
+  try {
+    const parentDocument = window.parent && window.parent.document;
+    if (parentDocument && !window.__equipilotAgGridTabRefreshBound) {
+      parentDocument.addEventListener("click", function() {
+        window.setTimeout(refreshGridLayout, 80);
+        window.setTimeout(refreshGridLayout, 300);
+      }, true);
+      window.__equipilotAgGridTabRefreshBound = true;
+    }
+  } catch (err) {}
+  try {
+    const root = document.querySelector(".ag-root-wrapper");
+    if (root && window.ResizeObserver) {
+      const resizeObserver = new ResizeObserver(refreshGridLayout);
+      resizeObserver.observe(root);
+    }
+  } catch (err) {}
+  try {
+    const frame = window.frameElement;
+    if (frame && window.ResizeObserver) {
+      const frameObserver = new ResizeObserver(refreshGridLayout);
+      frameObserver.observe(frame);
+    }
+  } catch (err) {}
+  document.addEventListener("visibilitychange", refreshGridLayout);
+  window.addEventListener("resize", refreshGridLayout);
+}
+            """
+        ),
     )
 
     left_align_style = {
@@ -4005,7 +4067,7 @@ function(valueA, valueB) {
             config["cellStyle"] = center_style
         config["width"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
         if column_name in COMPANY_GRID_WIDE_TEXT_COLUMNS:
-            config["minWidth"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
+            config["minWidth"] = 72
         config["suppressSizeToFit"] = True
         if column_name in pinned_set:
             config["pinned"] = "left"
@@ -4024,7 +4086,7 @@ function(valueA, valueB) {
             config["cellStyle"] = ai_risk_style_js
         elif column_name == "Market Cap":
             config["comparator"] = market_cap_comparator_js
-        elif column_name in {"Beta", "Transaction Price", "Last EOD Price"}:
+        elif column_name in {"Beta", "Transaction Price", "Last EOD Price", *COMPANY_GRID_VALUATION_COLUMNS}:
             config["comparator"] = numeric_comparator_js
         builder.configure_column(column_name, **config)
 
@@ -4322,10 +4384,12 @@ def _render_company_grid_column_selector(
         layout_surface_id,
         available,
     )
+    preferred_with_required = list(preferred_visible_columns or [])
+    preferred_with_required.extend(COMPANY_GRID_VALUATION_COLUMNS)
     merged_visible_columns = _merge_preferred_visible_columns(
         visible_columns,
         available,
-        preferred_visible_columns,
+        preferred_with_required,
     )
     if merged_visible_columns != visible_columns:
         visible_columns = merged_visible_columns
@@ -4334,7 +4398,7 @@ def _render_company_grid_column_selector(
     if not load_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH):
         if default_to_preferred_columns and preferred_visible_columns:
             visible_columns = _normalize_grid_visible_columns(
-                preferred_visible_columns,
+                preferred_with_required,
                 available,
                 default_columns=available,
             )
@@ -5406,6 +5470,9 @@ def _prepare_company_drilldown_universe(
     for short_term_column in ["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]:
         if short_term_column in report_df.columns:
             selected_columns.append(short_term_column)
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+        if valuation_column in report_df.columns:
+            selected_columns.append(valuation_column)
     if include_beta and "beta" in report_df.columns:
         selected_columns.append("beta")
 
@@ -5479,6 +5546,11 @@ def _prepare_company_drilldown_universe(
         working["beta"] = pd.to_numeric(working["beta"], errors="coerce")
     else:
         working["beta"] = np.nan
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+        if valuation_column in working.columns:
+            working[valuation_column] = pd.to_numeric(working[valuation_column], errors="coerce")
+        else:
+            working[valuation_column] = np.nan
     working["market_cap_bucket"] = working["market_cap"].apply(_market_cap_bucket_from_usd)
     working["rel_strength"] = working["rs_monthly"].map(_sign_label)
     working["rel_volume"] = working["obvm_monthly"].map(_sign_label)
@@ -6569,6 +6641,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Industry",
                 "Market Cap",
                 "Beta",
+                "PEG",
+                "PER Trailing",
+                "PER Fwd",
+                "P/S TTM",
                 "1W",
                 "1M",
                 "3M",
@@ -6621,6 +6697,9 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["thematic"] = "Unassigned"
     if "beta" not in sorted_df.columns:
         sorted_df["beta"] = np.nan
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+        if valuation_column not in sorted_df.columns:
+            sorted_df[valuation_column] = np.nan
     for performance_column in ["1w_perf", "1m_perf", "3m_perf", "ytd_perf"]:
         if performance_column not in sorted_df.columns:
             sorted_df[performance_column] = np.nan
@@ -6664,6 +6743,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "Industry": sorted_df["industry"].fillna("Unspecified"),
             "Market Cap": pd.to_numeric(sorted_df["market_cap"], errors="coerce"),
             "Beta": pd.to_numeric(sorted_df["beta"], errors="coerce"),
+            "PEG": pd.to_numeric(sorted_df["peg_ratio"], errors="coerce"),
+            "PER Trailing": pd.to_numeric(sorted_df["per_trailing"], errors="coerce"),
+            "PER Fwd": pd.to_numeric(sorted_df["per_forward"], errors="coerce"),
+            "P/S TTM": pd.to_numeric(sorted_df["price_to_sales_ttm"], errors="coerce"),
             "1W": pd.to_numeric(sorted_df["1w_perf"], errors="coerce"),
             "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
             "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
@@ -6693,6 +6776,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     )
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
+    for valuation_column in COMPANY_GRID_VALUATION_COLUMNS:
+        display_df[valuation_column] = display_df[valuation_column].map(_format_numeric_value)
     perf_fallback_flags = sorted_df["anchor_fallback_used"].fillna(False).astype(bool).tolist()
     for perf_column in ["1W", "1M", "3M", "YTD"]:
         display_df[perf_column] = [
@@ -8234,18 +8319,27 @@ def render_trade_ideas(config: ReportConfig) -> None:
 
     render_subtab_group_intro(
         "Trade Ideas baskets",
-        "Each tab shows one narrative basket with the same grid and Fields picker used by Thematics, Screener, and Watchlist. There are no extra Trade Ideas filters in this view.",
+        "Each basket shows one narrative grid with the same Fields picker used by Thematics, Screener, and Watchlist. There are no extra Trade Ideas filters in this view.",
     )
 
-    basket_tabs = st.tabs([str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS])
-    for basket_tab, basket_spec in zip(basket_tabs, TRADE_IDEA_BASKET_SPECS):
-        with basket_tab:
-            render_board_title_band(str(basket_spec["name"]))
-            _render_trade_idea_basket(
-                basket_spec=basket_spec,
-                company_universe=company_universe,
-                selected_eod=selected_eod,
-            )
+    basket_names = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS]
+    selected_basket_name = st.radio(
+        "Trade Ideas basket",
+        options=basket_names,
+        horizontal=True,
+        key="trade_ideas_active_basket",
+    )
+    selected_basket_spec = next(
+        spec
+        for spec in TRADE_IDEA_BASKET_SPECS
+        if str(spec["name"]) == selected_basket_name
+    )
+    render_board_title_band(str(selected_basket_spec["name"]))
+    _render_trade_idea_basket(
+        basket_spec=selected_basket_spec,
+        company_universe=company_universe,
+        selected_eod=selected_eod,
+    )
 
 
 def render_watchlist_tab(config: ReportConfig) -> None:
@@ -10008,6 +10102,10 @@ def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.Dat
         "stock_rsi_regime_score",
         "sector_regime_fit_score",
         "fundamental_momentum",
+        "peg_ratio",
+        "per_trailing",
+        "per_forward",
+        "price_to_sales_ttm",
         "rs_daily",
         "rs_sma20",
         "obvm_daily",
@@ -10119,6 +10217,10 @@ def _build_thematics_company_universe_from_scope(
                 "stock_rsi_regime_score",
                 "sector_regime_fit_score",
                 "fundamental_momentum",
+                "peg_ratio",
+                "per_trailing",
+                "per_forward",
+                "price_to_sales_ttm",
                 "rs_daily",
                 "rs_sma20",
                 "obvm_daily",
@@ -10147,6 +10249,10 @@ def _build_thematics_company_universe_from_scope(
         "fundamental_risk",
         "general_technical_score",
         "fundamental_momentum",
+        "peg_ratio",
+        "per_trailing",
+        "per_forward",
+        "price_to_sales_ttm",
         "rs_monthly",
         "obvm_monthly",
     ]:
@@ -10416,6 +10522,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "Industry",
                 "Market Cap",
                 "Beta",
+                "PEG",
+                "PER Trailing",
+                "PER Fwd",
+                "P/S TTM",
                 "1W",
                 "1M",
                 "3M",
@@ -10474,6 +10584,9 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["ai_revenue_exposure"] = "none"
     if "ai_disruption_risk" not in sorted_df.columns:
         sorted_df["ai_disruption_risk"] = "none"
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+        if valuation_column not in sorted_df.columns:
+            sorted_df[valuation_column] = np.nan
 
     display_df = pd.DataFrame(
         {
@@ -10484,6 +10597,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "Industry": sorted_df["industry"].fillna("Unspecified"),
             "Market Cap": pd.to_numeric(sorted_df["market_cap"], errors="coerce"),
             "Beta": pd.to_numeric(sorted_df["beta"], errors="coerce"),
+            "PEG": pd.to_numeric(sorted_df["peg_ratio"], errors="coerce"),
+            "PER Trailing": pd.to_numeric(sorted_df["per_trailing"], errors="coerce"),
+            "PER Fwd": pd.to_numeric(sorted_df["per_forward"], errors="coerce"),
+            "P/S TTM": pd.to_numeric(sorted_df["price_to_sales_ttm"], errors="coerce"),
             "1W": pd.to_numeric(sorted_df["1w_perf"], errors="coerce"),
             "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
             "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
@@ -10508,6 +10625,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
     )
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
+    for valuation_column in COMPANY_GRID_VALUATION_COLUMNS:
+        display_df[valuation_column] = display_df[valuation_column].map(_format_numeric_value)
     perf_fallback_flags = sorted_df["anchor_fallback_used"].fillna(False).astype(bool).tolist()
     for perf_column in ["1W", "1M", "3M", "YTD"]:
         display_df[perf_column] = [
@@ -12578,6 +12697,10 @@ def _portfolio_preferred_columns() -> list[str]:
         "Industry",
         "Market Cap",
         "Beta",
+        "PEG",
+        "PER Trailing",
+        "PER Fwd",
+        "P/S TTM",
         "1W",
         "Transaction Price",
         "Transaction Date",
