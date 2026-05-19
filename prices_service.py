@@ -70,24 +70,24 @@ class ActiveDivergence:
 
 DIVERGENCE_SETTINGS_BY_FREQUENCY: dict[PricesFrequency, DivergenceSettings] = {
     "daily": DivergenceSettings(
-        pivot_window_l=3,
-        pivot_window_r=3,
-        min_bars_between_same_type_pivots=4,
-        min_pivot_move_pct=0.01,
-        max_pivot_pair_span=60,
-        max_age_pivot2_from_last=60,
-        max_potential_anchor_age=25,
-        max_extension_age_after_confirmation=25,
+        pivot_window_l=2,
+        pivot_window_r=2,
+        min_bars_between_same_type_pivots=3,
+        min_pivot_move_pct=0.001,
+        max_pivot_pair_span=35,
+        max_age_pivot2_from_last=20,
+        max_potential_anchor_age=35,
+        max_extension_age_after_confirmation=10,
     ),
     "weekly": DivergenceSettings(
         pivot_window_l=2,
         pivot_window_r=2,
         min_bars_between_same_type_pivots=3,
-        min_pivot_move_pct=0.01,
-        max_pivot_pair_span=16,
-        max_age_pivot2_from_last=12,
-        max_potential_anchor_age=8,
-        max_extension_age_after_confirmation=8,
+        min_pivot_move_pct=0.001,
+        max_pivot_pair_span=10,
+        max_age_pivot2_from_last=6,
+        max_potential_anchor_age=10,
+        max_extension_age_after_confirmation=3,
     ),
 }
 
@@ -107,9 +107,19 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "rsi_14",
     "rsi_divergence_flag",
     "rsi_divergence_confirmed",
+    "rsi_divergence_anchor_date",
+    "rsi_divergence_anchor_price",
+    "rsi_divergence_pivot_date",
+    "rsi_divergence_pivot_price",
 )
 PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
-    {"rsi_divergence_confirmed"}
+    {
+        "rsi_divergence_confirmed",
+        "rsi_divergence_anchor_date",
+        "rsi_divergence_anchor_price",
+        "rsi_divergence_pivot_date",
+        "rsi_divergence_pivot_price",
+    }
 )
 PRICE_TICKER_ENDPOINT = (
     "https://ci.equipicker.com/api/company_overview_list"
@@ -258,9 +268,21 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     date_series = pd.to_datetime(working_df["date"], errors="coerce").dt.date
     working_df["date"] = date_series.map(lambda value: value.isoformat() if pd.notna(value) else None)
 
-    numeric_columns = ["adjusted_close", "adjusted_high", "adjusted_low", "rs", "obvm", "rsi_14"]
+    numeric_columns = [
+        "adjusted_close",
+        "adjusted_high",
+        "adjusted_low",
+        "rs",
+        "obvm",
+        "rsi_14",
+        "rsi_divergence_anchor_price",
+        "rsi_divergence_pivot_price",
+    ]
     for column in numeric_columns:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
+    for column in ["rsi_divergence_anchor_date", "rsi_divergence_pivot_date"]:
+        date_values = pd.to_datetime(working_df[column], errors="coerce").dt.date
+        working_df[column] = date_values.map(lambda value: value.isoformat() if pd.notna(value) else None)
     divergence_series = working_df["rsi_divergence_flag"].where(
         working_df["rsi_divergence_flag"].notna(),
         pd.NA,
@@ -788,9 +810,14 @@ def compute_rsi_divergence_state(
             {
                 "rsi_divergence_flag": pd.Series(dtype=object),
                 "rsi_divergence_confirmed": pd.Series(dtype="boolean"),
+                "rsi_divergence_anchor_date": pd.Series(dtype=object),
+                "rsi_divergence_anchor_price": pd.Series(dtype=float),
+                "rsi_divergence_pivot_date": pd.Series(dtype=object),
+                "rsi_divergence_pivot_price": pd.Series(dtype=float),
             }
         )
 
+    dates = pd.to_datetime(working_df.get("date"), errors="coerce").dt.date
     highs = pd.to_numeric(working_df.get("adjusted_high"), errors="coerce")
     lows = pd.to_numeric(working_df.get("adjusted_low"), errors="coerce")
     rsi_values = pd.to_numeric(working_df.get(rsi_column), errors="coerce")
@@ -851,12 +878,28 @@ def compute_rsi_divergence_state(
 
     divergence_flags = np.full(row_count, "none", dtype=object)
     divergence_confirmed = pd.array([False] * row_count, dtype="boolean")
+    divergence_anchor_dates = np.full(row_count, pd.NA, dtype=object)
+    divergence_anchor_prices = np.full(row_count, np.nan, dtype=float)
+    divergence_pivot_dates = np.full(row_count, pd.NA, dtype=object)
+    divergence_pivot_prices = np.full(row_count, np.nan, dtype=float)
     active_instance_key: tuple[str, tuple[int, int, int]] | None = None
     active_instance_start: int | None = None
     confirmation_latched = False
     confirmation_latch_index: int | None = None
     refresh_extreme_price: float | None = None
     replacement_extension_instance_key: tuple[str, tuple[int, int, int]] | None = None
+
+    def assign_divergence_metadata(row_index: int, divergence_flag: str, state: ActiveDivergence) -> None:
+        price_series = lows if "positive" in divergence_flag else highs
+        anchor_price = pd.to_numeric(price_series.iloc[state.anchor_index], errors="coerce")
+        divergence_anchor_dates[row_index] = (
+            dates.iloc[state.anchor_index].isoformat() if pd.notna(dates.iloc[state.anchor_index]) else pd.NA
+        )
+        divergence_anchor_prices[row_index] = np.nan if pd.isna(anchor_price) else float(anchor_price)
+        divergence_pivot_dates[row_index] = (
+            dates.iloc[state.pivot2_index].isoformat() if pd.notna(dates.iloc[state.pivot2_index]) else pd.NA
+        )
+        divergence_pivot_prices[row_index] = state.pivot2_price
 
     for row_index in range(row_count):
         bullish_state = bullish_active[row_index]
@@ -898,6 +941,8 @@ def compute_rsi_divergence_state(
                     selected_state = potential_bearish_state
 
         divergence_flags[row_index] = selected_flag
+        if selected_state is not None:
+            assign_divergence_metadata(row_index, selected_flag, selected_state)
         if selected_state is None:
             active_instance_key = None
             active_instance_start = None
@@ -966,6 +1011,7 @@ def compute_rsi_divergence_state(
                     ):
                         selected_flag = f"extension-{selected_flag}"
                         divergence_flags[row_index] = selected_flag
+                        assign_divergence_metadata(row_index, selected_flag, selected_state)
                         divergence_confirmed[row_index] = False
                         continue
                 else:
@@ -989,15 +1035,32 @@ def compute_rsi_divergence_state(
 
         if replacement_extension_instance_key == current_instance_key:
             divergence_flags[row_index] = f"extension-{selected_flag}"
+            assign_divergence_metadata(row_index, str(divergence_flags[row_index]), selected_state)
             divergence_confirmed[row_index] = False
             continue
 
-        divergence_confirmed[row_index] = confirmation_latched
+        if confirmation_latched:
+            if row_index == confirmation_latch_index:
+                divergence_confirmed[row_index] = True
+            else:
+                divergence_flags[row_index] = "none"
+                divergence_confirmed[row_index] = False
+                divergence_anchor_dates[row_index] = pd.NA
+                divergence_anchor_prices[row_index] = np.nan
+                divergence_pivot_dates[row_index] = pd.NA
+                divergence_pivot_prices[row_index] = np.nan
+            continue
+
+        divergence_confirmed[row_index] = False
 
     return pd.DataFrame(
         {
             "rsi_divergence_flag": pd.Series(divergence_flags, index=price_df.index, dtype=object),
             "rsi_divergence_confirmed": pd.Series(divergence_confirmed, index=price_df.index, dtype="boolean"),
+            "rsi_divergence_anchor_date": pd.Series(divergence_anchor_dates, index=price_df.index, dtype=object),
+            "rsi_divergence_anchor_price": pd.Series(divergence_anchor_prices, index=price_df.index, dtype=float),
+            "rsi_divergence_pivot_date": pd.Series(divergence_pivot_dates, index=price_df.index, dtype=object),
+            "rsi_divergence_pivot_price": pd.Series(divergence_pivot_prices, index=price_df.index, dtype=float),
         }
     )
 
@@ -1106,6 +1169,10 @@ def enrich_prices_with_rsi(
     working_df["rsi_14"] = np.nan
     working_df["rsi_divergence_flag"] = "none"
     working_df["rsi_divergence_confirmed"] = False
+    working_df["rsi_divergence_anchor_date"] = pd.NA
+    working_df["rsi_divergence_anchor_price"] = np.nan
+    working_df["rsi_divergence_pivot_date"] = pd.NA
+    working_df["rsi_divergence_pivot_price"] = np.nan
     for ticker, group in working_df.groupby("ticker", sort=False):
         if ticker not in impacted_set:
             continue
@@ -1122,16 +1189,41 @@ def enrich_prices_with_rsi(
         working_df.loc[group.index, "rsi_divergence_confirmed"] = (
             divergence_state_df["rsi_divergence_confirmed"].to_numpy()
         )
+        for column in [
+            "rsi_divergence_anchor_date",
+            "rsi_divergence_anchor_price",
+            "rsi_divergence_pivot_date",
+            "rsi_divergence_pivot_price",
+        ]:
+            working_df.loc[group.index, column] = divergence_state_df[column].to_numpy()
 
     impacted_rsi_df = working_df.loc[
         working_df["ticker"].isin(impacted_set),
-        ["ticker", "date", "rsi_14", "rsi_divergence_flag", "rsi_divergence_confirmed"],
+        [
+            "ticker",
+            "date",
+            "rsi_14",
+            "rsi_divergence_flag",
+            "rsi_divergence_confirmed",
+            "rsi_divergence_anchor_date",
+            "rsi_divergence_anchor_price",
+            "rsi_divergence_pivot_date",
+            "rsi_divergence_pivot_price",
+        ],
     ].copy()
     impacted_rsi_df = impacted_rsi_df.drop_duplicates(subset=["ticker", "date"], keep="last")
 
     preserved_df = normalized_target_df.loc[~normalized_target_df["ticker"].isin(impacted_set)].copy()
     updated_impacted_df = impacted_target_df.drop(
-        columns=["rsi_14", "rsi_divergence_flag", "rsi_divergence_confirmed"],
+        columns=[
+            "rsi_14",
+            "rsi_divergence_flag",
+            "rsi_divergence_confirmed",
+            "rsi_divergence_anchor_date",
+            "rsi_divergence_anchor_price",
+            "rsi_divergence_pivot_date",
+            "rsi_divergence_pivot_price",
+        ],
         errors="ignore",
     ).merge(
         impacted_rsi_df,
