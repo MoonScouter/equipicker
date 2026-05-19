@@ -1140,8 +1140,19 @@ def normalize_prices_cache_for_check(cache_df: pd.DataFrame) -> pd.DataFrame:
     working_df = working_df[list(PRICE_CACHE_COLUMNS)].copy()
     working_df["ticker"] = working_df["ticker"].fillna("").astype(str).str.strip().str.upper()
     working_df["date"] = pd.to_datetime(working_df["date"], errors="coerce").dt.date
-    for column in ["adjusted_close", "adjusted_high", "adjusted_low", "rs", "obvm", "rsi_14"]:
+    for column in [
+        "adjusted_close",
+        "adjusted_high",
+        "adjusted_low",
+        "rs",
+        "obvm",
+        "rsi_14",
+        "rsi_divergence_anchor_price",
+        "rsi_divergence_pivot_price",
+    ]:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
+    for column in ["rsi_divergence_anchor_date", "rsi_divergence_pivot_date"]:
+        working_df[column] = pd.to_datetime(working_df[column], errors="coerce").dt.date
     working_df["rsi_divergence_flag"] = (
         working_df["rsi_divergence_flag"]
         .where(working_df["rsi_divergence_flag"].notna(), pd.NA)
