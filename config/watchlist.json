@@ -38,6 +38,21 @@
     },
     {
       "ticker": "ASTS"
+    },
+    {
+      "ticker": "LNG"
+    },
+    {
+      "ticker": "SLB"
+    },
+    {
+      "ticker": "MRVL"
+    },
+    {
+      "ticker": "AVGO"
+    },
+    {
+      "ticker": "SLNH"
     }
   ]
 }

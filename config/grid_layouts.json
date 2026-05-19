@@ -110,12 +110,16 @@
       "PER Trailing",
       "PER Fwd",
       "P/S TTM",
+      "YTD",
+      "TS",
       "RSI Regime",
       "Short Term Flow",
       "RSI Divergence (D)",
       "RSI Divergence (W)",
       "FS",
-      "Mom. FS"
+      "Mom. FS",
+      "Rel Strength",
+      "Rel Volume"
     ]
   },
   "market_sector_table_company_visible_columns_v2": {
