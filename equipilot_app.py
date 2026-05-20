@@ -8036,11 +8036,12 @@ TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
 ]
 
 TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS = {
-    "fundamental_total_score": 40.0,
-    "fundamental_risk": 40.0,
-    "fundamental_quality": 40.0,
-    "fundamental_momentum": 40.0,
+    "fundamental_total_score": 0.0,
+    "fundamental_risk": 0.0,
+    "fundamental_quality": 0.0,
+    "fundamental_momentum": 0.0,
 }
+TRADE_IDEA_SOLID_FUNDAMENTAL_THRESHOLD = 40.0
 
 
 def _trade_ideas_num(df: pd.DataFrame, column: str) -> pd.Series:
@@ -8177,6 +8178,29 @@ def _render_trade_idea_basket(
 
 def _render_trade_idea_fundamental_filters() -> dict[str, float]:
     defaults = _trade_ideas_default_fundamental_thresholds()
+    preset_cols = st.columns([1, 1, 2])
+    with preset_cols[0]:
+        solid_clicked = st.button(
+            "Solid fundamentals",
+            key="trade_ideas_solid_fundamentals",
+            help="Set all fundamental score filters to 40.",
+            use_container_width=True,
+        )
+    with preset_cols[1]:
+        reset_clicked = st.button(
+            "Reset defaults",
+            key="trade_ideas_reset_fundamentals",
+            help="Reset all fundamental score filters to 0.",
+            use_container_width=True,
+        )
+    if solid_clicked:
+        for column in defaults:
+            st.session_state[f"trade_ideas_{column}_threshold"] = TRADE_IDEA_SOLID_FUNDAMENTAL_THRESHOLD
+        st.rerun()
+    if reset_clicked:
+        for column, default_value in defaults.items():
+            st.session_state[f"trade_ideas_{column}_threshold"] = default_value
+        st.rerun()
     cols = st.columns(4)
     labels = [
         ("fundamental_total_score", "Min FS"),
@@ -8558,6 +8582,19 @@ def _render_trade_ideas_backtest(
     st.caption(
         "For each available report_select date, the app rebuilds each basket, computes every matching stock's 1M forward return, and stores the median return in the matrix."
     )
+    strategy_names = [str(spec["name"]) for spec in basket_specs]
+    selected_strategy_names = st.multiselect(
+        "Strategies to include",
+        options=strategy_names,
+        default=strategy_names,
+        key="trade_ideas_backtest_strategy_filter",
+    )
+    selected_basket_specs = [
+        spec for spec in basket_specs if str(spec["name"]) in set(selected_strategy_names)
+    ]
+    if not selected_basket_specs:
+        st.info("Choose at least one strategy to display or run the backtest.")
+        return
     cached_matrix, cache_warning = _load_trade_ideas_backtest_cache()
     if cache_warning:
         st.warning(cache_warning)
@@ -8566,7 +8603,20 @@ def _render_trade_ideas_backtest(
             "%Y-%m-%d %H:%M:%S"
         )
         st.caption(f"Latest cached backtest: {TRADE_IDEAS_BACKTEST_CACHE_PATH.name}, saved {cache_time}.")
-        _render_trade_ideas_backtest_matrix(cached_matrix)
+        cached_columns = ["Date"]
+        for spec in selected_basket_specs:
+            basket_name = str(spec["name"])
+            cached_columns.extend(
+                [
+                    basket_name,
+                    f"{basket_name} Count",
+                    f"{basket_name} Valid Returns",
+                    f"{basket_name} Status",
+                ]
+            )
+        _render_trade_ideas_backtest_matrix(
+            cached_matrix.loc[:, [column for column in cached_columns if column in cached_matrix.columns]]
+        )
     run_clicked = st.button("Run backtest", key="trade_ideas_run_backtest", use_container_width=True)
     if not run_clicked:
         if cached_matrix.empty:
@@ -8587,7 +8637,7 @@ def _render_trade_ideas_backtest(
     with st.spinner("Running Trade Ideas backtest matrix..."):
         matrix = _build_trade_ideas_backtest_matrix(
             dates=available_dates,
-            basket_specs=basket_specs,
+            basket_specs=selected_basket_specs,
             fundamental_thresholds=fundamental_thresholds,
             price_lookup=price_lookup,
         )
@@ -8653,7 +8703,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
 
     render_subtab_group_intro(
         "Trade Ideas sections",
-        "Start with a focused Acceleration setup, then use Backtest to review the 1M forward-return median by historical report_select date.",
+        "Use the strategy tabs for current candidates, or open Backtest to compare selected strategies across historical report_select dates.",
     )
     acceleration_tab, backtest_tab = st.tabs(["Acceleration", "Backtest"])
     with acceleration_tab:
