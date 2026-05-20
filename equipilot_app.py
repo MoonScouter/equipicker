@@ -5064,7 +5064,7 @@ def _compose_divergence_flag_label(
         return pd.NA
     if label == "none":
         return "none"
-    if label.startswith("potential-") or label.startswith("extension-"):
+    if label.startswith("potential-"):
         return label
 
     normalized_confirmed = _normalize_optional_boolean_value(divergence_confirmed)

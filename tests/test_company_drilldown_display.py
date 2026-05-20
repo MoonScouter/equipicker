@@ -697,7 +697,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(by_ticker.loc["DDD.US", "rsi_divergence_flag"], "none")
         self.assertEqual(by_ticker.loc["EEE.US", "rsi_divergence_flag"], "positive")
         self.assertEqual(by_ticker.loc["FFF.US", "rsi_divergence_flag"], "potential-negative")
-        self.assertEqual(by_ticker.loc["GGG.US", "rsi_divergence_flag"], "extension-negative")
+        self.assertEqual(by_ticker.loc["GGG.US", "rsi_divergence_flag"], "extension-negative-confirmed")
 
     def test_latest_divergence_flags_handle_older_cache_without_confirmed_column(self) -> None:
         cache_df = pd.DataFrame(
