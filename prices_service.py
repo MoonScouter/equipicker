@@ -506,6 +506,7 @@ def _find_price_pivots(
     pivots: list[PivotPoint] = []
     last_pivot_index: int | None = None
     last_pivot_price: float | None = None
+    last_pivot_rsi: float | None = None
     series_length = len(price_series)
     if series_length <= settings.pivot_window_l + settings.pivot_window_r:
         return pivots
@@ -536,27 +537,35 @@ def _find_price_pivots(
             pivots.append(candidate)
             last_pivot_index = index
             last_pivot_price = candidate_price
+            last_pivot_rsi = candidate_rsi
             continue
 
         relative_move = _relative_same_type_move(candidate_price, last_pivot_price, kind=kind)
         is_same_swing_update = 0.0 < relative_move < DIVERGENCE_SAME_SWING_TOLERANCE_PCT
+        enters_divergence_anchor_zone = (
+            (kind == "high" and candidate_rsi > DIVERGENCE_OB_LEVEL and (last_pivot_rsi is None or last_pivot_rsi <= DIVERGENCE_OB_LEVEL))
+            or (kind == "low" and candidate_rsi < DIVERGENCE_OS_LEVEL and (last_pivot_rsi is None or last_pivot_rsi >= DIVERGENCE_OS_LEVEL))
+        )
         if (index - last_pivot_index) < settings.min_bars_between_same_type_pivots:
             if is_same_swing_update:
                 pivots[-1] = candidate
                 last_pivot_index = index
                 last_pivot_price = candidate_price
+                last_pivot_rsi = candidate_rsi
             continue
 
-        if relative_move >= settings.min_pivot_move_pct:
+        if relative_move >= settings.min_pivot_move_pct or enters_divergence_anchor_zone:
             pivots.append(candidate)
             last_pivot_index = index
             last_pivot_price = candidate_price
+            last_pivot_rsi = candidate_rsi
             continue
 
         if is_same_swing_update:
             pivots[-1] = candidate
             last_pivot_index = index
             last_pivot_price = candidate_price
+            last_pivot_rsi = candidate_rsi
 
     return pivots
 

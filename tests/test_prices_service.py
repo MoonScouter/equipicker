@@ -389,6 +389,20 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(state["rsi_divergence_last_pivot_price"].iloc[19], 17.0)
         self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[19], 6.0 / 17.0)
 
+    def test_compute_rsi_divergence_state_allows_lower_overbought_anchor_after_non_overbought_pivot(self) -> None:
+        highs = [100, 101, 105, 104, 103, 100, 101, 104.9, 103, 102, 101]
+        lows = [value - 4 for value in highs]
+        rsi_values = [55, 60, 69, 63, 58, 52, 60, 75, 65, 60, 56]
+        df = self._build_divergence_frame(highs, lows, rsi_values)
+
+        state = compute_rsi_divergence_state(df, frequency="daily")
+
+        self.assertTrue(pd.isna(state["rsi_divergence_last_pivot_type"].iloc[4]))
+        self.assertTrue(pd.isna(state["rsi_divergence_last_pivot_price"].iloc[4]))
+        self.assertEqual(state["rsi_divergence_last_pivot_type"].iloc[9], "bear")
+        self.assertEqual(state["rsi_divergence_last_pivot_price"].iloc[9], 104.9)
+        self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[9], 100.0 / 104.9)
+
     def test_compute_rsi_divergence_state_tracks_bullish_last_pivot_reference_coeff(self) -> None:
         lows = [12, 11, 10, 9, 10, 11, 6, 11, 12, 11, 10, 9, 8, 7, 5, 8, 10, 11, 12, 12]
         highs = [value + 4 for value in lows]

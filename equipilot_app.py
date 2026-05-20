@@ -10,7 +10,7 @@ import hashlib
 import re
 import threading
 import time
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from html import escape as html_escape
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import date, datetime, timedelta
@@ -111,6 +111,7 @@ from dividend_service import (
 from market_service import (
     build_market_cache_key,
     compute_and_save_market_bundle,
+    compute_stock_rsi_regime,
     get_default_market_anchors,
     load_market_bundle,
     load_market_methodology_text,
@@ -213,6 +214,7 @@ PORTFOLIO_JOURNAL_PATH = Path(
 PORTFOLIO_CONFIG_PATH = CONFIG_DIR / "portfolio_config.json"
 PORTFOLIO_ALERTS_PATH = CONFIG_DIR / "portfolio_alerts.json"
 WATCHLIST_CONFIG_PATH = CONFIG_DIR / "watchlist.json"
+TRADE_IDEAS_BACKTEST_CACHE_PATH = DATA_DIR / "trade_ideas_backtest_latest.csv"
 PORTFOLIO_SHEETS = {
     "dinamic": {"sheet": "DINAMIC", "label": "Portofoliu Dinamic"},
     "dividend": {"sheet": "DIVIDEND", "label": "Portofoliu Dividend"},
@@ -8026,54 +8028,19 @@ def render_sector_screener_board(config: ReportConfig) -> None:
 
 TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
     {
-        "key": "quality_leaders",
-        "name": "Quality Leaders",
-        "subtitle": "High-quality companies where relative strength, volume, RSI regime, and trend structure confirm the fundamental story.",
-        "sort_by": "fundamental",
-    },
-    {
-        "key": "early_turn_wakeup",
-        "name": "Early Turn",
-        "subtitle": "Earlier rerating candidates: decent fundamentals, constructive demand, and emerging or formed bullish divergence before the full trend looks obvious.",
-        "sort_by": "technical",
-    },
-    {
-        "key": "pullback_repair",
-        "name": "Pullback Repair",
-        "subtitle": "Strong uptrends that have cooled tactically and are showing signs that the pullback is stabilizing.",
-        "sort_by": "technical",
-    },
-    {
-        "key": "technical_acceleration",
+        "key": "acceleration",
         "name": "Acceleration",
-        "subtitle": "Breakout and momentum-expansion leaders with strong RS, volume, RSI, and moving-average alignment.",
-        "sort_by": "technical",
-    },
-    {
-        "key": "fundamental_follow_through",
-        "name": "Fundamental Follow-Through",
-        "subtitle": "Companies with improving fundamental momentum where price action and flows are starting to agree.",
-        "sort_by": "fundamental",
-    },
-    {
-        "key": "speculative_growth",
-        "name": "Speculative Growth",
-        "subtitle": "Higher-risk demand-surge ideas: emerging growth stories with decent fundamental momentum and improving technical demand.",
-        "sort_by": "technical",
-    },
-    {
-        "key": "late_cycle_watch",
-        "name": "Late-Cycle Watch",
-        "subtitle": "Strong names that may be getting crowded or tired; useful as a take-profit or risk-monitoring watchlist, not a fresh long basket.",
-        "sort_by": "technical",
-    },
-    {
-        "key": "bearish_avoid",
-        "name": "Bearish / Avoid",
-        "subtitle": "Weak trend, weak flow, poor RSI regime, and bearish divergence evidence. This is a risk-control list, not a long-idea list.",
+        "subtitle": "Full-on bullish acceleration: price above aligned moving averages, sustained/current money flow, improving relative strength, strong RSI momentum, bullish RSI regime, and no bearish divergence lifecycle warnings.",
         "sort_by": "technical",
     },
 ]
+
+TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS = {
+    "fundamental_total_score": 40.0,
+    "fundamental_risk": 40.0,
+    "fundamental_quality": 40.0,
+    "fundamental_momentum": 40.0,
+}
 
 
 def _trade_ideas_num(df: pd.DataFrame, column: str) -> pd.Series:
@@ -8112,13 +8079,23 @@ def _trade_ideas_base_mask(df: pd.DataFrame) -> pd.Series:
     return pd.Series(True, index=df.index)
 
 
-def _filter_trade_idea_basket(company_df: pd.DataFrame, basket_key: str) -> pd.DataFrame:
+def _trade_ideas_default_fundamental_thresholds() -> dict[str, float]:
+    return dict(TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS)
+
+
+def _filter_trade_idea_basket(
+    company_df: pd.DataFrame,
+    basket_key: str,
+    *,
+    fundamental_thresholds: Optional[dict[str, float]] = None,
+) -> pd.DataFrame:
     df = company_df.copy()
     m = _trade_ideas_base_mask(df)
+    thresholds = _trade_ideas_default_fundamental_thresholds()
+    thresholds.update(fundamental_thresholds or {})
 
     fs = _trade_ideas_num(df, "fundamental_total_score")
     fm = _trade_ideas_num(df, "fundamental_momentum")
-    growth = _trade_ideas_num(df, "fundamental_growth")
     quality = _trade_ideas_num(df, "fundamental_quality")
     risk = _trade_ideas_num(df, "fundamental_risk")
     rsi_regime = _trade_ideas_num(df, "stock_rsi_regime_score")
@@ -8135,137 +8112,28 @@ def _filter_trade_idea_basket(company_df: pd.DataFrame, basket_key: str) -> pd.D
     sma20 = _trade_ideas_num(df, "sma_daily_20")
     sma50 = _trade_ideas_num(df, "sma_daily_50")
     sma200 = _trade_ideas_num(df, "sma_daily_200")
-    flow = _trade_ideas_text(df, "short_term_flow")
 
-    bullish_divergence = {"potential-positive", "positive", "positive-confirmed"}
     bearish_divergence = {"potential-negative", "negative", "negative-confirmed", "extension-negative"}
-    late_bearish_divergence = {"negative-confirmed", "extension-negative"}
 
-    if basket_key == "quality_leaders":
-        m &= _trade_ideas_cap_in(df, {"Large", "Mega"})
-        m &= fs >= 65
-        m &= quality >= 65
-        m &= risk >= 60
-        m &= fm >= 50
-        m &= rsi_regime >= 60
-        m &= rsi_w >= 55
-        m &= rsi_d.between(55, 75, inclusive="both")
-        m &= rs_m > 0
-        m &= rs_d > rs_sma
-        m &= obvm_m > 0
-        m &= obvm_d > obvm_sma
-        m &= price > sma50
-        m &= price > sma200
-        m &= flow == "positive"
-        m &= _trade_ideas_no_divergence(df, {"negative-confirmed", "extension-negative"})
-    elif basket_key == "early_turn_wakeup":
-        m &= _trade_ideas_cap_in(df, {"Mid", "Large", "Mega"})
-        m &= fs >= 55
-        m &= (growth >= 55) | (fm >= 60)
-        m &= quality >= 50
-        m &= risk >= 50
-        m &= rsi_regime >= 50
-        m &= rsi_w.between(45, 60, inclusive="both")
-        m &= rsi_d.between(48, 68, inclusive="both")
-        m &= rs_m > -1
-        m &= rs_d > rs_sma
-        m &= obvm_m >= 0
-        m &= obvm_d > obvm_sma
-        m &= price > sma200
-        m &= (price >= sma50) | _trade_ideas_near_yes(df, "near_ma50_5pct")
-        m &= flow.isin({"neutral", "positive"})
-        m &= _trade_ideas_any_divergence(df, {"potential-positive", "positive"})
-        m &= _trade_ideas_no_divergence(df, late_bearish_divergence)
-    elif basket_key == "pullback_repair":
-        m &= fs >= 60
-        m &= quality >= 55
-        m &= risk >= 55
-        m &= rsi_regime >= 55
-        m &= rsi_w >= 55
-        m &= rsi_d.between(40, 65, inclusive="both")
-        m &= rs_m > 0
-        m &= rs_d >= (rs_sma * 0.95)
-        m &= obvm_m > 0
-        m &= obvm_d >= (obvm_sma * 0.95)
-        m &= price > sma50
-        m &= price > sma200
-        m &= sma50 > sma200
-        m &= flow.isin({"neutral", "positive"})
-        m &= _trade_ideas_any_divergence(df, bullish_divergence)
-        m &= _trade_ideas_no_divergence(df, {"extension-negative"})
-    elif basket_key == "technical_acceleration":
-        m &= fs >= 50
-        m &= risk >= 50
-        m &= rsi_regime >= 65
+    if basket_key == "acceleration":
+        m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large", "Mega"})
+        m &= fs >= float(thresholds["fundamental_total_score"])
+        m &= risk >= float(thresholds["fundamental_risk"])
+        m &= quality >= float(thresholds["fundamental_quality"])
+        m &= fm >= float(thresholds["fundamental_momentum"])
+        m &= rsi_regime > 70
         m &= rsi_w > 60
         m &= rsi_d > 70
-        m &= rs_m > 0
+        m &= rs_m > -0.5
         m &= rs_d > rs_sma
         m &= obvm_m > 0
-        m &= obvm_w > 0
         m &= obvm_d > obvm_sma
         m &= price > sma20
         m &= price > sma50
         m &= price > sma200
-        m &= sma20 > sma50
-        m &= sma50 > sma200
-        m &= flow == "positive"
-        m &= _trade_ideas_no_divergence(df, late_bearish_divergence)
-    elif basket_key == "fundamental_follow_through":
-        m &= fs >= 60
-        m &= fm >= 70
-        m &= growth >= 55
-        m &= quality >= 55
-        m &= risk >= 50
-        m &= rsi_regime >= 55
-        m &= rsi_w >= 50
-        m &= rsi_d >= 50
-        m &= rs_m > 0
-        m &= rs_d > rs_sma
-        m &= obvm_d > obvm_sma
-        m &= price > sma50
-        m &= flow == "positive"
-        m &= _trade_ideas_no_divergence(df, {"extension-negative"})
-    elif basket_key == "speculative_growth":
-        m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large"})
-        m &= fs >= 45
-        m &= fm >= 50
-        m &= growth >= 55
-        m &= quality >= 35
-        m &= risk >= 35
-        m &= rsi_regime >= 50
-        m &= rsi_w >= 45
-        m &= rsi_d >= 50
-        m &= rs_m > 0
-        m &= rs_d > rs_sma
-        m &= obvm_d > obvm_sma
-        m &= (price > sma50) | (price > sma200)
-        m &= flow.isin({"neutral", "positive"})
-        m &= _trade_ideas_no_divergence(df, late_bearish_divergence)
-    elif basket_key == "late_cycle_watch":
-        m &= fs >= 55
-        m &= rsi_regime >= 55
-        m &= rs_m > 0
-        m &= (price > sma50) | (price > sma200)
-        m &= _trade_ideas_any_divergence(
-            df,
-            {"potential-negative", "negative", "negative-confirmed", "extension-negative"},
-        )
-        m &= (rsi_d > 70) | (obvm_d < obvm_sma) | flow.isin({"neutral", "negative"})
-    elif basket_key == "bearish_avoid":
-        m &= (fs < 55) | (risk < 50)
-        m &= rsi_regime <= 45
-        m &= rsi_w < 45
-        m &= rsi_d < 45
-        m &= rs_m < 0
-        m &= rs_d < rs_sma
-        m &= obvm_m < 0
-        m &= obvm_w < 0
-        m &= obvm_d < obvm_sma
-        m &= price < sma50
-        m &= price < sma200
-        m &= flow == "negative"
-        m &= _trade_ideas_any_divergence(df, bearish_divergence)
+        m &= sma20 >= sma50
+        m &= sma50 >= sma200
+        m &= _trade_ideas_no_divergence(df, bearish_divergence)
     else:
         raise ValueError(f"Unsupported trade-idea basket: {basket_key}")
 
@@ -8277,10 +8145,15 @@ def _render_trade_idea_basket(
     basket_spec: dict[str, object],
     company_universe: pd.DataFrame,
     selected_eod: date,
+    fundamental_thresholds: Optional[dict[str, float]] = None,
 ) -> None:
     basket_key = str(basket_spec["key"])
     st.caption(str(basket_spec["subtitle"]))
-    ideas_df = _filter_trade_idea_basket(company_universe, basket_key)
+    ideas_df = _filter_trade_idea_basket(
+        company_universe,
+        basket_key,
+        fundamental_thresholds=fundamental_thresholds,
+    )
     st.caption(f"Stocks in basket: {len(ideas_df)}")
     if ideas_df.empty:
         st.info("No stocks matched this basket for the selected EOD.")
@@ -8300,6 +8173,433 @@ def _render_trade_idea_basket(
         csv_file_name=f"trade_ideas_{basket_key}_{selected_eod.isoformat()}.csv",
         fallback_styler_builder=_build_company_drilldown_styler,
     )
+
+
+def _render_trade_idea_fundamental_filters() -> dict[str, float]:
+    defaults = _trade_ideas_default_fundamental_thresholds()
+    cols = st.columns(4)
+    labels = [
+        ("fundamental_total_score", "Min FS"),
+        ("fundamental_risk", "Min Risk FS"),
+        ("fundamental_quality", "Min Quality FS"),
+        ("fundamental_momentum", "Min Mom. FS"),
+    ]
+    thresholds: dict[str, float] = {}
+    for index, (column, label) in enumerate(labels):
+        with cols[index]:
+            thresholds[column] = float(
+                st.number_input(
+                    label,
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(defaults[column]),
+                    step=5.0,
+                    key=f"trade_ideas_{column}_threshold",
+                )
+            )
+    return thresholds
+
+
+def _render_trade_idea_basket_rules_expander(
+    *,
+    basket_key: str,
+    fundamental_thresholds: dict[str, float],
+) -> None:
+    if basket_key != "acceleration":
+        return
+    with st.expander("Filters used for this setup", expanded=False):
+        st.markdown(
+            f"""
+```text
+Universe
+- Market cap bucket: Small, Mid, Large, Mega
+- Excluded: Nano, Micro
+
+Fundamental overlays
+- Fundamental total score >= {fundamental_thresholds['fundamental_total_score']:.0f}
+- Risk score >= {fundamental_thresholds['fundamental_risk']:.0f}
+- Quality score >= {fundamental_thresholds['fundamental_quality']:.0f}
+- Fundamental momentum score >= {fundamental_thresholds['fundamental_momentum']:.0f}
+
+Trend structure
+- eod_price_used > sma_daily_20
+- eod_price_used > sma_daily_50
+- eod_price_used > sma_daily_200
+- sma_daily_20 >= sma_daily_50
+- sma_daily_50 >= sma_daily_200
+
+Money flow
+- obvm_monthly > 0
+- obvm_daily > obvm_sma20
+
+Relative performance vs S&P 500
+- rs_monthly > -0.5
+- rs_daily > rs_sma20
+
+Momentum / regime
+- rsi_daily > 70
+- rsi_weekly > 60
+- stock_rsi_regime_score > 70
+
+Divergence guardrail
+- Daily RSI divergence is not Emerging Negative, Negative, Negative - Confirmed, or Negative Extension
+- Weekly RSI divergence is not Emerging Negative, Negative, Negative - Confirmed, or Negative Extension
+```
+            """
+        )
+
+
+@st.cache_data(show_spinner=False)
+def build_combined_daily_price_history_lookup(cache_signature: str = "") -> dict[str, dict[str, list[object]]]:
+    del cache_signature
+    parts: list[pd.DataFrame] = []
+    for cache_path in list_prices_cache_paths("daily"):
+        loaded = load_prices_cache_file(str(cache_path), _path_cache_signature(cache_path))
+        if loaded.empty:
+            continue
+        parts.append(loaded)
+    if not parts:
+        return {}
+    combined = pd.concat(parts, ignore_index=True)
+    if combined.empty:
+        return {}
+    normalized_prices = combined[["ticker", "date", "adjusted_close"]].copy()
+    normalized_prices["ticker"] = normalized_prices["ticker"].fillna("").astype(str).str.strip().str.upper()
+    normalized_prices["date"] = pd.to_datetime(normalized_prices["date"], errors="coerce").dt.date
+    normalized_prices["adjusted_close"] = pd.to_numeric(normalized_prices["adjusted_close"], errors="coerce")
+    normalized_prices = normalized_prices.dropna(subset=["ticker", "date", "adjusted_close"]).drop_duplicates(
+        subset=["ticker", "date"],
+        keep="last",
+    )
+    lookup: dict[str, dict[str, list[object]]] = {}
+    for ticker_value, group in normalized_prices.groupby("ticker", sort=False):
+        sorted_group = group.sort_values("date", kind="stable")
+        lookup[str(ticker_value)] = {
+            "dates": sorted_group["date"].tolist(),
+            "closes": pd.to_numeric(sorted_group["adjusted_close"], errors="coerce").tolist(),
+        }
+    return lookup
+
+
+@st.cache_data(show_spinner=False)
+def load_combined_price_rsi_frame(frequency: str, cache_signature: str = "") -> pd.DataFrame:
+    del cache_signature
+    parts: list[pd.DataFrame] = []
+    for cache_path in list_prices_cache_paths(frequency):
+        loaded = load_prices_cache_file(str(cache_path), _path_cache_signature(cache_path))
+        if loaded.empty:
+            continue
+        parts.append(loaded)
+    if not parts:
+        return pd.DataFrame(columns=["ticker", "date", "rsi_14"])
+    combined = pd.concat(parts, ignore_index=True)
+    if combined.empty:
+        return pd.DataFrame(columns=["ticker", "date", "rsi_14"])
+    working = combined[["ticker", "date", "rsi_14"]].copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["rsi_14"] = pd.to_numeric(working["rsi_14"], errors="coerce")
+    return (
+        working.dropna(subset=["ticker", "date"])
+        .sort_values(["ticker", "date"], kind="stable")
+        .reset_index(drop=True)
+    )
+
+
+def _price_rsi_frame_signature(frequency: str) -> str:
+    return _paths_cache_signature(list_prices_cache_paths(frequency))
+
+
+def _ensure_trade_ideas_rsi_regime_scores(
+    company_universe: pd.DataFrame,
+    evaluation_date: date,
+) -> tuple[pd.DataFrame, str]:
+    if company_universe.empty:
+        return company_universe.copy(), "Ready"
+    enriched = company_universe.copy()
+    if "stock_rsi_regime_score" not in enriched.columns:
+        enriched["stock_rsi_regime_score"] = np.nan
+    current_scores = pd.to_numeric(enriched["stock_rsi_regime_score"], errors="coerce")
+    if current_scores.notna().any():
+        enriched["stock_rsi_regime_score"] = current_scores
+        return enriched, "Ready"
+
+    daily_rsi_df = load_combined_price_rsi_frame("daily", _price_rsi_frame_signature("daily"))
+    weekly_rsi_df = load_combined_price_rsi_frame("weekly", _price_rsi_frame_signature("weekly"))
+    if daily_rsi_df.empty or weekly_rsi_df.empty:
+        return enriched, "No RSI price history"
+
+    tickers = set(enriched["ticker"].dropna().astype(str).map(normalize_price_ticker))
+    daily_scope = daily_rsi_df[
+        daily_rsi_df["ticker"].isin(tickers)
+        & daily_rsi_df["date"].notna()
+        & (daily_rsi_df["date"] <= evaluation_date)
+    ]
+    weekly_scope = weekly_rsi_df[
+        weekly_rsi_df["ticker"].isin(tickers)
+        & weekly_rsi_df["date"].notna()
+        & (weekly_rsi_df["date"] <= evaluation_date)
+    ]
+    if daily_scope.empty or weekly_scope.empty:
+        return enriched, "No RSI history for date"
+
+    rsi_start_candidates = [
+        value
+        for value in [
+            daily_scope["date"].min() if not daily_scope.empty else None,
+            weekly_scope["date"].min() if not weekly_scope.empty else None,
+        ]
+        if value is not None and not pd.isna(value)
+    ]
+    rsi_start_date = min(rsi_start_candidates) if rsi_start_candidates else evaluation_date
+    config = load_market_regime_config()
+    regime_df = compute_stock_rsi_regime(
+        enriched,
+        daily_scope,
+        weekly_scope,
+        evaluation_date,
+        rsi_start_date,
+        config,
+    )
+    if regime_df.empty or "stock_rsi_regime_score" not in regime_df.columns:
+        return enriched, "RSI regime unavailable"
+    regime_lookup = regime_df[["ticker", "stock_rsi_regime_score"]].copy()
+    regime_lookup["ticker"] = regime_lookup["ticker"].map(normalize_price_ticker)
+    regime_lookup["stock_rsi_regime_score"] = pd.to_numeric(
+        regime_lookup["stock_rsi_regime_score"], errors="coerce"
+    )
+    enriched = enriched.drop(columns=["stock_rsi_regime_score"], errors="ignore").merge(
+        regime_lookup.drop_duplicates("ticker", keep="last"),
+        on="ticker",
+        how="left",
+    )
+    if pd.to_numeric(enriched["stock_rsi_regime_score"], errors="coerce").notna().any():
+        return enriched, "Computed RSI regime"
+    return enriched, "RSI regime unavailable"
+
+
+def _price_close_on_or_after(
+    price_entry: Optional[dict[str, list[object]]],
+    target_date: date,
+) -> Optional[float]:
+    if not price_entry:
+        return None
+    dates = price_entry.get("dates", [])
+    closes = price_entry.get("closes", [])
+    if not dates or not closes:
+        return None
+    idx = bisect_left(dates, target_date)
+    if idx < 0 or idx >= len(dates):
+        return None
+    close_value = pd.to_numeric(closes[idx], errors="coerce")
+    return None if pd.isna(close_value) else float(close_value)
+
+
+def _compute_forward_1m_returns(
+    tickers: Sequence[str],
+    price_lookup: dict[str, dict[str, list[object]]],
+    reference_date: date,
+) -> pd.Series:
+    returns: list[float] = []
+    exit_target = reference_date + timedelta(days=30)
+    for ticker_value in tickers:
+        price_entry = price_lookup.get(str(ticker_value).upper())
+        entry_close = _price_close_on_or_after(price_entry, reference_date)
+        exit_close = _price_close_on_or_after(price_entry, exit_target)
+        if entry_close is None or exit_close is None or entry_close == 0:
+            returns.append(np.nan)
+        else:
+            returns.append(100.0 * (exit_close / entry_close - 1.0))
+    return pd.Series(returns, dtype=float)
+
+
+def _latest_price_lookup_date(price_lookup: dict[str, dict[str, list[object]]]) -> Optional[date]:
+    latest_values = [
+        max(price_entry.get("dates", []))
+        for price_entry in price_lookup.values()
+        if price_entry.get("dates")
+    ]
+    return max(latest_values) if latest_values else None
+
+
+def _build_trade_ideas_backtest_matrix(
+    *,
+    dates: Sequence[date],
+    basket_specs: Sequence[dict[str, object]],
+    fundamental_thresholds: dict[str, float],
+    price_lookup: dict[str, dict[str, list[object]]],
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    latest_price_date = _latest_price_lookup_date(price_lookup)
+    for evaluation_date in dates:
+        row: dict[str, object] = {"Date": evaluation_date.isoformat()}
+        report_df, source_path, _candidates, load_error = load_report_select_for_eod(evaluation_date)
+        if source_path is None or load_error:
+            for spec in basket_specs:
+                basket_name = str(spec["name"])
+                row[basket_name] = np.nan
+                row[f"{basket_name} Count"] = 0
+                row[f"{basket_name} Valid Returns"] = 0
+                row[f"{basket_name} Status"] = "Missing report_select"
+            rows.append(row)
+            continue
+        company_universe, universe_error, _universe_warning = _load_prepared_company_universe_for_report_path(
+            str(source_path),
+            _path_cache_signature(source_path),
+            evaluation_date,
+            _path_cache_signature(THEMATICS_CONFIG_PATH),
+            _market_regime_company_metrics_cache_signature(evaluation_date),
+            _company_divergence_cache_signature(),
+            str(prices_cache_path("daily", evaluation_date.year)) if prices_cache_path("daily", evaluation_date.year).exists() else "",
+            _path_cache_signature(prices_cache_path("daily", evaluation_date.year)),
+        )
+        if universe_error or company_universe is None:
+            for spec in basket_specs:
+                basket_name = str(spec["name"])
+                row[basket_name] = np.nan
+                row[f"{basket_name} Count"] = 0
+                row[f"{basket_name} Valid Returns"] = 0
+                row[f"{basket_name} Status"] = "Universe error"
+            rows.append(row)
+            continue
+        company_universe, rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
+        for spec in basket_specs:
+            basket_name = str(spec["name"])
+            basket_df = _filter_trade_idea_basket(
+                company_universe,
+                str(spec["key"]),
+                fundamental_thresholds=fundamental_thresholds,
+            )
+            forward_returns = _compute_forward_1m_returns(
+                basket_df["ticker"].dropna().astype(str).tolist() if "ticker" in basket_df.columns else [],
+                price_lookup,
+                evaluation_date,
+            )
+            valid_returns = int(forward_returns.notna().sum())
+            basket_count = int(len(basket_df))
+            row[basket_name] = float(forward_returns.median()) if valid_returns else np.nan
+            row[f"{basket_name} Count"] = basket_count
+            row[f"{basket_name} Valid Returns"] = valid_returns
+            if basket_count == 0:
+                if rsi_status not in {"Ready", "Computed RSI regime"}:
+                    status = rsi_status
+                else:
+                    status = "No matching stocks"
+            elif valid_returns == 0:
+                if latest_price_date is not None and latest_price_date < evaluation_date + timedelta(days=30):
+                    status = "Pending forward data"
+                else:
+                    status = "No valid price exits"
+            else:
+                status = "Computed" if rsi_status == "Ready" else f"Computed ({rsi_status})"
+            row[f"{basket_name} Status"] = status
+        rows.append(row)
+
+    matrix = pd.DataFrame(rows)
+    if matrix.empty:
+        return matrix
+    stat_rows: list[dict[str, object]] = []
+    for label, reducer in [
+        ("Min", "min"),
+        ("Max", "max"),
+        ("Median", "median"),
+        ("Average", "mean"),
+    ]:
+        stat_row: dict[str, object] = {"Date": label}
+        for spec in basket_specs:
+            column = str(spec["name"])
+            numeric = pd.to_numeric(matrix[column], errors="coerce") if column in matrix.columns else pd.Series(dtype=float)
+            stat_row[column] = getattr(numeric, reducer)() if numeric.notna().any() else np.nan
+            stat_row[f"{column} Count"] = ""
+            stat_row[f"{column} Valid Returns"] = ""
+            stat_row[f"{column} Status"] = ""
+        stat_rows.append(stat_row)
+    return pd.concat([matrix, pd.DataFrame(stat_rows)], ignore_index=True)
+
+
+def _load_trade_ideas_backtest_cache() -> tuple[pd.DataFrame, Optional[str]]:
+    if not TRADE_IDEAS_BACKTEST_CACHE_PATH.exists():
+        return pd.DataFrame(), None
+    try:
+        return pd.read_csv(TRADE_IDEAS_BACKTEST_CACHE_PATH), None
+    except Exception as exc:
+        return pd.DataFrame(), f"Could not read cached backtest result: {exc}"
+
+
+def _save_trade_ideas_backtest_cache(matrix: pd.DataFrame) -> Optional[str]:
+    try:
+        TRADE_IDEAS_BACKTEST_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        matrix.to_csv(TRADE_IDEAS_BACKTEST_CACHE_PATH, index=False)
+    except Exception as exc:
+        return f"Could not save cached backtest result: {exc}"
+    return None
+
+
+def _render_trade_ideas_backtest_matrix(matrix: pd.DataFrame) -> None:
+    if matrix.empty:
+        return
+    display_matrix = matrix.copy()
+    for column in [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS]:
+        if column in display_matrix.columns:
+            display_matrix[column] = display_matrix[column].map(_format_percent_value)
+    st.dataframe(
+        display_matrix,
+        use_container_width=True,
+        hide_index=True,
+        height=max(320, 38 * min(len(display_matrix) + 1, 18)),
+    )
+
+
+def _render_trade_ideas_backtest(
+    *,
+    basket_specs: Sequence[dict[str, object]],
+    fundamental_thresholds: dict[str, float],
+) -> None:
+    st.caption(
+        "For each available report_select date, the app rebuilds each basket, computes every matching stock's 1M forward return, and stores the median return in the matrix."
+    )
+    cached_matrix, cache_warning = _load_trade_ideas_backtest_cache()
+    if cache_warning:
+        st.warning(cache_warning)
+    if not cached_matrix.empty:
+        cache_time = datetime.fromtimestamp(TRADE_IDEAS_BACKTEST_CACHE_PATH.stat().st_mtime).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        st.caption(f"Latest cached backtest: {TRADE_IDEAS_BACKTEST_CACHE_PATH.name}, saved {cache_time}.")
+        _render_trade_ideas_backtest_matrix(cached_matrix)
+    run_clicked = st.button("Run backtest", key="trade_ideas_run_backtest", use_container_width=True)
+    if not run_clicked:
+        if cached_matrix.empty:
+            st.info("Click `Run backtest` to compute the matrix on demand.")
+        return
+    available_dates = list(get_available_report_select_dates())
+    if not available_dates:
+        st.info("No report_select files are available for backtesting.")
+        return
+    price_paths = list_prices_cache_paths("daily")
+    if not price_paths:
+        st.warning("No daily prices cache files are available, so 1M forward returns cannot be computed.")
+        return
+    price_lookup = build_combined_daily_price_history_lookup(_paths_cache_signature(price_paths))
+    if not price_lookup:
+        st.warning("Daily prices cache could not be loaded, so 1M forward returns cannot be computed.")
+        return
+    with st.spinner("Running Trade Ideas backtest matrix..."):
+        matrix = _build_trade_ideas_backtest_matrix(
+            dates=available_dates,
+            basket_specs=basket_specs,
+            fundamental_thresholds=fundamental_thresholds,
+            price_lookup=price_lookup,
+        )
+    if matrix.empty:
+        st.info("No backtest rows could be computed.")
+        return
+    save_warning = _save_trade_ideas_backtest_cache(matrix)
+    if save_warning:
+        st.warning(save_warning)
+    else:
+        st.success(f"Backtest complete and cached to {TRADE_IDEAS_BACKTEST_CACHE_PATH.name}.")
+    _render_trade_ideas_backtest_matrix(matrix)
 
 
 def render_trade_ideas(config: ReportConfig) -> None:
@@ -8337,11 +8637,13 @@ def render_trade_ideas(config: ReportConfig) -> None:
         st.error(universe_error)
         return
     assert company_universe is not None
+    company_universe, rsi_regime_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, selected_eod)
 
     render_chip_row(
         [
             f"Source file: {source_path.name}",
             f"EOD: {selected_eod.isoformat()}",
+            f"RSI regime: {rsi_regime_status}",
             "Sector regime fit excluded",
             "Baskets are independent; a ticker may appear in more than one story.",
         ]
@@ -8350,28 +8652,33 @@ def render_trade_ideas(config: ReportConfig) -> None:
         st.warning(universe_warning)
 
     render_subtab_group_intro(
-        "Trade Ideas baskets",
-        "Each basket shows one narrative grid with the same Fields picker used by Thematics, Screener, and Watchlist. There are no extra Trade Ideas filters in this view.",
+        "Trade Ideas sections",
+        "Start with a focused Acceleration setup, then use Backtest to review the 1M forward-return median by historical report_select date.",
     )
-
-    basket_names = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS]
-    selected_basket_name = st.radio(
-        "Trade Ideas basket",
-        options=basket_names,
-        horizontal=True,
-        key="trade_ideas_active_basket",
-    )
-    selected_basket_spec = next(
-        spec
-        for spec in TRADE_IDEA_BASKET_SPECS
-        if str(spec["name"]) == selected_basket_name
-    )
-    render_board_title_band(str(selected_basket_spec["name"]))
-    _render_trade_idea_basket(
-        basket_spec=selected_basket_spec,
-        company_universe=company_universe,
-        selected_eod=selected_eod,
-    )
+    acceleration_tab, backtest_tab = st.tabs(["Acceleration", "Backtest"])
+    with acceleration_tab:
+        render_board_title_band("Acceleration")
+        fundamental_thresholds = _render_trade_idea_fundamental_filters()
+        _render_trade_idea_basket_rules_expander(
+            basket_key=str(TRADE_IDEA_BASKET_SPECS[0]["key"]),
+            fundamental_thresholds=fundamental_thresholds,
+        )
+        _render_trade_idea_basket(
+            basket_spec=TRADE_IDEA_BASKET_SPECS[0],
+            company_universe=company_universe,
+            selected_eod=selected_eod,
+            fundamental_thresholds=fundamental_thresholds,
+        )
+    with backtest_tab:
+        render_board_title_band("Backtest")
+        backtest_thresholds = {
+            column: float(st.session_state.get(f"trade_ideas_{column}_threshold", default_value))
+            for column, default_value in TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS.items()
+        }
+        _render_trade_ideas_backtest(
+            basket_specs=TRADE_IDEA_BASKET_SPECS,
+            fundamental_thresholds=backtest_thresholds,
+        )
 
 
 def render_watchlist_tab(config: ReportConfig) -> None:
