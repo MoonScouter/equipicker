@@ -8114,7 +8114,7 @@ def _filter_trade_idea_basket(
     sma50 = _trade_ideas_num(df, "sma_daily_50")
     sma200 = _trade_ideas_num(df, "sma_daily_200")
 
-    bearish_divergence = {"potential-negative", "negative", "negative-confirmed", "extension-negative"}
+    bearish_divergence = {"negative", "negative-confirmed", "extension-negative"}
 
     if basket_key == "acceleration":
         m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large", "Mega"})
@@ -8266,8 +8266,8 @@ Momentum / regime
 - stock_rsi_regime_score > 70
 
 Divergence guardrail
-- Daily RSI divergence is not Emerging Negative, Negative, Negative - Confirmed, or Negative Extension
-- Weekly RSI divergence is not Emerging Negative, Negative, Negative - Confirmed, or Negative Extension
+- Daily RSI divergence is not Negative, Negative - Confirmed, or Negative Extension
+- Weekly RSI divergence is not Negative, Negative - Confirmed, or Negative Extension
 ```
             """
         )
@@ -8419,13 +8419,13 @@ def _price_close_on_or_after(
     return None if pd.isna(close_value) else float(close_value)
 
 
-def _compute_forward_1m_returns(
+def _compute_forward_2w_returns(
     tickers: Sequence[str],
     price_lookup: dict[str, dict[str, list[object]]],
     reference_date: date,
 ) -> pd.Series:
     returns: list[float] = []
-    exit_target = reference_date + timedelta(days=30)
+    exit_target = reference_date + timedelta(days=14)
     for ticker_value in tickers:
         price_entry = price_lookup.get(str(ticker_value).upper())
         entry_close = _price_close_on_or_after(price_entry, reference_date)
@@ -8494,7 +8494,7 @@ def _build_trade_ideas_backtest_matrix(
                 str(spec["key"]),
                 fundamental_thresholds=fundamental_thresholds,
             )
-            forward_returns = _compute_forward_1m_returns(
+            forward_returns = _compute_forward_2w_returns(
                 basket_df["ticker"].dropna().astype(str).tolist() if "ticker" in basket_df.columns else [],
                 price_lookup,
                 evaluation_date,
@@ -8510,7 +8510,7 @@ def _build_trade_ideas_backtest_matrix(
                 else:
                     status = "No matching stocks"
             elif valid_returns == 0:
-                if latest_price_date is not None and latest_price_date < evaluation_date + timedelta(days=30):
+                if latest_price_date is not None and latest_price_date < evaluation_date + timedelta(days=14):
                     status = "Pending forward data"
                 else:
                     status = "No valid price exits"
@@ -8580,7 +8580,7 @@ def _render_trade_ideas_backtest(
     fundamental_thresholds: dict[str, float],
 ) -> None:
     st.caption(
-        "For each available report_select date, the app rebuilds each basket, computes every matching stock's 1M forward return, and stores the median return in the matrix."
+        "For each available report_select date, the app rebuilds each basket, computes every matching stock's 2W forward return, and stores the median return in the matrix."
     )
     strategy_names = [str(spec["name"]) for spec in basket_specs]
     selected_strategy_names = st.multiselect(
@@ -8628,11 +8628,11 @@ def _render_trade_ideas_backtest(
         return
     price_paths = list_prices_cache_paths("daily")
     if not price_paths:
-        st.warning("No daily prices cache files are available, so 1M forward returns cannot be computed.")
+        st.warning("No daily prices cache files are available, so 2W forward returns cannot be computed.")
         return
     price_lookup = build_combined_daily_price_history_lookup(_paths_cache_signature(price_paths))
     if not price_lookup:
-        st.warning("Daily prices cache could not be loaded, so 1M forward returns cannot be computed.")
+        st.warning("Daily prices cache could not be loaded, so 2W forward returns cannot be computed.")
         return
     with st.spinner("Running Trade Ideas backtest matrix..."):
         matrix = _build_trade_ideas_backtest_matrix(
