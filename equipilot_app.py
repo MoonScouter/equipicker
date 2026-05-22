@@ -127,6 +127,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 PROMPT_PATH = BASE_DIR / "summary_prompt.txt"
 REPORTS_DIR = BASE_DIR / "reports"
+TRANSCRIPTS_DIR = BASE_DIR / "transcripts"
 QUADRANTS_DIR = REPORTS_DIR / "quadrants"
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 CONFIG_DIR = CONFIG_PATH.parent
@@ -2488,6 +2489,98 @@ def _dividend_run_is_active(run_state: dict[str, object]) -> bool:
     return isinstance(thread, threading.Thread) and thread.is_alive()
 
 
+def _get_transcript_run_state() -> dict[str, object]:
+    state = st.session_state.get("utilities_transcript_run_state")
+    if not isinstance(state, dict):
+        state = {}
+        st.session_state["utilities_transcript_run_state"] = state
+    return state
+
+
+def _transcript_run_is_active(run_state: dict[str, object]) -> bool:
+    thread = run_state.get("thread")
+    return isinstance(thread, threading.Thread) and thread.is_alive()
+
+
+def _start_transcript_run(tickers_text: str, mode: str) -> None:
+    run_state: dict[str, object] = {
+        "status": "running",
+        "progress": "Preparing transcript fetch...",
+        "log_lines": [],
+        "result": [],
+        "error": "",
+        "consumed": False,
+        "mode": mode,
+    }
+
+    def worker() -> None:
+        def append_log(message: str) -> None:
+            log_lines = run_state.setdefault("log_lines", [])
+            if isinstance(log_lines, list):
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                log_lines.append(f"[{timestamp}] {message}")
+
+        try:
+            from tools.fetch_roic_latest_transcripts import (
+                EQUIPICKER_API_KEY_ENV,
+                ROIC_API_KEY_ENV,
+                fetch_and_save_one,
+                parse_tickers,
+                resolve_api_key,
+            )
+
+            tickers = parse_tickers([], tickers_text)
+            roic_key = resolve_api_key(None, ROIC_API_KEY_ENV)
+            equipicker_key = resolve_api_key(None, EQUIPICKER_API_KEY_ENV)
+            args = type(
+                "TranscriptFetchArgs",
+                (),
+                {"timeout": 60, "output_dir": TRANSCRIPTS_DIR},
+            )()
+            append_log(f"Queued {len(tickers)} ticker(s): {', '.join(tickers)}")
+            results: list[dict[str, object]] = []
+            errors: list[str] = []
+
+            for index, ticker in enumerate(tickers, start=1):
+                run_state["progress"] = f"{ticker} ({index}/{len(tickers)})"
+                append_log(f"Fetching {mode.replace('_', ' ')} for {ticker}...")
+                try:
+                    if mode == "fetch_last_two":
+                        from tools.fetch_roic_last_two_transcripts import fetch_and_save_last_two
+
+                        ticker_results = fetch_and_save_last_two(args, ticker, roic_key, equipicker_key)
+                    else:
+                        ticker_results = [fetch_and_save_one(args, ticker, roic_key, equipicker_key)]
+                except Exception as exc:  # pragma: no cover - UI feedback
+                    message = f"{ticker}: {exc}"
+                    errors.append(message)
+                    append_log(f"Failed {message}")
+                    continue
+
+                for item in ticker_results:
+                    path = Path(str(item.get("path", "")))
+                    append_log(f"Saved {ticker} {item.get('period', '')}: {path}")
+                    results.append(item)
+
+            run_state["result"] = results
+            if errors:
+                run_state["status"] = "error"
+                run_state["error"] = " | ".join(errors)
+                run_state["progress"] = f"Completed with {len(errors)} error(s)."
+            else:
+                run_state["status"] = "completed"
+                run_state["progress"] = f"Completed. Saved {len(results)} transcript file(s)."
+        except Exception as exc:  # pragma: no cover - UI feedback
+            run_state["status"] = "error"
+            run_state["error"] = str(exc)
+            append_log(f"Run failed: {exc}")
+
+    thread = threading.Thread(target=worker, name="equipicker-transcript-fetch", daemon=True)
+    run_state["thread"] = thread
+    st.session_state["utilities_transcript_run_state"] = run_state
+    thread.start()
+
+
 def _start_dividend_run(start_date_value: date, end_date_value: date, exchange_value: str) -> None:
     stop_event = threading.Event()
     run_state: dict[str, object] = {
@@ -2884,6 +2977,91 @@ def render_utilities_get_dividends_subtab() -> None:
         st.rerun()
 
 
+def render_utilities_fetch_transcripts_subtab() -> None:
+    render_subtab_group_intro(
+        "fetch_transcripts",
+        "Fetch ROIC.ai earnings-call transcripts into local per-ticker folders for equity note context.",
+    )
+
+    run_state = _get_transcript_run_state()
+    run_active = _transcript_run_is_active(run_state)
+
+    tickers_text = st.text_input(
+        "Tickers",
+        placeholder="RKLB, AMD, AAPL",
+        key="utilities_fetch_transcripts_tickers",
+        disabled=run_active,
+        help="Use tickers without .US; the fetcher strips .US if present.",
+    )
+
+    button_cols = st.columns([1, 1, 2])
+    with button_cols[0]:
+        fetch_last_clicked = st.button(
+            "fetch_last",
+            use_container_width=True,
+            key="utilities_fetch_transcripts_last_button",
+            disabled=run_active,
+        )
+    with button_cols[1]:
+        fetch_last_two_clicked = st.button(
+            "fetch_last_two",
+            use_container_width=True,
+            key="utilities_fetch_transcripts_last_two_button",
+            disabled=run_active,
+        )
+    with button_cols[2]:
+        st.caption(f"Output folder: {TRANSCRIPTS_DIR}")
+
+    if fetch_last_clicked or fetch_last_two_clicked:
+        if not str(tickers_text or "").strip():
+            st.error("Enter at least one ticker.")
+        else:
+            _start_transcript_run(
+                tickers_text=str(tickers_text or ""),
+                mode="fetch_last_two" if fetch_last_two_clicked else "fetch_last",
+            )
+            st.rerun()
+
+    run_state = _get_transcript_run_state()
+    run_active = _transcript_run_is_active(run_state)
+    if run_active:
+        st.status(str(run_state.get("progress") or "Fetching transcripts..."), state="running")
+    elif run_state.get("status") == "completed" and not run_state.get("consumed"):
+        run_state["consumed"] = True
+        st.success(str(run_state.get("progress") or "Transcript fetch completed."))
+    elif run_state.get("status") == "error" and not run_state.get("consumed"):
+        run_state["consumed"] = True
+        st.error(f"Transcript fetch finished with errors: {run_state.get('error')}")
+
+    log_lines = run_state.get("log_lines")
+    if isinstance(log_lines, list) and log_lines:
+        st.caption("Progress log")
+        _render_split_progress_log(log_lines)
+
+    result = run_state.get("result")
+    if isinstance(result, list) and result:
+        display_rows = []
+        for item in result:
+            if isinstance(item, dict):
+                display_rows.append(
+                    {
+                        "Ticker": item.get("ticker", ""),
+                        "Period": item.get("period", ""),
+                        "Call date": item.get("call_date", ""),
+                        "Fiscal year end": item.get("fiscal_year_end", ""),
+                        "Path": item.get("path", ""),
+                    }
+                )
+        if display_rows:
+            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+    elif not run_active:
+        st.info("Enter tickers and choose fetch_last or fetch_last_two to save transcripts locally.")
+
+    if run_active:
+        time.sleep(1)
+        st.rerun()
+
+
 def render_utilities_tab() -> None:
     render_subtab_group_intro(
         "Utilities",
@@ -2891,15 +3069,17 @@ def render_utilities_tab() -> None:
     )
     section = st.radio(
         "Utilities section",
-        ["get_splits", "get_dividends"],
+        ["get_splits", "get_dividends", "fetch_transcripts"],
         horizontal=True,
         label_visibility="collapsed",
         key="utilities_section",
     )
     if section == "get_splits":
         render_utilities_get_splits_subtab()
-    else:
+    elif section == "get_dividends":
         render_utilities_get_dividends_subtab()
+    else:
+        render_utilities_fetch_transcripts_subtab()
 
 
 def get_banner_path() -> Optional[Path]:
