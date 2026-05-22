@@ -687,5 +687,38 @@
       "AI Revenue Exposure",
       "AI Disruption Risk"
     ]
+  },
+  "trade_ideas_company_grid_acceleration_company_visible_columns_v2": {
+    "visible_columns": [
+      "Thematic",
+      "Ticker",
+      "Company",
+      "Sector",
+      "Industry",
+      "Market Cap",
+      "Beta",
+      "PEG",
+      "PER Trailing",
+      "PER Fwd",
+      "P/S TTM",
+      "1W",
+      "1M",
+      "3M",
+      "YTD",
+      "TS",
+      "Relative Volume",
+      "RSI Regime",
+      "Short Term Flow",
+      "RSI Divergence (D)",
+      "RSI Divergence (W)",
+      "FS",
+      "Mom. FS",
+      "Growth FS",
+      "Value FS",
+      "Quality FS",
+      "Risk FS",
+      "Rel Strength",
+      "Rel Volume"
+    ]
   }
 }
