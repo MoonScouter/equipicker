@@ -92,7 +92,7 @@ DIVERGENCE_SETTINGS_BY_FREQUENCY: dict[PricesFrequency, DivergenceSettings] = {
 }
 
 DIVERGENCE_SEED_HISTORY_ROWS: dict[PricesFrequency, int] = {
-    "daily": 144,
+    "daily": 220,
     "weekly": 81,
 }
 
@@ -105,6 +105,18 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "rs",
     "obvm",
     "rsi_14",
+    "ma_20d",
+    "ma_50d",
+    "ma_200d",
+    "last_20_break_type",
+    "last_20_break_date",
+    "dist_from_20",
+    "last_50_break_type",
+    "last_50_break_date",
+    "dist_from_50",
+    "last_200_break_type",
+    "last_200_break_date",
+    "dist_from_200",
     "rsi_divergence_flag",
     "rsi_divergence_confirmed",
     "rsi_divergence_anchor_date",
@@ -125,6 +137,18 @@ PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
         "rsi_divergence_last_pivot_type",
         "rsi_divergence_last_pivot_price",
         "rsi_divergence_pivot_distance_coeff",
+        "ma_20d",
+        "ma_50d",
+        "ma_200d",
+        "last_20_break_type",
+        "last_20_break_date",
+        "dist_from_20",
+        "last_50_break_type",
+        "last_50_break_date",
+        "dist_from_50",
+        "last_200_break_type",
+        "last_200_break_date",
+        "dist_from_200",
     }
 )
 PRICE_TICKER_ENDPOINT = (
@@ -281,6 +305,12 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
         "rs",
         "obvm",
         "rsi_14",
+        "ma_20d",
+        "ma_50d",
+        "ma_200d",
+        "dist_from_20",
+        "dist_from_50",
+        "dist_from_200",
         "rsi_divergence_anchor_price",
         "rsi_divergence_pivot_price",
         "rsi_divergence_last_pivot_price",
@@ -288,9 +318,24 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     ]
     for column in numeric_columns:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
-    for column in ["rsi_divergence_anchor_date", "rsi_divergence_pivot_date"]:
+    for column in [
+        "last_20_break_date",
+        "last_50_break_date",
+        "last_200_break_date",
+        "rsi_divergence_anchor_date",
+        "rsi_divergence_pivot_date",
+    ]:
         date_values = pd.to_datetime(working_df[column], errors="coerce").dt.date
         working_df[column] = date_values.map(lambda value: value.isoformat() if pd.notna(value) else None)
+    for column in ["last_20_break_type", "last_50_break_type", "last_200_break_type"]:
+        break_type_series = (
+            working_df[column]
+            .where(working_df[column].notna(), pd.NA)
+            .astype("string")
+            .str.strip()
+            .str.lower()
+        )
+        working_df[column] = break_type_series.where(break_type_series.isin({"up", "down"}), pd.NA)
     divergence_series = working_df["rsi_divergence_flag"].where(
         working_df["rsi_divergence_flag"].notna(),
         pd.NA,
@@ -1355,6 +1400,101 @@ def enrich_prices_with_rsi(
     return _canonicalize_prices_df(final_df)
 
 
+def enrich_daily_prices_with_moving_average_features(
+    target_df: pd.DataFrame,
+    *,
+    selected_tickers: Sequence[object] | None = None,
+    seed_history_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    normalized_target_df = _canonicalize_prices_df(target_df)
+    if normalized_target_df.empty:
+        return normalized_target_df
+
+    if selected_tickers is None:
+        impacted_tickers = normalized_target_df["ticker"].dropna().astype(str).unique().tolist()
+    else:
+        impacted_tickers = normalize_price_tickers(selected_tickers)
+    if not impacted_tickers:
+        return normalized_target_df
+
+    impacted_set = set(impacted_tickers)
+    impacted_target_df = normalized_target_df.loc[normalized_target_df["ticker"].isin(impacted_set)].copy()
+    if impacted_target_df.empty:
+        return normalized_target_df
+
+    working_frames = []
+    normalized_seed_history = _canonicalize_prices_df(seed_history_df) if seed_history_df is not None else empty_prices_cache_df()
+    if not normalized_seed_history.empty:
+        working_frames.append(normalized_seed_history.loc[normalized_seed_history["ticker"].isin(impacted_set)])
+    working_frames.append(impacted_target_df)
+    working_df = _canonicalize_prices_df(pd.concat(working_frames, ignore_index=True))
+    if working_df.empty:
+        return normalized_target_df
+
+    for window in [20, 50, 200]:
+        ma_column = f"ma_{window}d"
+        break_type_column = f"last_{window}_break_type"
+        break_date_column = f"last_{window}_break_date"
+        distance_column = f"dist_from_{window}"
+        working_df[ma_column] = np.nan
+        working_df[break_type_column] = pd.NA
+        working_df[break_date_column] = pd.NA
+        working_df[distance_column] = np.nan
+
+        for _ticker, group in working_df.groupby("ticker", sort=False):
+            close_series = pd.to_numeric(group["adjusted_close"], errors="coerce")
+            ma_series = close_series.rolling(window=window, min_periods=window).mean()
+            prior_close = close_series.shift(1)
+            prior_ma = ma_series.shift(1)
+            break_up_mask = prior_close.notna() & prior_ma.notna() & (prior_close <= prior_ma) & (close_series > ma_series)
+            break_down_mask = prior_close.notna() & prior_ma.notna() & (prior_close >= prior_ma) & (close_series < ma_series)
+
+            event_type = pd.Series(pd.NA, index=group.index, dtype="object")
+            event_type.loc[break_up_mask[break_up_mask].index] = "up"
+            event_type.loc[break_down_mask[break_down_mask].index] = "down"
+            event_date = pd.Series(pd.NA, index=group.index, dtype="object")
+            event_date.loc[event_type.notna()] = group.loc[event_type.notna(), "date"]
+
+            valid_ma_mask = ma_series.notna() & (ma_series != 0)
+            distance_series = pd.Series(np.nan, index=group.index, dtype="float64")
+            distance_series.loc[valid_ma_mask] = (
+                (close_series.loc[valid_ma_mask] / ma_series.loc[valid_ma_mask] - 1.0) * 100.0
+            ).round(1)
+
+            working_df.loc[group.index, ma_column] = ma_series.to_numpy()
+            working_df.loc[group.index, break_type_column] = event_type.ffill().to_numpy()
+            working_df.loc[group.index, break_date_column] = event_date.ffill().to_numpy()
+            working_df.loc[group.index, distance_column] = distance_series.to_numpy()
+
+    feature_columns = [
+        "ticker",
+        "date",
+        "ma_20d",
+        "ma_50d",
+        "ma_200d",
+        "last_20_break_type",
+        "last_20_break_date",
+        "dist_from_20",
+        "last_50_break_type",
+        "last_50_break_date",
+        "dist_from_50",
+        "last_200_break_type",
+        "last_200_break_date",
+        "dist_from_200",
+    ]
+    impacted_features_df = working_df.loc[working_df["ticker"].isin(impacted_set), feature_columns].copy()
+    impacted_features_df = impacted_features_df.drop_duplicates(subset=["ticker", "date"], keep="last")
+
+    preserved_df = normalized_target_df.loc[~normalized_target_df["ticker"].isin(impacted_set)].copy()
+    updated_impacted_df = impacted_target_df.drop(columns=feature_columns[2:], errors="ignore").merge(
+        impacted_features_df,
+        on=["ticker", "date"],
+        how="left",
+    )
+    final_df = pd.concat([preserved_df, updated_impacted_df], ignore_index=True)
+    return _canonicalize_prices_df(final_df)
+
+
 def import_prices_cache(
     frequency: PricesFrequency,
     cutoff_date: date,
@@ -1420,6 +1560,12 @@ def import_prices_cache(
         selected_tickers=requested_tickers,
         seed_history_df=seed_history_df,
     )
+    if frequency == "daily":
+        final_df = enrich_daily_prices_with_moving_average_features(
+            final_df,
+            selected_tickers=requested_tickers,
+            seed_history_df=seed_history_df,
+        )
     saved_path = save_prices_cache(final_df, frequency, resolved_year)
     latest_date = None
     if not final_df.empty:

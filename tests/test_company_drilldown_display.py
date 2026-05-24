@@ -28,6 +28,8 @@ from equipilot_app import (
     _filter_by_optional_label_value,
     _filter_by_optional_numeric_range,
     _format_divergence_flag,
+    _normalize_thematic_memberships_value,
+    _thematic_filter_options,
     _company_grid_aggrid_key,
     _latest_divergence_flags_for_frequency,
     _normalize_grid_visible_columns,
@@ -59,6 +61,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         "PER Trailing",
         "PER Fwd",
         "P/S TTM",
+        "EV/Revenues",
+        "EV/EBITDA",
         "1W",
         "1M",
         "3M",
@@ -102,6 +106,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "per_trailing": 28.5,
                     "per_forward": 23.2,
                     "price_to_sales_ttm": 7.1,
+                    "ev_revenue": 8.2,
+                    "ev_ebitda": 21.4,
                     "rs_daily": 12.0,
                     "rs_sma20": 10.0,
                     "obvm_daily": 105.0,
@@ -138,6 +144,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(prepared.loc[0, "per_trailing"]), 28.5)
         self.assertAlmostEqual(float(prepared.loc[0, "per_forward"]), 23.2)
         self.assertAlmostEqual(float(prepared.loc[0, "price_to_sales_ttm"]), 7.1)
+        self.assertAlmostEqual(float(prepared.loc[0, "ev_revenue"]), 8.2)
+        self.assertAlmostEqual(float(prepared.loc[0, "ev_ebitda"]), 21.4)
         self.assertTrue(pd.isna(prepared.loc[1, "peg_ratio"]))
         self.assertEqual(prepared["rel_strength"].tolist(), ["Positive", "Negative"])
         self.assertEqual(prepared["rel_volume"].tolist(), ["Negative", "Positive"])
@@ -953,6 +961,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "PER Trailing",
                 "PER Fwd",
                 "P/S TTM",
+                "EV/Revenues",
+                "EV/EBITDA",
                 "1W",
                 "1M",
                 "3M",
@@ -1204,6 +1214,24 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(state["beta_range"], (0.0, 5.0))
         self.assertEqual(state["ticker"], "")
 
+    def test_thematic_filter_options_accept_arraylike_and_serialized_memberships(self) -> None:
+        company_df = pd.DataFrame(
+            {
+                "thematic_memberships": [
+                    ("AI Infra", "Semis"),
+                    "['Cybersecurity', 'AI Infra']",
+                    "Energy | Utilities",
+                    "Unassigned",
+                ]
+            }
+        )
+
+        self.assertEqual(
+            _thematic_filter_options(company_df),
+            ["AI Infra", "Cybersecurity", "Energy", "Semis", "Utilities"],
+        )
+        self.assertEqual(_normalize_thematic_memberships_value("Energy | Utilities"), ["Energy", "Utilities"])
+
     def test_build_company_filter_state_preserves_default_reset_values(self) -> None:
         state = _build_company_filter_state(
             caps=["Large", "Mega"],
@@ -1387,6 +1415,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "per_trailing": 28.5,
                     "per_forward": 23.2,
                     "price_to_sales_ttm": 7.1,
+                    "ev_revenue": 8.2,
+                    "ev_ebitda": 21.4,
                     "rs_monthly": 0.5,
                     "obvm_monthly": 0.4,
                 },
@@ -1441,6 +1471,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "per_trailing"]), 28.5)
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "per_forward"]), 23.2)
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "price_to_sales_ttm"]), 7.1)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "ev_revenue"]), 8.2)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "ev_ebitda"]), 21.4)
 
     def test_build_thematics_company_universe_normalizes_raw_tickers_for_price_metrics(self) -> None:
         catalog = {

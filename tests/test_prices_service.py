@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -13,6 +13,7 @@ from prices_service import (
     compute_rsi_divergence_flags,
     compute_wilder_rsi,
     divergence_seed_history_rows,
+    enrich_daily_prices_with_moving_average_features,
     enrich_prices_with_rsi,
     fetch_prices_history,
     get_price_history_query,
@@ -341,6 +342,63 @@ class PricesServiceTests(unittest.TestCase):
 
         self.assertEqual(result["rsi_14"].tolist(), [100.0, 100.0])
         self.assertEqual(result["rsi_divergence_flag"].tolist(), ["none", "none"])
+
+    def test_enrich_daily_prices_with_moving_average_features_tracks_ma_distance_and_breaks(self) -> None:
+        target_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": date(2026, 1, day),
+                    "adjusted_close": close,
+                    "adjusted_high": close + 1.0,
+                    "adjusted_low": close - 1.0,
+                    "rs": 1.0,
+                    "obvm": 1.0,
+                }
+                for day, close in enumerate(([100.0] * 20) + [95.0, 105.0], start=1)
+            ]
+        )
+
+        result = enrich_daily_prices_with_moving_average_features(target_df)
+
+        self.assertAlmostEqual(result["ma_20d"].iloc[19], 100.0)
+        self.assertEqual(result["dist_from_20"].iloc[19], 0.0)
+        self.assertEqual(result["last_20_break_type"].iloc[20], "down")
+        self.assertEqual(result["last_20_break_date"].iloc[20], "2026-01-21")
+        self.assertEqual(result["last_20_break_type"].iloc[21], "up")
+        self.assertEqual(result["last_20_break_date"].iloc[21], "2026-01-22")
+
+    def test_enrich_daily_prices_with_moving_average_features_uses_seed_history_for_ma200(self) -> None:
+        seed_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": date(2025, 1, 1) + timedelta(days=day_index),
+                    "adjusted_close": 100.0,
+                    "adjusted_high": 101.0,
+                    "adjusted_low": 99.0,
+                    "rs": 1.0,
+                    "obvm": 1.0,
+                }
+                for day_index in range(199)
+            ]
+        )
+        target_df = pd.DataFrame(
+            [{
+                "ticker": "AAPL.US",
+                "date": "2026-01-01",
+                "adjusted_close": 110.0,
+                "adjusted_high": 111.0,
+                "adjusted_low": 109.0,
+                "rs": 1.0,
+                "obvm": 1.0,
+            }]
+        )
+
+        result = enrich_daily_prices_with_moving_average_features(target_df, seed_history_df=seed_df)
+
+        self.assertAlmostEqual(result["ma_200d"].iloc[0], 100.05)
+        self.assertEqual(result["dist_from_200"].iloc[0], 9.9)
 
     def test_compute_rsi_divergence_flags_detects_bearish_daily_divergence(self) -> None:
         highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 12, 10, 9, 8, 8]

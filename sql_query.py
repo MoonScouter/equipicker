@@ -115,6 +115,8 @@ pegdata AS (
     eod.per_trailing,
     eod.per_forward,
     eod.price_to_sales_ttm,
+    eod.ev_revenue,
+    eod.ev_ebitda,
     fsc.score AS peg_ratio_score
   FROM fundamental_scores fs
   LEFT JOIN fundamental_score_pillars fsp
@@ -166,6 +168,8 @@ SELECT
   pd.per_trailing,
   pd.per_forward,
   pd.price_to_sales_ttm,
+  pd.ev_revenue,
+  pd.ev_ebitda,
   pd.peg_ratio_score,
   ml.rs_monthly,
   ml.obvm_monthly

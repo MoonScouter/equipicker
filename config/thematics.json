@@ -1266,14 +1266,22 @@
         "ROK",
         "EMR",
         "CGNX",
+        "OUST",
+        "AMBA",
+        "CEVA",
         "ZBRA",
         "SYM",
         "RR",
+        "PH",
+        "NVTS",
+        "MPWR",
         "TER",
         "KEYS",
         "DE",
         "ISRG",
-        "VPG"
+        "VPG",
+        "AME",
+        "TSLA"
       ]
     },
     "Shipping & Logistics": {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import ast
 import json
 import logging
 import base64
@@ -246,8 +247,8 @@ COMPANY_GRID_SIGN_COLUMNS = [
     "Rel Strength",
     "Rel Volume",
 ]
-COMPANY_GRID_PERFORMANCE_COLUMNS = ["1W", "1M", "3M", "YTD"]
-COMPANY_GRID_VALUATION_COLUMNS = ["PEG", "PER Trailing", "PER Fwd", "P/S TTM"]
+COMPANY_GRID_PERFORMANCE_COLUMNS = ["1W", "1M", "3M", "YTD", "Dist to MA200"]
+COMPANY_GRID_VALUATION_COLUMNS = ["PEG", "PER Trailing", "PER Fwd", "P/S TTM", "EV/Revenues", "EV/EBITDA"]
 COMPANY_GRID_LEFT_COLUMNS = [
     "Thematic",
     "Portfolio Segment",
@@ -284,10 +285,13 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "PER Trailing": 110,
     "PER Fwd": 95,
     "P/S TTM": 95,
+    "EV/Revenues": 110,
+    "EV/EBITDA": 105,
     "1W": 95,
     "1M": 95,
     "3M": 95,
     "YTD": 95,
+    "Dist to MA200": 125,
     "TS": 110,
     "RSI Regime": 120,
     "Sector Regime Fit": 145,
@@ -5616,6 +5620,52 @@ def _filter_by_optional_numeric_range(
     return filtered.copy(), True
 
 
+def _normalize_thematic_memberships_value(value: object) -> list[str]:
+    if value is None or value is pd.NA:
+        return []
+    raw_values: object
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped or stripped == "Unassigned":
+            return []
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                raw_values = ast.literal_eval(stripped)
+            except (SyntaxError, ValueError):
+                raw_values = stripped
+        else:
+            raw_values = stripped.split("|") if "|" in stripped else [stripped]
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = value
+    elif hasattr(value, "tolist"):
+        raw_values = value.tolist()
+    else:
+        return []
+
+    if isinstance(raw_values, str):
+        raw_iterable = [raw_values]
+    else:
+        try:
+            raw_iterable = list(raw_values)  # type: ignore[arg-type]
+        except TypeError:
+            raw_iterable = []
+    memberships: list[str] = []
+    for raw_membership in raw_iterable:
+        membership = str(raw_membership or "").strip()
+        if membership and membership != "Unassigned" and membership not in memberships:
+            memberships.append(membership)
+    return memberships
+
+
+def _thematic_filter_options(company_df: pd.DataFrame) -> list[str]:
+    if "thematic_memberships" not in company_df.columns:
+        return []
+    options: set[str] = set()
+    for value in company_df["thematic_memberships"].tolist():
+        options.update(_normalize_thematic_memberships_value(value))
+    return sorted(options)
+
+
 def _prepare_company_drilldown_universe(
     report_df: pd.DataFrame,
     *,
@@ -5684,7 +5734,7 @@ def _prepare_company_drilldown_universe(
     for short_term_column in ["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]:
         if short_term_column in report_df.columns:
             selected_columns.append(short_term_column)
-    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm", "ev_revenue", "ev_ebitda"]:
         if valuation_column in report_df.columns:
             selected_columns.append(valuation_column)
     if include_beta and "beta" in report_df.columns:
@@ -5760,7 +5810,7 @@ def _prepare_company_drilldown_universe(
         working["beta"] = pd.to_numeric(working["beta"], errors="coerce")
     else:
         working["beta"] = np.nan
-    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm", "ev_revenue", "ev_ebitda"]:
         if valuation_column in working.columns:
             working[valuation_column] = pd.to_numeric(working[valuation_column], errors="coerce")
         else:
@@ -5783,6 +5833,16 @@ def _prepare_company_drilldown_universe(
     working.loc[short_term_valid_mask, "short_term_flow"] = "neutral"
     working.loc[short_term_positive_mask, "short_term_flow"] = "positive"
     working.loc[short_term_negative_mask, "short_term_flow"] = "negative"
+    ma200_valid_mask = (
+        working["eod_price_used"].notna()
+        & working["sma_daily_200"].notna()
+        & (working["sma_daily_200"] != 0)
+    )
+    working["dist_to_ma200"] = np.nan
+    working.loc[ma200_valid_mask, "dist_to_ma200"] = (
+        (working.loc[ma200_valid_mask, "eod_price_used"] / working.loc[ma200_valid_mask, "sma_daily_200"] - 1.0)
+        * 100.0
+    ).round(1)
 
     ai_lookup = (
         build_ai_exposure_lookup(str(THEMATICS_CONFIG_PATH), thematics_config_signature)
@@ -5865,7 +5925,7 @@ def _load_prepared_company_universe_for_report_path(
         "prices_path": prices_cache_path_str,
         "prices": prices_cache_signature,
         "schema": PERF_CACHE_SCHEMA_VERSION,
-        "company_universe_columns": "trade_ideas_raw_indicators_v1",
+        "company_universe_columns": "trade_ideas_raw_indicators_v3_ma200_distance",
     }
     cached_universe = load_company_universe_cached(evaluation_date, cache_signatures)
     if cached_universe is not None:
@@ -6544,14 +6604,7 @@ def render_company_drilldown_filters(
         selected_thematics: list[str] = []
         if include_thematic_filter:
             with filter_cols_top[next_top_col]:
-                thematic_options = sorted(
-                    {
-                        thematic_name
-                        for memberships in company_df.get("thematic_memberships", pd.Series([], dtype=object)).tolist()
-                        if isinstance(memberships, list)
-                        for thematic_name in memberships
-                    }
-                )
+                thematic_options = _thematic_filter_options(company_df)
                 selected_thematics = st.multiselect("Thematic filter", options=thematic_options, key=thematic_key)
             next_top_col += 1
         with filter_cols_top[next_top_col]:
@@ -6746,7 +6799,9 @@ def render_company_drilldown_filters(
     if include_thematic_filter and selected_thematics:
         filtered = filtered[
             filtered["thematic_memberships"].apply(
-                lambda memberships: bool(set(selected_thematics).intersection(memberships or []))
+                lambda memberships: bool(
+                    set(selected_thematics).intersection(_normalize_thematic_memberships_value(memberships))
+                )
             )
         ]
     if selected_sectors:
@@ -6859,10 +6914,13 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "PER Trailing",
                 "PER Fwd",
                 "P/S TTM",
+                "EV/Revenues",
+                "EV/EBITDA",
                 "1W",
                 "1M",
                 "3M",
                 "YTD",
+                "Dist to MA200",
                 "TS",
                 "Relative Performance",
                 "Relative Volume",
@@ -6911,12 +6969,14 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         sorted_df["thematic"] = "Unassigned"
     if "beta" not in sorted_df.columns:
         sorted_df["beta"] = np.nan
-    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm", "ev_revenue", "ev_ebitda"]:
         if valuation_column not in sorted_df.columns:
             sorted_df[valuation_column] = np.nan
     for performance_column in ["1w_perf", "1m_perf", "3m_perf", "ytd_perf"]:
         if performance_column not in sorted_df.columns:
             sorted_df[performance_column] = np.nan
+    if "dist_to_ma200" not in sorted_df.columns:
+        sorted_df["dist_to_ma200"] = np.nan
     if "anchor_fallback_used" not in sorted_df.columns:
         sorted_df["anchor_fallback_used"] = False
     if "rel_strength" not in sorted_df.columns:
@@ -6961,10 +7021,13 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "PER Trailing": pd.to_numeric(sorted_df["per_trailing"], errors="coerce"),
             "PER Fwd": pd.to_numeric(sorted_df["per_forward"], errors="coerce"),
             "P/S TTM": pd.to_numeric(sorted_df["price_to_sales_ttm"], errors="coerce"),
+            "EV/Revenues": pd.to_numeric(sorted_df["ev_revenue"], errors="coerce"),
+            "EV/EBITDA": pd.to_numeric(sorted_df["ev_ebitda"], errors="coerce"),
             "1W": pd.to_numeric(sorted_df["1w_perf"], errors="coerce"),
             "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
             "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
             "YTD": pd.to_numeric(sorted_df["ytd_perf"], errors="coerce"),
+            "Dist to MA200": pd.to_numeric(sorted_df["dist_to_ma200"], errors="coerce"),
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
             "Relative Performance": pd.to_numeric(sorted_df["relative_performance"], errors="coerce"),
             "Relative Volume": pd.to_numeric(sorted_df["relative_volume"], errors="coerce"),
@@ -6998,6 +7061,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             _format_percent_value_with_fallback_marker(value, fallback_used)
             for value, fallback_used in zip(display_df[perf_column].tolist(), perf_fallback_flags)
         ]
+    display_df["Dist to MA200"] = display_df["Dist to MA200"].map(_format_percent_value)
 
     trend_columns = [
         ("TS", "technical_trend_symbol"),
@@ -8213,6 +8277,12 @@ TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
         "subtitle": "Full-on bullish acceleration: price above aligned moving averages, sustained/current money flow, improving relative strength, strong RSI momentum, bullish RSI regime, and no bearish divergence lifecycle warnings.",
         "sort_by": "technical",
     },
+    {
+        "key": "below_ma200",
+        "name": "Below MA200",
+        "subtitle": "Companies where the current daily close is below the 200-day moving average. Uses the same fundamental threshold controls as Acceleration.",
+        "sort_by": "fundamental",
+    },
 ]
 
 TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS = {
@@ -8315,6 +8385,12 @@ def _filter_trade_idea_basket(
         m &= sma20 >= sma50
         m &= sma50 >= sma200
         m &= _trade_ideas_no_divergence(df, bearish_divergence)
+    elif basket_key == "below_ma200":
+        m &= fs >= float(thresholds["fundamental_total_score"])
+        m &= risk >= float(thresholds["fundamental_risk"])
+        m &= quality >= float(thresholds["fundamental_quality"])
+        m &= fm >= float(thresholds["fundamental_momentum"])
+        m &= price < sma200
     else:
         raise ValueError(f"Unsupported trade-idea basket: {basket_key}")
 
@@ -8409,9 +8485,26 @@ def _render_trade_idea_basket_rules_expander(
     basket_key: str,
     fundamental_thresholds: dict[str, float],
 ) -> None:
-    if basket_key != "acceleration":
-        return
     with st.expander("Filters used for this setup", expanded=False):
+        if basket_key == "below_ma200":
+            st.markdown(
+                f"""
+```text
+Fundamental overlays
+- Fundamental total score >= {fundamental_thresholds['fundamental_total_score']:.0f}
+- Risk score >= {fundamental_thresholds['fundamental_risk']:.0f}
+- Quality score >= {fundamental_thresholds['fundamental_quality']:.0f}
+- Fundamental momentum score >= {fundamental_thresholds['fundamental_momentum']:.0f}
+
+Price / trend
+- eod_price_used < sma_daily_200
+```
+                """
+            )
+            return
+        if basket_key != "acceleration":
+            st.caption("No rule summary is available for this setup yet.")
+            return
         st.markdown(
             f"""
 ```text
@@ -8885,20 +8978,23 @@ def render_trade_ideas(config: ReportConfig) -> None:
         "Trade Ideas sections",
         "Use the strategy tabs for current candidates, or open Backtest to compare selected strategies across historical report_select dates.",
     )
-    acceleration_tab, backtest_tab = st.tabs(["Acceleration", "Backtest"])
-    with acceleration_tab:
-        render_board_title_band("Acceleration")
-        fundamental_thresholds = _render_trade_idea_fundamental_filters()
-        _render_trade_idea_basket_rules_expander(
-            basket_key=str(TRADE_IDEA_BASKET_SPECS[0]["key"]),
-            fundamental_thresholds=fundamental_thresholds,
-        )
-        _render_trade_idea_basket(
-            basket_spec=TRADE_IDEA_BASKET_SPECS[0],
-            company_universe=company_universe,
-            selected_eod=selected_eod,
-            fundamental_thresholds=fundamental_thresholds,
-        )
+    fundamental_thresholds = _render_trade_idea_fundamental_filters()
+    tab_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest"]
+    trade_idea_tabs = st.tabs(tab_labels)
+    for basket_tab, basket_spec in zip(trade_idea_tabs[:-1], TRADE_IDEA_BASKET_SPECS):
+        with basket_tab:
+            render_board_title_band(str(basket_spec["name"]))
+            _render_trade_idea_basket_rules_expander(
+                basket_key=str(basket_spec["key"]),
+                fundamental_thresholds=fundamental_thresholds,
+            )
+            _render_trade_idea_basket(
+                basket_spec=basket_spec,
+                company_universe=company_universe,
+                selected_eod=selected_eod,
+                fundamental_thresholds=fundamental_thresholds,
+            )
+    backtest_tab = trade_idea_tabs[-1]
     with backtest_tab:
         render_board_title_band("Backtest")
         backtest_thresholds = {
@@ -10693,6 +10789,8 @@ def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.Dat
         "per_trailing",
         "per_forward",
         "price_to_sales_ttm",
+        "ev_revenue",
+        "ev_ebitda",
         "rs_daily",
         "rs_sma20",
         "obvm_daily",
@@ -10808,6 +10906,8 @@ def _build_thematics_company_universe_from_scope(
                 "per_trailing",
                 "per_forward",
                 "price_to_sales_ttm",
+                "ev_revenue",
+                "ev_ebitda",
                 "rs_daily",
                 "rs_sma20",
                 "obvm_daily",
@@ -10840,6 +10940,8 @@ def _build_thematics_company_universe_from_scope(
         "per_trailing",
         "per_forward",
         "price_to_sales_ttm",
+        "ev_revenue",
+        "ev_ebitda",
         "rs_monthly",
         "obvm_monthly",
     ]:
@@ -11210,6 +11312,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "PER Trailing",
                 "PER Fwd",
                 "P/S TTM",
+                "EV/Revenues",
+                "EV/EBITDA",
                 "1W",
                 "1M",
                 "3M",
@@ -11268,7 +11372,7 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["ai_revenue_exposure"] = "none"
     if "ai_disruption_risk" not in sorted_df.columns:
         sorted_df["ai_disruption_risk"] = "none"
-    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm"]:
+    for valuation_column in ["peg_ratio", "per_trailing", "per_forward", "price_to_sales_ttm", "ev_revenue", "ev_ebitda"]:
         if valuation_column not in sorted_df.columns:
             sorted_df[valuation_column] = np.nan
 
@@ -11285,6 +11389,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "PER Trailing": pd.to_numeric(sorted_df["per_trailing"], errors="coerce"),
             "PER Fwd": pd.to_numeric(sorted_df["per_forward"], errors="coerce"),
             "P/S TTM": pd.to_numeric(sorted_df["price_to_sales_ttm"], errors="coerce"),
+            "EV/Revenues": pd.to_numeric(sorted_df["ev_revenue"], errors="coerce"),
+            "EV/EBITDA": pd.to_numeric(sorted_df["ev_ebitda"], errors="coerce"),
             "1W": pd.to_numeric(sorted_df["1w_perf"], errors="coerce"),
             "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
             "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
