@@ -39,6 +39,7 @@ from equipilot_app import (
     _load_market_regime_company_metrics_for_date,
     _normalize_thematics_selected_basket,
     _prepare_company_drilldown_universe,
+    _sync_drilldown_filter_defaults,
     _use_fast_company_grid_render,
     build_thematics_catalog,
     apply_trend_symbols_to_table,
@@ -67,6 +68,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         "1M",
         "3M",
         "YTD",
+        "Dist to MA200",
         "TS",
         "Relative Performance",
         "Relative Volume",
@@ -114,6 +116,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "obvm_sma20": 100.0,
                     "rs_monthly": 1.2,
                     "obvm_monthly": -0.4,
+                    "eod_price_used": 105.0,
+                    "sma_daily_200": 100.0,
                 },
                 {
                     "ticker": "BBB.US",
@@ -130,6 +134,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "obvm_sma20": 100.0,
                     "rs_monthly": -0.1,
                     "obvm_monthly": 0.3,
+                    "eod_price_used": 90.0,
+                    "sma_daily_200": 100.0,
                 },
             ]
         )
@@ -149,6 +155,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertTrue(pd.isna(prepared.loc[1, "peg_ratio"]))
         self.assertEqual(prepared["rel_strength"].tolist(), ["Positive", "Negative"])
         self.assertEqual(prepared["rel_volume"].tolist(), ["Negative", "Positive"])
+        self.assertEqual(prepared["dist_to_ma200"].tolist(), [5.0, -10.0])
+        self.assertEqual(prepared["dist_to_ma200_sign"].tolist(), ["Positive", "Negative"])
         self.assertEqual(prepared["short_term_flow"].tolist(), ["positive", "negative"])
         self.assertEqual(prepared["ai_revenue_exposure"].tolist(), ["none", "none"])
         self.assertEqual(prepared["ai_disruption_risk"].tolist(), ["none", "none"])
@@ -1209,6 +1217,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(state["short_term_flow"], "All")
         self.assertEqual(state["rel_strength"], "All")
         self.assertEqual(state["rel_volume"], "All")
+        self.assertEqual(state["ma200_distance"], "All")
         self.assertEqual(state["ai_revenue_exposure"], "All")
         self.assertEqual(state["ai_disruption_risk"], "All")
         self.assertEqual(state["beta_range"], (0.0, 5.0))
@@ -1250,6 +1259,30 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(state["sector_regime_fit_range"], (60.0, 100.0))
         self.assertEqual(state["fund_momentum_range"], (60.0, 100.0))
         self.assertEqual(state["tech_trend_dir"], TREND_FILTER_LABELS["down"])
+
+    def test_sync_drilldown_filter_defaults_can_store_focus_defaults_without_activating_them(self) -> None:
+        fake_st = type("FakeStreamlit", (), {"session_state": {}})()
+
+        with patch("equipilot_app.st", fake_st):
+            _sync_drilldown_filter_defaults(
+                "sector_screener",
+                ("signature",),
+                default_sectors=[],
+                default_industries=[],
+                default_cap_buckets=["Large", "Mega"],
+                default_fund_range=(50.0, 100.0),
+                default_tech_range=(60.0, 100.0),
+                default_rsi_regime_range=(70.0, 100.0),
+                default_sector_regime_fit_range=(60.0, 100.0),
+                default_fund_momentum_range=(60.0, 100.0),
+                activate_defaults=False,
+            )
+
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_default_cap"], ["Large", "Mega"])
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_default_fund_range"], (50.0, 100.0))
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_cap"], [])
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_fund_range"], (0.0, 100.0))
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_tech_range"], (0.0, 100.0))
 
     def test_filter_company_grid_by_ticker_list_matches_exact_normalized_tickers(self) -> None:
         company_df = pd.DataFrame(

@@ -5846,6 +5846,7 @@ def _prepare_company_drilldown_universe(
         (working.loc[ma200_valid_mask, "eod_price_used"] / working.loc[ma200_valid_mask, "sma_daily_200"] - 1.0)
         * 100.0
     ).round(1)
+    working["dist_to_ma200_sign"] = working["dist_to_ma200"].map(_sign_label)
 
     ai_lookup = (
         build_ai_exposure_lookup(str(THEMATICS_CONFIG_PATH), thematics_config_signature)
@@ -6214,6 +6215,7 @@ def _build_company_filter_state(
     short_term_flow: str = "All",
     rel_strength: str = "All",
     rel_volume: str = "All",
+    ma200_distance: str = "All",
     ai_revenue_exposure: str = "All",
     ai_disruption_risk: str = "All",
     beta_range: tuple[float, float] = (0.0, 5.0),
@@ -6235,6 +6237,7 @@ def _build_company_filter_state(
         "short_term_flow": short_term_flow,
         "rel_strength": rel_strength,
         "rel_volume": rel_volume,
+        "ma200_distance": ma200_distance,
         "ai_revenue_exposure": ai_revenue_exposure,
         "ai_disruption_risk": ai_disruption_risk,
         "beta_range": tuple(beta_range),
@@ -6275,6 +6278,7 @@ def _load_company_filter_default_state(prefix: str) -> dict[str, object]:
         short_term_flow=st.session_state.get(f"{prefix}_drilldown_filter_default_short_term_flow", "All"),
         rel_strength=st.session_state.get(f"{prefix}_drilldown_filter_default_rel_strength", "All"),
         rel_volume=st.session_state.get(f"{prefix}_drilldown_filter_default_rel_volume", "All"),
+        ma200_distance=st.session_state.get(f"{prefix}_drilldown_filter_default_ma200_distance", "All"),
         ai_revenue_exposure=st.session_state.get(
             f"{prefix}_drilldown_filter_default_ai_revenue_exposure",
             "All",
@@ -6359,9 +6363,11 @@ def _sync_drilldown_filter_defaults(
     default_short_term_flow: str = "All",
     default_rel_strength: str = "All",
     default_rel_volume: str = "All",
+    default_ma200_distance: str = "All",
     default_ai_revenue_exposure: str = "All",
     default_ai_disruption_risk: str = "All",
     default_beta_range: tuple[float, float] = (0.0, 5.0),
+    activate_defaults: bool = True,
 ) -> None:
     signature_key = f"{prefix}_drilldown_filter_signature"
     if st.session_state.get(signature_key) == signature:
@@ -6383,28 +6389,16 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_default_short_term_flow"] = default_short_term_flow
     st.session_state[f"{prefix}_drilldown_filter_default_rel_strength"] = default_rel_strength
     st.session_state[f"{prefix}_drilldown_filter_default_rel_volume"] = default_rel_volume
+    st.session_state[f"{prefix}_drilldown_filter_default_ma200_distance"] = default_ma200_distance
     st.session_state[f"{prefix}_drilldown_filter_default_ai_revenue_exposure"] = default_ai_revenue_exposure
     st.session_state[f"{prefix}_drilldown_filter_default_ai_disruption_risk"] = default_ai_disruption_risk
     st.session_state[f"{prefix}_drilldown_filter_default_beta_range"] = tuple(default_beta_range)
-    st.session_state[f"{prefix}_drilldown_filter_thematic"] = default_thematics_list
-    st.session_state[f"{prefix}_drilldown_filter_sector"] = list(default_sectors)
-    st.session_state[f"{prefix}_drilldown_filter_industry"] = list(default_industries)
-    st.session_state[f"{prefix}_drilldown_filter_cap"] = default_cap_list
-    st.session_state[f"{prefix}_drilldown_filter_fund_range"] = tuple(default_fund_range)
-    st.session_state[f"{prefix}_drilldown_filter_tech_range"] = tuple(default_tech_range)
-    st.session_state[f"{prefix}_drilldown_filter_rsi_regime_range"] = tuple(default_rsi_regime_range)
-    st.session_state[f"{prefix}_drilldown_filter_sector_regime_fit_range"] = tuple(default_sector_regime_fit_range)
-    st.session_state[f"{prefix}_drilldown_filter_fund_momentum_range"] = tuple(default_fund_momentum_range)
-    st.session_state[f"{prefix}_drilldown_filter_tech_trend_dir"] = default_tech_trend_dir
-    st.session_state[f"{prefix}_drilldown_filter_daily_rsi_divergence"] = default_daily_rsi_divergence
-    st.session_state[f"{prefix}_drilldown_filter_weekly_rsi_divergence"] = default_weekly_rsi_divergence
-    st.session_state[f"{prefix}_drilldown_filter_short_term_flow"] = default_short_term_flow
-    st.session_state[f"{prefix}_drilldown_filter_rel_strength"] = default_rel_strength
-    st.session_state[f"{prefix}_drilldown_filter_rel_volume"] = default_rel_volume
-    st.session_state[f"{prefix}_drilldown_filter_ai_revenue_exposure"] = default_ai_revenue_exposure
-    st.session_state[f"{prefix}_drilldown_filter_ai_disruption_risk"] = default_ai_disruption_risk
-    st.session_state[f"{prefix}_drilldown_filter_beta_range"] = tuple(default_beta_range)
-    st.session_state[f"{prefix}_drilldown_filter_ticker"] = ""
+    active_state = (
+        _load_company_filter_default_state(prefix)
+        if activate_defaults
+        else _build_all_companies_filter_state()
+    )
+    _apply_company_filter_state(prefix, active_state)
     st.session_state[signature_key] = signature
 
 
@@ -6467,8 +6461,10 @@ def render_company_drilldown_filters(
     include_thematic_filter: bool = False,
     include_rel_strength_filter: bool = False,
     include_rel_volume_filter: bool = False,
+    include_ma200_distance_filter: bool = False,
     include_ai_exposure_filters: bool = False,
     include_beta_filter: bool = False,
+    default_action_label: str = "Reset filters",
 ) -> pd.DataFrame:
     def _is_full_numeric_range(
         range_value: tuple[float, float],
@@ -6496,6 +6492,7 @@ def render_company_drilldown_filters(
     short_term_flow_key = f"{prefix}_drilldown_filter_short_term_flow"
     rel_strength_key = f"{prefix}_drilldown_filter_rel_strength"
     rel_volume_key = f"{prefix}_drilldown_filter_rel_volume"
+    ma200_distance_key = f"{prefix}_drilldown_filter_ma200_distance"
     ai_revenue_exposure_key = f"{prefix}_drilldown_filter_ai_revenue_exposure"
     ai_disruption_risk_key = f"{prefix}_drilldown_filter_ai_disruption_risk"
     beta_range_key = f"{prefix}_drilldown_filter_beta_range"
@@ -6516,6 +6513,7 @@ def render_company_drilldown_filters(
     default_short_term_flow_key = f"{prefix}_drilldown_filter_default_short_term_flow"
     default_rel_strength_key = f"{prefix}_drilldown_filter_default_rel_strength"
     default_rel_volume_key = f"{prefix}_drilldown_filter_default_rel_volume"
+    default_ma200_distance_key = f"{prefix}_drilldown_filter_default_ma200_distance"
     default_ai_revenue_exposure_key = f"{prefix}_drilldown_filter_default_ai_revenue_exposure"
     default_ai_disruption_risk_key = f"{prefix}_drilldown_filter_default_ai_disruption_risk"
     default_beta_range_key = f"{prefix}_drilldown_filter_default_beta_range"
@@ -6575,6 +6573,10 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(
         rel_volume_key,
         st.session_state.get(default_rel_volume_key, "All"),
+    )
+    st.session_state.setdefault(
+        ma200_distance_key,
+        st.session_state.get(default_ma200_distance_key, "All"),
     )
     st.session_state.setdefault(
         ai_revenue_exposure_key,
@@ -6711,6 +6713,8 @@ def render_company_drilldown_filters(
             bottom_layout.append(1)
         if include_rel_volume_filter:
             bottom_layout.append(1)
+        if include_ma200_distance_filter:
+            bottom_layout.append(1)
         if include_ai_exposure_filters:
             bottom_layout.extend([1, 1])
         bottom_layout.append(1.4)
@@ -6721,6 +6725,7 @@ def render_company_drilldown_filters(
         short_term_flow_value = "All"
         rel_strength_value = "All"
         rel_volume_value = "All"
+        ma200_distance_value = "All"
         ai_revenue_exposure_value = "All"
         ai_disruption_risk_value = "All"
         with filter_cols_bottom[next_bottom_col]:
@@ -6760,6 +6765,14 @@ def render_company_drilldown_filters(
                     key=rel_volume_key,
                 )
             next_bottom_col += 1
+        if include_ma200_distance_filter:
+            with filter_cols_bottom[next_bottom_col]:
+                ma200_distance_value = st.selectbox(
+                    "MA200 Distance",
+                    options=SIGN_FILTER_OPTIONS,
+                    key=ma200_distance_key,
+                )
+            next_bottom_col += 1
         if include_ai_exposure_filters:
             with filter_cols_bottom[next_bottom_col]:
                 ai_revenue_exposure_value = st.selectbox(
@@ -6782,7 +6795,7 @@ def render_company_drilldown_filters(
         with action_cols[0]:
             apply_clicked = st.form_submit_button("Apply filters", use_container_width=True)
         with action_cols[1]:
-            reset_clicked = st.form_submit_button("Reset filters", use_container_width=True)
+            reset_clicked = st.form_submit_button(default_action_label, use_container_width=True)
         with action_cols[2]:
             clear_clicked = st.form_submit_button("Remove filters", use_container_width=True)
         if not apply_clicked and not reset_clicked and not clear_clicked:
@@ -6892,6 +6905,8 @@ def render_company_drilldown_filters(
         filtered = filtered[filtered["rel_strength"] == rel_strength_value]
     if include_rel_volume_filter and rel_volume_value != "All" and "rel_volume" in filtered.columns:
         filtered = filtered[filtered["rel_volume"] == rel_volume_value]
+    if include_ma200_distance_filter and ma200_distance_value != "All" and "dist_to_ma200_sign" in filtered.columns:
+        filtered = filtered[filtered["dist_to_ma200_sign"] == ma200_distance_value]
     if include_ai_exposure_filters and ai_revenue_exposure_value != "All" and "ai_revenue_exposure" in filtered.columns:
         filtered = filtered[filtered["ai_revenue_exposure"] == ai_revenue_exposure_value]
     if include_ai_exposure_filters and ai_disruption_risk_value != "All" and "ai_disruption_risk" in filtered.columns:
@@ -8185,7 +8200,7 @@ def _render_technical_scoring_content(
                 selected_sector,
                 scope_mode,
                 scope_key,
-                "screener_focus_defaults_v1" if screener_mode else "drilldown_focus_defaults_v1",
+                "screener_focus_defaults_v2" if screener_mode else "drilldown_focus_defaults_v1",
             )
             _sync_drilldown_filter_defaults(
                 state_prefix,
@@ -8202,6 +8217,7 @@ def _render_technical_scoring_content(
                 ),
                 default_fund_momentum_range=(60.0, 100.0),
                 default_tech_trend_dir="All",
+                activate_defaults=not screener_mode,
             )
             st.markdown("---")
             if screener_mode:
@@ -8220,7 +8236,9 @@ def _render_technical_scoring_content(
                 include_thematic_filter=True,
                 include_rel_strength_filter=True,
                 include_rel_volume_filter=True,
+                include_ma200_distance_filter=screener_mode,
                 include_ai_exposure_filters=True,
+                default_action_label="Apply strict filters" if screener_mode else "Reset filters",
             )
             _perf_mark(timings, "company filters", t_start)
             st.caption(f"Companies after filters: {len(filtered_companies)}")

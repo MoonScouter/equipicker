@@ -9,10 +9,12 @@ import pandas as pd
 from prices_service import (
     ActiveDivergence,
     build_prices_cache_dataframe,
+    compute_wilder_atr,
     compute_rsi_divergence_state,
     compute_rsi_divergence_flags,
     compute_wilder_rsi,
     divergence_seed_history_rows,
+    enrich_daily_prices_with_atr_features,
     enrich_daily_prices_with_moving_average_features,
     enrich_prices_with_rsi,
     fetch_prices_history,
@@ -248,6 +250,43 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(result.iloc[15], 100.0)
         self.assertEqual(result.iloc[16], 100.0)
 
+    def test_compute_wilder_atr_uses_true_range_and_wilder_smoothing(self) -> None:
+        highs = pd.Series([11.0] * 15 + [15.0])
+        lows = pd.Series([9.0] * 15 + [14.0])
+        closes = pd.Series([10.0] * 15 + [14.5])
+
+        result = compute_wilder_atr(highs, lows, closes)
+
+        self.assertTrue(result.iloc[:14].isna().all())
+        self.assertEqual(result.iloc[14], 2.0)
+        self.assertAlmostEqual(result.iloc[15], ((2.0 * 13.0) + 5.0) / 14.0)
+
+    def test_enrich_daily_prices_with_atr_features_adds_rolling_and_since_pivot_percentiles(self) -> None:
+        target_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": date(2026, 1, 1) + timedelta(days=day_index),
+                    "adjusted_close": 100.0 + day_index,
+                    "adjusted_high": 101.0 + day_index,
+                    "adjusted_low": 99.0 + day_index,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                    "rsi_divergence_last_pivot_date": "2026-01-10",
+                }
+                for day_index in range(20)
+            ]
+        )
+
+        result = enrich_daily_prices_with_atr_features(target_df)
+
+        self.assertAlmostEqual(result["atr_14"].iloc[14], 2.0)
+        self.assertAlmostEqual(result["atr_pct"].iloc[14], (2.0 / 114.0) * 100.0)
+        self.assertEqual(result["atr_pctile_200d"].iloc[14], 100.0)
+        self.assertEqual(result["atr_pctile_200d"].iloc[15], 50.0)
+        self.assertEqual(result["atr_pctile_since_rsi_divergence_last_pivot"].iloc[14], 100.0)
+        self.assertEqual(result["atr_pctile_since_rsi_divergence_last_pivot"].iloc[15], 50.0)
+
     def test_enrich_prices_with_rsi_updates_only_selected_tickers(self) -> None:
         target_df = pd.DataFrame(
             [
@@ -438,9 +477,11 @@ class PricesServiceTests(unittest.TestCase):
         state = compute_rsi_divergence_state(df, frequency="daily")
 
         self.assertEqual(state["rsi_divergence_last_pivot_type"].iloc[8], "bear")
+        self.assertEqual(state["rsi_divergence_last_pivot_date"].iloc[8], "2026-01-07")
         self.assertEqual(state["rsi_divergence_last_pivot_price"].iloc[8], 14.0)
         self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[8], 6.0 / 14.0)
         self.assertEqual(state["rsi_divergence_last_pivot_type"].iloc[16], "bear")
+        self.assertEqual(state["rsi_divergence_last_pivot_date"].iloc[16], "2026-01-15")
         self.assertEqual(state["rsi_divergence_last_pivot_price"].iloc[16], 17.0)
         self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[16], 8.0 / 17.0)
         self.assertEqual(state["rsi_divergence_last_pivot_type"].iloc[19], "bear")
@@ -470,14 +511,16 @@ class PricesServiceTests(unittest.TestCase):
         state = compute_rsi_divergence_state(df, frequency="daily")
 
         self.assertEqual(state["rsi_divergence_last_pivot_type"].iloc[8], "bull")
+        self.assertEqual(state["rsi_divergence_last_pivot_date"].iloc[8], "2026-01-07")
         self.assertEqual(state["rsi_divergence_last_pivot_price"].iloc[8], 6.0)
-        self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[8], 6.0 / 14.0)
+        self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[8], 14.0 / 6.0)
         self.assertEqual(state["rsi_divergence_last_pivot_type"].iloc[16], "bull")
+        self.assertEqual(state["rsi_divergence_last_pivot_date"].iloc[16], "2026-01-15")
         self.assertEqual(state["rsi_divergence_last_pivot_price"].iloc[16], 5.0)
-        self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[16], 5.0 / 12.0)
+        self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[16], 12.0 / 5.0)
         self.assertEqual(state["rsi_divergence_last_pivot_type"].iloc[19], "bull")
         self.assertEqual(state["rsi_divergence_last_pivot_price"].iloc[19], 5.0)
-        self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[19], 5.0 / 14.0)
+        self.assertAlmostEqual(state["rsi_divergence_pivot_distance_coeff"].iloc[19], 14.0 / 5.0)
 
     def test_compute_rsi_divergence_flags_detects_bullish_daily_divergence(self) -> None:
         lows = [12, 11, 10, 9, 10, 11, 6, 11, 12, 11, 10, 9, 8, 7, 5, 8, 10, 11, 12, 12]
@@ -1247,6 +1290,11 @@ class PricesServiceTests(unittest.TestCase):
                 "rsi_divergence_anchor_price": 100.0,
                 "rsi_divergence_pivot_date": "2026-02-03",
                 "rsi_divergence_pivot_price": 112.0,
+                "rsi_divergence_last_pivot_date": "2026-02-03",
+                "atr_14": 4.5,
+                "atr_pct": 4.05,
+                "atr_pctile_200d": 88.0,
+                "atr_pctile_since_rsi_divergence_last_pivot": 72.0,
             }]
         )
         with TemporaryDirectory() as tmp_dir:
@@ -1264,6 +1312,11 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(loaded["rsi_divergence_anchor_price"].tolist(), [100.0])
         self.assertEqual(loaded["rsi_divergence_pivot_date"].tolist(), ["2026-02-03"])
         self.assertEqual(loaded["rsi_divergence_pivot_price"].tolist(), [112.0])
+        self.assertEqual(loaded["rsi_divergence_last_pivot_date"].tolist(), ["2026-02-03"])
+        self.assertEqual(loaded["atr_14"].tolist(), [4.5])
+        self.assertEqual(loaded["atr_pct"].tolist(), [4.05])
+        self.assertEqual(loaded["atr_pctile_200d"].tolist(), [88.0])
+        self.assertEqual(loaded["atr_pctile_since_rsi_divergence_last_pivot"].tolist(), [72.0])
 
 
 if __name__ == "__main__":

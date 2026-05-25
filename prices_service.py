@@ -17,6 +17,8 @@ from perf_store import load_prices_cached
 
 PricesFrequency = Literal["daily", "weekly"]
 RSI_PERIOD = 14
+ATR_PERIOD = 14
+ATR_PERCENTILE_LOOKBACK = 200
 DIVERGENCE_OB_LEVEL = 70.0
 DIVERGENCE_OS_LEVEL = 30.0
 DIVERGENCE_SAME_SWING_TOLERANCE_PCT = 0.001
@@ -123,9 +125,14 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "rsi_divergence_anchor_price",
     "rsi_divergence_pivot_date",
     "rsi_divergence_pivot_price",
+    "rsi_divergence_last_pivot_date",
     "rsi_divergence_last_pivot_type",
     "rsi_divergence_last_pivot_price",
     "rsi_divergence_pivot_distance_coeff",
+    "atr_14",
+    "atr_pct",
+    "atr_pctile_200d",
+    "atr_pctile_since_rsi_divergence_last_pivot",
 )
 PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
     {
@@ -134,9 +141,14 @@ PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
         "rsi_divergence_anchor_price",
         "rsi_divergence_pivot_date",
         "rsi_divergence_pivot_price",
+        "rsi_divergence_last_pivot_date",
         "rsi_divergence_last_pivot_type",
         "rsi_divergence_last_pivot_price",
         "rsi_divergence_pivot_distance_coeff",
+        "atr_14",
+        "atr_pct",
+        "atr_pctile_200d",
+        "atr_pctile_since_rsi_divergence_last_pivot",
         "ma_20d",
         "ma_50d",
         "ma_200d",
@@ -315,6 +327,10 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
         "rsi_divergence_pivot_price",
         "rsi_divergence_last_pivot_price",
         "rsi_divergence_pivot_distance_coeff",
+        "atr_14",
+        "atr_pct",
+        "atr_pctile_200d",
+        "atr_pctile_since_rsi_divergence_last_pivot",
     ]
     for column in numeric_columns:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
@@ -324,6 +340,7 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
         "last_200_break_date",
         "rsi_divergence_anchor_date",
         "rsi_divergence_pivot_date",
+        "rsi_divergence_last_pivot_date",
     ]:
         date_values = pd.to_datetime(working_df[column], errors="coerce").dt.date
         working_df[column] = date_values.map(lambda value: value.isoformat() if pd.notna(value) else None)
@@ -518,6 +535,82 @@ def compute_wilder_rsi(close_series: pd.Series, period: int = RSI_PERIOD) -> pd.
             rsi_values[idx] = 100.0 - (100.0 / (1.0 + rs_value))
 
     return pd.Series(rsi_values, index=close_series.index)
+
+
+def compute_wilder_atr(
+    high_series: pd.Series,
+    low_series: pd.Series,
+    close_series: pd.Series,
+    period: int = ATR_PERIOD,
+) -> pd.Series:
+    highs = pd.to_numeric(high_series, errors="coerce")
+    lows = pd.to_numeric(low_series, errors="coerce")
+    closes = pd.to_numeric(close_series, errors="coerce")
+    atr_values = np.full(len(closes), np.nan, dtype=float)
+    if len(closes) <= period:
+        return pd.Series(atr_values, index=close_series.index)
+
+    high_values = highs.to_numpy(dtype=float)
+    low_values = lows.to_numpy(dtype=float)
+    close_values = closes.to_numpy(dtype=float)
+    if np.isnan(high_values).any() or np.isnan(low_values).any() or np.isnan(close_values).any():
+        return pd.Series(atr_values, index=close_series.index)
+
+    true_ranges = np.full(len(close_values), np.nan, dtype=float)
+    true_ranges[0] = high_values[0] - low_values[0]
+    for idx in range(1, len(close_values)):
+        true_ranges[idx] = max(
+            high_values[idx] - low_values[idx],
+            abs(high_values[idx] - close_values[idx - 1]),
+            abs(low_values[idx] - close_values[idx - 1]),
+        )
+
+    atr = true_ranges[1:period + 1].mean()
+    atr_values[period] = atr
+    for idx in range(period + 1, len(close_values)):
+        atr = ((period - 1) * atr + true_ranges[idx]) / period
+        atr_values[idx] = atr
+
+    return pd.Series(atr_values, index=close_series.index)
+
+
+def _percentile_rank(current_value: float, history: pd.Series) -> float:
+    valid_history = pd.to_numeric(history, errors="coerce").dropna()
+    if pd.isna(current_value) or valid_history.empty:
+        return np.nan
+    return float((valid_history <= float(current_value)).mean() * 100.0)
+
+
+def _rolling_percentile_rank(series: pd.Series, *, window: int) -> pd.Series:
+    numeric_series = pd.to_numeric(series, errors="coerce")
+    values = np.full(len(numeric_series), np.nan, dtype=float)
+    for idx in range(len(numeric_series)):
+        current_value = numeric_series.iloc[idx]
+        if pd.isna(current_value):
+            continue
+        start_idx = max(0, idx - window + 1)
+        values[idx] = _percentile_rank(float(current_value), numeric_series.iloc[start_idx:idx + 1])
+    return pd.Series(values, index=series.index)
+
+
+def _percentile_rank_since_dates(
+    value_series: pd.Series,
+    date_series: pd.Series,
+    start_date_series: pd.Series,
+) -> pd.Series:
+    numeric_values = pd.to_numeric(value_series, errors="coerce")
+    dates = pd.to_datetime(date_series, errors="coerce")
+    start_dates = pd.to_datetime(start_date_series, errors="coerce")
+    values = np.full(len(numeric_values), np.nan, dtype=float)
+    for idx in range(len(numeric_values)):
+        current_value = numeric_values.iloc[idx]
+        current_date = dates.iloc[idx]
+        start_date = start_dates.iloc[idx]
+        if pd.isna(current_value) or pd.isna(current_date) or pd.isna(start_date):
+            continue
+        history_mask = (dates >= start_date) & (dates <= current_date)
+        values[idx] = _percentile_rank(float(current_value), numeric_values.loc[history_mask])
+    return pd.Series(values, index=value_series.index)
 
 
 def _is_price_pivot_candidate(price_series: pd.Series, index: int, *, left_window: int, right_window: int, kind: str) -> bool:
@@ -888,6 +981,7 @@ def compute_rsi_divergence_state(
                 "rsi_divergence_anchor_price": pd.Series(dtype=float),
                 "rsi_divergence_pivot_date": pd.Series(dtype=object),
                 "rsi_divergence_pivot_price": pd.Series(dtype=float),
+                "rsi_divergence_last_pivot_date": pd.Series(dtype=object),
                 "rsi_divergence_last_pivot_type": pd.Series(dtype=object),
                 "rsi_divergence_last_pivot_price": pd.Series(dtype=float),
                 "rsi_divergence_pivot_distance_coeff": pd.Series(dtype=float),
@@ -960,6 +1054,7 @@ def compute_rsi_divergence_state(
     divergence_anchor_prices = np.full(row_count, np.nan, dtype=float)
     divergence_pivot_dates = np.full(row_count, pd.NA, dtype=object)
     divergence_pivot_prices = np.full(row_count, np.nan, dtype=float)
+    divergence_last_pivot_dates = np.full(row_count, pd.NA, dtype=object)
     divergence_last_pivot_types = np.full(row_count, pd.NA, dtype=object)
     divergence_last_pivot_prices = np.full(row_count, np.nan, dtype=float)
     divergence_pivot_distance_coeffs = np.full(row_count, np.nan, dtype=float)
@@ -971,13 +1066,16 @@ def compute_rsi_divergence_state(
     replacement_extension_instance_key: tuple[str, tuple[int, int, int]] | None = None
     active_extension_instance_key: tuple[str, tuple[int, int, int]] | None = None
     active_extension_start: int | None = None
-    registered_pivot_events: dict[int, list[tuple[str, float]]] = {}
+    registered_pivot_events: dict[int, list[tuple[str, float, object]]] = {}
     for pivot in pivot_highs:
         if pivot.confirmation_index < row_count and pivot.rsi > DIVERGENCE_OB_LEVEL:
-            registered_pivot_events.setdefault(pivot.confirmation_index, []).append(("bear", pivot.price))
+            pivot_date = dates.iloc[pivot.index].isoformat() if pd.notna(dates.iloc[pivot.index]) else pd.NA
+            registered_pivot_events.setdefault(pivot.confirmation_index, []).append(("bear", pivot.price, pivot_date))
     for pivot in pivot_lows:
         if pivot.confirmation_index < row_count and pivot.rsi < DIVERGENCE_OS_LEVEL:
-            registered_pivot_events.setdefault(pivot.confirmation_index, []).append(("bull", pivot.price))
+            pivot_date = dates.iloc[pivot.index].isoformat() if pd.notna(dates.iloc[pivot.index]) else pd.NA
+            registered_pivot_events.setdefault(pivot.confirmation_index, []).append(("bull", pivot.price, pivot_date))
+    current_pivot_date: object | None = None
     current_pivot_type: str | None = None
     current_pivot_price: float | None = None
 
@@ -993,29 +1091,29 @@ def compute_rsi_divergence_state(
         )
         divergence_pivot_prices[row_index] = state.pivot2_price
 
-    def assign_last_pivot_reference(row_index: int, pivot_type: str, pivot_price: float) -> None:
-        nonlocal current_pivot_type, current_pivot_price
+    def assign_last_pivot_reference(row_index: int, pivot_type: str, pivot_price: float, pivot_date: object) -> None:
+        nonlocal current_pivot_date, current_pivot_type, current_pivot_price
+        current_pivot_date = pivot_date
         current_pivot_type = pivot_type
         current_pivot_price = pivot_price
+        divergence_last_pivot_dates[row_index] = pivot_date
         divergence_last_pivot_types[row_index] = pivot_type
         divergence_last_pivot_prices[row_index] = pivot_price
 
     def apply_current_pivot_reference(row_index: int) -> None:
         if current_pivot_type is None or current_pivot_price is None:
             return
+        divergence_last_pivot_dates[row_index] = current_pivot_date
         divergence_last_pivot_types[row_index] = current_pivot_type
         divergence_last_pivot_prices[row_index] = current_pivot_price
         current_close = closes.iloc[row_index]
         if pd.isna(current_close) or float(current_close) == 0.0 or current_pivot_price == 0.0:
             return
-        if current_pivot_type == "bear":
-            divergence_pivot_distance_coeffs[row_index] = float(current_close) / current_pivot_price
-        elif current_pivot_type == "bull":
-            divergence_pivot_distance_coeffs[row_index] = current_pivot_price / float(current_close)
+        divergence_pivot_distance_coeffs[row_index] = float(current_close) / current_pivot_price
 
     for row_index in range(row_count):
-        for pivot_type, pivot_price in registered_pivot_events.get(row_index, []):
-            assign_last_pivot_reference(row_index, pivot_type, pivot_price)
+        for pivot_type, pivot_price, pivot_date in registered_pivot_events.get(row_index, []):
+            assign_last_pivot_reference(row_index, pivot_type, pivot_price, pivot_date)
         bullish_state = bullish_active[row_index]
         bearish_state = bearish_active[row_index]
         selected_flag = "none"
@@ -1058,7 +1156,12 @@ def compute_rsi_divergence_state(
         if selected_state is not None:
             assign_divergence_metadata(row_index, selected_flag, selected_state)
             selected_pivot_type = "bull" if "positive" in selected_flag else "bear"
-            assign_last_pivot_reference(row_index, selected_pivot_type, selected_state.pivot2_price)
+            selected_pivot_date = (
+                dates.iloc[selected_state.pivot2_index].isoformat()
+                if pd.notna(dates.iloc[selected_state.pivot2_index])
+                else pd.NA
+            )
+            assign_last_pivot_reference(row_index, selected_pivot_type, selected_state.pivot2_price, selected_pivot_date)
         apply_current_pivot_reference(row_index)
         if selected_state is None:
             active_instance_key = None
@@ -1208,6 +1311,7 @@ def compute_rsi_divergence_state(
             "rsi_divergence_anchor_price": pd.Series(divergence_anchor_prices, index=price_df.index, dtype=float),
             "rsi_divergence_pivot_date": pd.Series(divergence_pivot_dates, index=price_df.index, dtype=object),
             "rsi_divergence_pivot_price": pd.Series(divergence_pivot_prices, index=price_df.index, dtype=float),
+            "rsi_divergence_last_pivot_date": pd.Series(divergence_last_pivot_dates, index=price_df.index, dtype=object),
             "rsi_divergence_last_pivot_type": pd.Series(divergence_last_pivot_types, index=price_df.index, dtype=object),
             "rsi_divergence_last_pivot_price": pd.Series(divergence_last_pivot_prices, index=price_df.index, dtype=float),
             "rsi_divergence_pivot_distance_coeff": pd.Series(
@@ -1327,6 +1431,7 @@ def enrich_prices_with_rsi(
     working_df["rsi_divergence_anchor_price"] = np.nan
     working_df["rsi_divergence_pivot_date"] = pd.NA
     working_df["rsi_divergence_pivot_price"] = np.nan
+    working_df["rsi_divergence_last_pivot_date"] = pd.NA
     working_df["rsi_divergence_last_pivot_type"] = pd.NA
     working_df["rsi_divergence_last_pivot_price"] = np.nan
     working_df["rsi_divergence_pivot_distance_coeff"] = np.nan
@@ -1351,6 +1456,7 @@ def enrich_prices_with_rsi(
             "rsi_divergence_anchor_price",
             "rsi_divergence_pivot_date",
             "rsi_divergence_pivot_price",
+            "rsi_divergence_last_pivot_date",
             "rsi_divergence_last_pivot_type",
             "rsi_divergence_last_pivot_price",
             "rsi_divergence_pivot_distance_coeff",
@@ -1369,6 +1475,7 @@ def enrich_prices_with_rsi(
             "rsi_divergence_anchor_price",
             "rsi_divergence_pivot_date",
             "rsi_divergence_pivot_price",
+            "rsi_divergence_last_pivot_date",
             "rsi_divergence_last_pivot_type",
             "rsi_divergence_last_pivot_price",
             "rsi_divergence_pivot_distance_coeff",
@@ -1386,6 +1493,7 @@ def enrich_prices_with_rsi(
             "rsi_divergence_anchor_price",
             "rsi_divergence_pivot_date",
             "rsi_divergence_pivot_price",
+            "rsi_divergence_last_pivot_date",
             "rsi_divergence_last_pivot_type",
             "rsi_divergence_last_pivot_price",
             "rsi_divergence_pivot_distance_coeff",
@@ -1495,6 +1603,90 @@ def enrich_daily_prices_with_moving_average_features(
     return _canonicalize_prices_df(final_df)
 
 
+def enrich_daily_prices_with_atr_features(
+    target_df: pd.DataFrame,
+    *,
+    selected_tickers: Sequence[object] | None = None,
+    seed_history_df: pd.DataFrame | None = None,
+    period: int = ATR_PERIOD,
+    percentile_lookback: int = ATR_PERCENTILE_LOOKBACK,
+) -> pd.DataFrame:
+    normalized_target_df = _canonicalize_prices_df(target_df)
+    if normalized_target_df.empty:
+        return normalized_target_df
+
+    if selected_tickers is None:
+        impacted_tickers = normalized_target_df["ticker"].dropna().astype(str).unique().tolist()
+    else:
+        impacted_tickers = normalize_price_tickers(selected_tickers)
+    if not impacted_tickers:
+        return normalized_target_df
+
+    impacted_set = set(impacted_tickers)
+    impacted_target_df = normalized_target_df.loc[normalized_target_df["ticker"].isin(impacted_set)].copy()
+    if impacted_target_df.empty:
+        return normalized_target_df
+
+    working_frames = []
+    normalized_seed_history = _canonicalize_prices_df(seed_history_df) if seed_history_df is not None else empty_prices_cache_df()
+    if not normalized_seed_history.empty:
+        working_frames.append(normalized_seed_history.loc[normalized_seed_history["ticker"].isin(impacted_set)])
+    working_frames.append(impacted_target_df)
+    working_df = _canonicalize_prices_df(pd.concat(working_frames, ignore_index=True))
+    if working_df.empty:
+        return normalized_target_df
+
+    working_df["atr_14"] = np.nan
+    working_df["atr_pct"] = np.nan
+    working_df["atr_pctile_200d"] = np.nan
+    working_df["atr_pctile_since_rsi_divergence_last_pivot"] = np.nan
+    for ticker, group in working_df.groupby("ticker", sort=False):
+        if ticker not in impacted_set:
+            continue
+        atr_series = compute_wilder_atr(
+            group["adjusted_high"],
+            group["adjusted_low"],
+            group["adjusted_close"],
+            period=period,
+        )
+        closes = pd.to_numeric(group["adjusted_close"], errors="coerce")
+        atr_pct = (atr_series / closes) * 100.0
+        atr_pct = atr_pct.where(closes != 0.0, np.nan)
+        working_df.loc[group.index, "atr_14"] = atr_series.to_numpy()
+        working_df.loc[group.index, "atr_pct"] = atr_pct.to_numpy()
+        working_df.loc[group.index, "atr_pctile_200d"] = _rolling_percentile_rank(
+            atr_pct,
+            window=percentile_lookback,
+        ).to_numpy()
+        working_df.loc[group.index, "atr_pctile_since_rsi_divergence_last_pivot"] = (
+            _percentile_rank_since_dates(
+                atr_pct,
+                group["date"],
+                group["rsi_divergence_last_pivot_date"],
+            ).to_numpy()
+        )
+
+    feature_columns = [
+        "ticker",
+        "date",
+        "atr_14",
+        "atr_pct",
+        "atr_pctile_200d",
+        "atr_pctile_since_rsi_divergence_last_pivot",
+    ]
+    impacted_features_df = working_df.loc[working_df["ticker"].isin(impacted_set), feature_columns].copy()
+    impacted_features_df = impacted_features_df.drop_duplicates(subset=["ticker", "date"], keep="last")
+
+    preserved_df = normalized_target_df.loc[~normalized_target_df["ticker"].isin(impacted_set)].copy()
+    updated_impacted_df = impacted_target_df.drop(columns=feature_columns[2:], errors="ignore").merge(
+        impacted_features_df,
+        on=["ticker", "date"],
+        how="left",
+    )
+    final_df = pd.concat([preserved_df, updated_impacted_df], ignore_index=True)
+    return _canonicalize_prices_df(final_df)
+
+
 def import_prices_cache(
     frequency: PricesFrequency,
     cutoff_date: date,
@@ -1561,6 +1753,11 @@ def import_prices_cache(
         seed_history_df=seed_history_df,
     )
     if frequency == "daily":
+        final_df = enrich_daily_prices_with_atr_features(
+            final_df,
+            selected_tickers=requested_tickers,
+            seed_history_df=seed_history_df,
+        )
         final_df = enrich_daily_prices_with_moving_average_features(
             final_df,
             selected_tickers=requested_tickers,
