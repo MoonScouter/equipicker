@@ -327,6 +327,18 @@ def build_prompt_reference(prompt_config: Mapping[str, Any]) -> dict[str, Any] |
     return prompt
 
 
+def build_user_input_message(user_text: str) -> dict[str, Any]:
+    return {
+        "role": "user",
+        "content": [
+            {
+                "type": "input_text",
+                "text": user_text,
+            }
+        ],
+    }
+
+
 def build_responses_payload(template_payload: Mapping[str, Any]) -> dict[str, Any]:
     model = str(_clean_cell_value(template_payload.get("model"))).strip()
     if not model:
@@ -344,7 +356,7 @@ def build_responses_payload(template_payload: Mapping[str, Any]) -> dict[str, An
 
     user_text = str(_clean_cell_value(template_payload.get("user_text"))).strip()
     if user_text:
-        payload["input"] = user_text
+        payload["input"] = [build_user_input_message(user_text)]
 
     metadata_rows = template_payload.get("metadata", [])
     if isinstance(metadata_rows, Sequence):

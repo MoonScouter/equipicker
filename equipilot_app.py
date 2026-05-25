@@ -1927,6 +1927,9 @@ def apply_api_template_state(template_payload: Optional[dict[str, object]] = Non
     st.session_state["api_template_web_timezone"] = str(user_location_payload.get("timezone", "") or "")
 
     st.session_state["api_template_file_enabled"] = bool(file_search_payload.get("enabled", False))
+    st.session_state["api_template_tool_section"] = (
+        "File Search" if st.session_state["api_template_file_enabled"] else "Web Search"
+    )
     st.session_state["api_template_file_vector_store_ids"] = ", ".join(
         parse_string_list(file_search_payload.get("vector_store_ids", []))
     )
@@ -2064,6 +2067,13 @@ def render_api_templates_subtab() -> None:
         f"PowerShell: `$env:{OPENAI_API_KEY_ENV}=\"your-key\"` or `setx {OPENAI_API_KEY_ENV} \"your-key\"`."
     )
 
+    tool_section = st.radio(
+        "Tool configuration",
+        ["Web Search", "File Search"],
+        horizontal=True,
+        key="api_template_tool_section",
+    )
+
     save_clicked = False
     run_clicked = False
     with st.form(key="api_template_form", clear_on_submit=False):
@@ -2154,13 +2164,6 @@ def render_api_templates_subtab() -> None:
                 height=220,
             )
 
-        tool_section = st.radio(
-            "Tool configuration",
-            ["Web Search", "File Search"],
-            horizontal=True,
-            label_visibility="collapsed",
-            key="api_template_tool_section",
-        )
         filter_rows = st.session_state.get("api_template_file_filter_rows", [])
         if tool_section == "Web Search":
             st.checkbox("Enable web search", key="api_template_web_enabled")

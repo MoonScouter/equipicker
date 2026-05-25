@@ -68,7 +68,15 @@ class OpenAIResponsesServiceTests(unittest.TestCase):
         self.assertEqual(payload["prompt"]["id"], "pmpt_123")
         self.assertNotIn("prompt_id", payload["prompt"])
         self.assertEqual(payload["instructions"], "Follow the dashboard prompt, but keep it concise.")
-        self.assertEqual(payload["input"], "Summarize the latest filing.")
+        self.assertEqual(
+            payload["input"],
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Summarize the latest filing."}],
+                }
+            ],
+        )
         self.assertEqual(payload["metadata"], {"workspace": "equipilot"})
         self.assertEqual(payload["include"], ["file_search_call.results"])
         self.assertEqual(payload["reasoning"]["effort"], "medium")
