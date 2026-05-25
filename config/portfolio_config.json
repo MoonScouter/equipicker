@@ -4,5 +4,16 @@
       "AA"
     ],
     "dividend": []
+  },
+  "segment_overrides": {
+    "dinamic": {
+      "MSFT": "Growth",
+      "STX": "Growth",
+      "PWR": "Growth",
+      "ASTS": "Aggressive"
+    },
+    "dividend": {
+      "MSFT": "Growth"
+    }
   }
 }

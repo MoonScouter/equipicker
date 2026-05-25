@@ -5,7 +5,7 @@ from datetime import date
 
 import pandas as pd
 
-from equipilot_app import build_portfolio_open_positions
+from equipilot_app import _portfolio_segment, _portfolio_segment_overrides, build_portfolio_open_positions
 
 
 class PortfolioTabTests(unittest.TestCase):
@@ -68,6 +68,33 @@ class PortfolioTabTests(unittest.TestCase):
         )
 
         self.assertEqual(positions["ticker"].tolist(), ["BMY.US"])
+
+    def test_portfolio_segment_uses_config_override(self) -> None:
+        config = {
+            "segment_overrides": {
+                "dinamic": {
+                    "ASTS": "Aggressive",
+                    "MSFT": "Growth",
+                }
+            }
+        }
+
+        overrides = _portfolio_segment_overrides(config, "dinamic")
+
+        self.assertEqual(
+            _portfolio_segment(
+                pd.Series({"ticker": "ASTS.US", "fundamental_growth": 20, "fundamental_value": 30}),
+                overrides,
+            ),
+            "Aggressive",
+        )
+        self.assertEqual(
+            _portfolio_segment(
+                pd.Series({"ticker": "MSFT.US", "fundamental_growth": 20, "fundamental_value": 30}),
+                overrides,
+            ),
+            "Growth",
+        )
 
 
 if __name__ == "__main__":

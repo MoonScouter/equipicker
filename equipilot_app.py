@@ -221,7 +221,7 @@ PORTFOLIO_SHEETS = {
     "dinamic": {"sheet": "DINAMIC", "label": "Portofoliu Dinamic"},
     "dividend": {"sheet": "DIVIDEND", "label": "Portofoliu Dividend"},
 }
-PORTFOLIO_SEGMENT_ORDER = ["Value", "Growth"]
+PORTFOLIO_SEGMENT_ORDER = ["Value", "Growth", "Aggressive"]
 PORTFOLIO_DEFAULT_ALERT_LEVEL = "0"
 
 COMPANY_GRID_SCORE_COLUMNS = [
@@ -13480,12 +13480,40 @@ def _portfolio_realized_average(journal_df: pd.DataFrame) -> float:
     return float(numeric.mean() * 100.0)
 
 
-def _portfolio_segment(row: pd.Series) -> str:
+def _portfolio_segment(row: pd.Series, segment_overrides: dict[str, str] | None = None) -> str:
+    ticker = normalize_price_ticker(row.get("ticker"))
+    if segment_overrides:
+        override = segment_overrides.get(ticker) or segment_overrides.get(_strip_us_suffix(ticker))
+        if override:
+            return override
     growth_score = pd.to_numeric(row.get("fundamental_growth"), errors="coerce")
     value_score = pd.to_numeric(row.get("fundamental_value"), errors="coerce")
     if pd.notna(growth_score) and pd.notna(value_score) and growth_score > value_score:
         return "Growth"
     return "Value"
+
+
+def _portfolio_segment_overrides(
+    portfolio_config: dict[str, object],
+    portfolio_key: str,
+) -> dict[str, str]:
+    raw_payload = portfolio_config.get("segment_overrides", {})
+    if not isinstance(raw_payload, dict):
+        return {}
+    portfolio_payload = raw_payload.get(portfolio_key, {})
+    if not isinstance(portfolio_payload, dict):
+        return {}
+    valid_segments = {segment.lower(): segment for segment in PORTFOLIO_SEGMENT_ORDER}
+    overrides: dict[str, str] = {}
+    for raw_ticker, raw_segment in portfolio_payload.items():
+        ticker = normalize_price_ticker(raw_ticker)
+        if not ticker:
+            continue
+        segment = valid_segments.get(str(raw_segment).strip().lower())
+        if segment:
+            overrides[ticker] = segment
+            overrides[_strip_us_suffix(ticker)] = segment
+    return overrides
 
 
 def _portfolio_surface_id(portfolio_key: str, segment_name: str) -> str:
@@ -13536,6 +13564,7 @@ def _build_portfolio_company_universe(
     reference_date: date,
     *,
     thematics_config_signature: str = "",
+    segment_overrides: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, Optional[str]]:
     if positions_df.empty:
         return pd.DataFrame(), None
@@ -13612,7 +13641,10 @@ def _build_portfolio_company_universe(
     )
 
     base = base.merge(positions_df, on="ticker", how="left")
-    base["portfolio_segment"] = base.apply(_portfolio_segment, axis=1)
+    base["portfolio_segment"] = base.apply(
+        lambda row: _portfolio_segment(row, segment_overrides),
+        axis=1,
+    )
     transaction_price = pd.to_numeric(base["transaction_price"], errors="coerce")
     last_eod_price = pd.to_numeric(base["last_eod_price"], errors="coerce")
     base["net_pnl_pct"] = np.where(
@@ -13721,6 +13753,7 @@ def _render_portfolio_sheet(
         price_lookup,
         reference_date,
         thematics_config_signature=thematics_config_signature,
+        segment_overrides=_portfolio_segment_overrides(portfolio_config, portfolio_key),
     )
     if warning_message:
         st.warning(warning_message)
