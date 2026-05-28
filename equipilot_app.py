@@ -272,6 +272,8 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "Portfolio Segment": 150,
     "Ticker": 95,
     "Company": 260,
+    "Setup": 105,
+    "First Seen": 115,
     "Sector": 150,
     "Industry": 260,
     "Transaction Price": 165,
@@ -417,9 +419,16 @@ def _merge_preferred_visible_columns(
     if not preferred_columns:
         return normalized_visible
     merged = list(normalized_visible)
+    available_positions = {column: index for index, column in enumerate(available)}
     for column in preferred_columns:
         if column in available and column not in merged:
-            merged.append(column)
+            column_position = available_positions[column]
+            insert_at = len(merged)
+            for index, visible_column in enumerate(merged):
+                if available_positions.get(visible_column, len(available)) > column_position:
+                    insert_at = index
+                    break
+            merged.insert(insert_at, column)
     return merged
 
 
@@ -7069,6 +7078,15 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
         }
     )
+    if "trade_idea_setup_badge" in sorted_df.columns:
+        display_df.insert(3, "Setup", sorted_df["trade_idea_setup_badge"].fillna("").astype(str))
+    if "trade_idea_first_seen_date" in sorted_df.columns:
+        first_seen = pd.to_datetime(sorted_df["trade_idea_first_seen_date"], errors="coerce").dt.date
+        display_df.insert(
+            4 if "Setup" in display_df.columns else 3,
+            "First Seen",
+            [value.isoformat() if value is not None and not pd.isna(value) else "N/A" for value in first_seen],
+        )
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
     for valuation_column in COMPANY_GRID_VALUATION_COLUMNS:
@@ -8418,6 +8436,224 @@ def _filter_trade_idea_basket(
     return df.loc[m.fillna(False)].copy()
 
 
+def _trade_idea_threshold_items(fundamental_thresholds: Optional[dict[str, float]]) -> tuple[tuple[str, float], ...]:
+    thresholds = _trade_ideas_default_fundamental_thresholds()
+    thresholds.update(fundamental_thresholds or {})
+    return tuple(sorted((column, float(value)) for column, value in thresholds.items()))
+
+
+def _trade_idea_history_signature(history_dates: Sequence[date]) -> str:
+    parts: list[str] = []
+    for entry in history_dates:
+        source_path, _candidates = resolve_report_select_path(entry)
+        if source_path is None:
+            parts.append(f"{entry.isoformat()}:missing")
+        else:
+            parts.append(f"{entry.isoformat()}:{_path_cache_signature(source_path)}")
+    return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _trade_idea_occurrence_badge(streak_count: int) -> str:
+    if streak_count <= 1:
+        return "🆕 First"
+    return f"🔁 {streak_count}x"
+
+
+def _build_trade_idea_occurrence_metadata_from_memberships(
+    memberships_by_date: dict[date, set[str]],
+    selected_eod: date,
+    selected_tickers: Optional[set[str]] = None,
+) -> pd.DataFrame:
+    selected_ticker_set = (
+        {
+            normalize_price_ticker(ticker_value)
+            for ticker_value in selected_tickers
+            if normalize_price_ticker(ticker_value)
+        }
+        if selected_tickers is not None
+        else {
+            normalize_price_ticker(ticker_value)
+            for ticker_value in memberships_by_date.get(selected_eod, set())
+            if normalize_price_ticker(ticker_value)
+        }
+    )
+    active_streaks = {ticker_value: 1 for ticker_value in selected_ticker_set}
+    first_seen_by_ticker = {ticker_value: selected_eod for ticker_value in selected_ticker_set}
+    active_tickers = set(selected_ticker_set)
+    prior_dates = sorted((entry for entry in memberships_by_date if entry < selected_eod), reverse=True)
+    for evaluation_date in prior_dates:
+        if not active_tickers:
+            break
+        current_tickers = {
+            normalize_price_ticker(ticker_value)
+            for ticker_value in memberships_by_date.get(evaluation_date, set())
+            if normalize_price_ticker(ticker_value)
+        }
+        continued_tickers = active_tickers.intersection(current_tickers)
+        for ticker_value in continued_tickers:
+            active_streaks[ticker_value] += 1
+            first_seen_by_ticker[ticker_value] = evaluation_date
+        active_tickers = continued_tickers
+    rows = []
+    for ticker_value in sorted(selected_ticker_set):
+        streak_count = int(active_streaks.get(ticker_value, 1))
+        first_seen_date = first_seen_by_ticker.get(ticker_value, selected_eod)
+        rows.append(
+            {
+                "ticker_norm": ticker_value,
+                "trade_idea_setup_badge": _trade_idea_occurrence_badge(streak_count),
+                "trade_idea_streak_count": streak_count,
+                "trade_idea_first_seen_date": first_seen_date,
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "ticker_norm",
+            "trade_idea_setup_badge",
+            "trade_idea_streak_count",
+            "trade_idea_first_seen_date",
+        ],
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _trade_idea_membership_for_date(
+    basket_key: str,
+    evaluation_date: date,
+    source_path_str: str,
+    source_signature: str,
+    threshold_items: tuple[tuple[str, float], ...],
+    thematics_config_signature: str,
+    market_cache_signature: str,
+    divergence_cache_signature: str,
+    prices_cache_path_str: str,
+    prices_cache_signature: str,
+) -> tuple[str, ...]:
+    company_universe, universe_error, _universe_warning = _load_prepared_company_universe_for_report_path(
+        source_path_str,
+        source_signature,
+        evaluation_date,
+        thematics_config_signature,
+        market_cache_signature,
+        divergence_cache_signature,
+        prices_cache_path_str,
+        prices_cache_signature,
+    )
+    if universe_error or company_universe is None:
+        return tuple()
+    company_universe, _rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
+    basket_df = _filter_trade_idea_basket(
+        company_universe,
+        basket_key,
+        fundamental_thresholds=dict(threshold_items),
+    )
+    if "ticker" not in basket_df.columns:
+        return tuple()
+    tickers = {
+        normalize_price_ticker(ticker_value)
+        for ticker_value in basket_df["ticker"].dropna().astype(str).tolist()
+        if normalize_price_ticker(ticker_value)
+    }
+    return tuple(sorted(tickers))
+
+
+@st.cache_data(show_spinner=False)
+def _build_trade_idea_occurrence_metadata(
+    basket_key: str,
+    selected_eod: date,
+    selected_tickers: tuple[str, ...],
+    threshold_items: tuple[tuple[str, float], ...],
+    history_dates: tuple[date, ...],
+    history_signature: str,
+) -> pd.DataFrame:
+    del history_signature
+    selected_ticker_set = {
+        normalize_price_ticker(ticker_value)
+        for ticker_value in selected_tickers
+        if normalize_price_ticker(ticker_value)
+    }
+    memberships_by_date: dict[date, set[str]] = {selected_eod: selected_ticker_set}
+    active_tickers = set(selected_ticker_set)
+    for evaluation_date in sorted((entry for entry in history_dates if entry < selected_eod), reverse=True):
+        if not active_tickers:
+            break
+        source_path, _candidates = resolve_report_select_path(evaluation_date)
+        if source_path is None:
+            memberships_by_date[evaluation_date] = set()
+            active_tickers = set()
+            continue
+        date_members = set(
+            _trade_idea_membership_for_date(
+                basket_key,
+                evaluation_date,
+                str(source_path),
+                _path_cache_signature(source_path),
+                threshold_items,
+                _path_cache_signature(THEMATICS_CONFIG_PATH),
+                _market_regime_company_metrics_cache_signature(evaluation_date),
+                _company_divergence_cache_signature(),
+                str(prices_cache_path("daily", evaluation_date.year)) if prices_cache_path("daily", evaluation_date.year).exists() else "",
+                _path_cache_signature(prices_cache_path("daily", evaluation_date.year)),
+            )
+        )
+        memberships_by_date[evaluation_date] = date_members
+        active_tickers = active_tickers.intersection(date_members)
+    return _build_trade_idea_occurrence_metadata_from_memberships(
+        memberships_by_date,
+        selected_eod,
+        selected_ticker_set,
+    )
+
+
+def _annotate_trade_idea_occurrences(
+    ideas_df: pd.DataFrame,
+    *,
+    basket_key: str,
+    selected_eod: date,
+    fundamental_thresholds: Optional[dict[str, float]],
+) -> pd.DataFrame:
+    annotated = ideas_df.copy()
+    if annotated.empty or "ticker" not in annotated.columns:
+        return annotated
+    history_dates = tuple(entry for entry in get_available_report_select_dates() if entry <= selected_eod)
+    if not history_dates:
+        annotated["trade_idea_setup_badge"] = "🆕 First"
+        annotated["trade_idea_streak_count"] = 1
+        annotated["trade_idea_first_seen_date"] = selected_eod
+        return annotated
+    selected_tickers = tuple(
+        sorted(
+            {
+                normalize_price_ticker(ticker_value)
+                for ticker_value in annotated["ticker"].dropna().astype(str).tolist()
+                if normalize_price_ticker(ticker_value)
+            }
+        )
+    )
+    threshold_items = _trade_idea_threshold_items(fundamental_thresholds)
+    metadata_df = _build_trade_idea_occurrence_metadata(
+        basket_key,
+        selected_eod,
+        selected_tickers,
+        threshold_items,
+        history_dates,
+        _trade_idea_history_signature(history_dates),
+    )
+    if metadata_df.empty:
+        annotated["trade_idea_setup_badge"] = "🆕 First"
+        annotated["trade_idea_streak_count"] = 1
+        annotated["trade_idea_first_seen_date"] = selected_eod
+        return annotated
+    annotated["ticker_norm"] = annotated["ticker"].map(normalize_price_ticker)
+    annotated = annotated.merge(metadata_df, on="ticker_norm", how="left").drop(columns=["ticker_norm"])
+    missing_badge = annotated["trade_idea_setup_badge"].isna()
+    annotated.loc[missing_badge, "trade_idea_setup_badge"] = "🆕 First"
+    annotated.loc[missing_badge, "trade_idea_streak_count"] = 1
+    annotated.loc[missing_badge, "trade_idea_first_seen_date"] = selected_eod
+    return annotated
+
+
 def _render_trade_idea_basket(
     *,
     basket_spec: dict[str, object],
@@ -8436,6 +8672,12 @@ def _render_trade_idea_basket(
     if ideas_df.empty:
         st.info("No stocks matched this basket for the selected EOD.")
         return
+    ideas_df = _annotate_trade_idea_occurrences(
+        ideas_df,
+        basket_key=basket_key,
+        selected_eod=selected_eod,
+        fundamental_thresholds=fundamental_thresholds,
+    )
 
     display_df = format_company_drilldown_display(
         ideas_df,
@@ -8446,6 +8688,7 @@ def _render_trade_idea_basket(
         surface_id=f"{GRID_SURFACE_TRADE_IDEAS_PREFIX}_{basket_key}",
         row_height=36,
         min_height=260,
+        preferred_visible_columns=["Setup", "First Seen"],
         default_row_limit="All",
         show_top_scrollbar=False,
         csv_file_name=f"trade_ideas_{basket_key}_{selected_eod.isoformat()}.csv",
@@ -9000,23 +9243,14 @@ def render_trade_ideas(config: ReportConfig) -> None:
         "Use the strategy tabs for current candidates, or open Backtest to compare selected strategies across historical report_select dates.",
     )
     fundamental_thresholds = _render_trade_idea_fundamental_filters()
-    tab_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest"]
-    trade_idea_tabs = st.tabs(tab_labels)
-    for basket_tab, basket_spec in zip(trade_idea_tabs[:-1], TRADE_IDEA_BASKET_SPECS):
-        with basket_tab:
-            render_board_title_band(str(basket_spec["name"]))
-            _render_trade_idea_basket_rules_expander(
-                basket_key=str(basket_spec["key"]),
-                fundamental_thresholds=fundamental_thresholds,
-            )
-            _render_trade_idea_basket(
-                basket_spec=basket_spec,
-                company_universe=company_universe,
-                selected_eod=selected_eod,
-                fundamental_thresholds=fundamental_thresholds,
-            )
-    backtest_tab = trade_idea_tabs[-1]
-    with backtest_tab:
+    section_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest"]
+    selected_section = st.radio(
+        "Trade Ideas section",
+        options=section_labels,
+        horizontal=True,
+        key="trade_ideas_active_section",
+    )
+    if selected_section == "Backtest":
         render_board_title_band("Backtest")
         backtest_thresholds = {
             column: float(st.session_state.get(f"trade_ideas_{column}_threshold", default_value))
@@ -9026,6 +9260,22 @@ def render_trade_ideas(config: ReportConfig) -> None:
             basket_specs=TRADE_IDEA_BASKET_SPECS,
             fundamental_thresholds=backtest_thresholds,
         )
+        return
+
+    selected_basket_spec = next(
+        spec for spec in TRADE_IDEA_BASKET_SPECS if str(spec["name"]) == selected_section
+    )
+    render_board_title_band(str(selected_basket_spec["name"]))
+    _render_trade_idea_basket_rules_expander(
+        basket_key=str(selected_basket_spec["key"]),
+        fundamental_thresholds=fundamental_thresholds,
+    )
+    _render_trade_idea_basket(
+        basket_spec=selected_basket_spec,
+        company_universe=company_universe,
+        selected_eod=selected_eod,
+        fundamental_thresholds=fundamental_thresholds,
+    )
 
 
 def render_watchlist_tab(config: ReportConfig) -> None:

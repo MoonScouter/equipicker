@@ -19,6 +19,7 @@ from equipilot_app import (
     _build_thematics_lens_frame,
     _build_thematics_basket_table_frame,
     _build_thematics_company_universe,
+    _build_trade_idea_occurrence_metadata_from_memberships,
     _build_company_drilldown_styler,
     _default_sector_regime_fit_range_for_company_scope,
     _enrich_company_universe_with_market_regime,
@@ -459,6 +460,56 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(rendered.iloc[0]["Short Term Flow"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (D)"], "N/A")
         self.assertEqual(rendered.iloc[0]["RSI Divergence (W)"], "N/A")
+
+    def test_trade_idea_occurrence_metadata_tracks_current_streak_start(self) -> None:
+        memberships = {
+            date(2026, 3, 6): {"AAA.US", "OLD.US", "RETURN.US"},
+            date(2026, 3, 10): {"AAA.US"},
+            date(2026, 3, 13): {"AAA.US", "NEW.US", "RETURN.US"},
+        }
+
+        metadata = _build_trade_idea_occurrence_metadata_from_memberships(
+            memberships,
+            date(2026, 3, 13),
+        )
+
+        by_ticker = metadata.set_index("ticker_norm")
+        self.assertEqual(int(by_ticker.loc["AAA.US", "trade_idea_streak_count"]), 3)
+        self.assertEqual(by_ticker.loc["AAA.US", "trade_idea_setup_badge"], "🔁 3x")
+        self.assertEqual(by_ticker.loc["AAA.US", "trade_idea_first_seen_date"], date(2026, 3, 6))
+        self.assertEqual(int(by_ticker.loc["NEW.US", "trade_idea_streak_count"]), 1)
+        self.assertEqual(by_ticker.loc["NEW.US", "trade_idea_setup_badge"], "🆕 First")
+        self.assertEqual(by_ticker.loc["NEW.US", "trade_idea_first_seen_date"], date(2026, 3, 13))
+        self.assertEqual(int(by_ticker.loc["RETURN.US", "trade_idea_streak_count"]), 1)
+        self.assertEqual(by_ticker.loc["RETURN.US", "trade_idea_setup_badge"], "🆕 First")
+        self.assertEqual(by_ticker.loc["RETURN.US", "trade_idea_first_seen_date"], date(2026, 3, 13))
+        self.assertNotIn("OLD.US", by_ticker.index)
+
+    def test_trade_idea_display_adds_setup_columns_next_to_company(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha Inc",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 92.0,
+                    "fundamental_momentum": 85.0,
+                    "general_technical_score": 70.0,
+                    "stock_rsi_regime_score": 76.0,
+                    "sector_regime_fit_score": 68.0,
+                    "trade_idea_setup_badge": "🔁 3x",
+                    "trade_idea_first_seen_date": date(2026, 3, 6),
+                }
+            ]
+        )
+
+        rendered = format_company_drilldown_display(company_df, sort_by="fundamental")
+
+        self.assertEqual(rendered.columns.tolist()[0:5], ["Thematic", "Ticker", "Company", "Setup", "First Seen"])
+        self.assertEqual(rendered.iloc[0]["Setup"], "🔁 3x")
+        self.assertEqual(rendered.iloc[0]["First Seen"], "2026-03-06")
 
     def test_fundamental_and_technical_display_include_ai_and_signal_fields(self) -> None:
         company_df = pd.DataFrame(
