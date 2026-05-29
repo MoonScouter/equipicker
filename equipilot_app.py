@@ -164,6 +164,8 @@ TREND_FILTER_LABELS = {
 }
 TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["flat"], TREND_FILTER_LABELS["down"]]
 SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
+RSI_LEVEL_FILTER_OPTIONS = ["All", "> 70", "> 60", "> 40", "> 30", "< 70", "< 60", "< 40", "< 30"]
+MA_DISTANCE_FILTER_OPTIONS = ["All", "Above", "Below", "Within +/-10%", "Above +10%", "Below -10%"]
 DIVERGENCE_FILTER_OPTIONS = [
     "All",
     "Emerging Positive",
@@ -216,7 +218,7 @@ PORTFOLIO_JOURNAL_PATH = Path(
 PORTFOLIO_CONFIG_PATH = CONFIG_DIR / "portfolio_config.json"
 PORTFOLIO_ALERTS_PATH = CONFIG_DIR / "portfolio_alerts.json"
 WATCHLIST_CONFIG_PATH = CONFIG_DIR / "watchlist.json"
-TRADE_IDEAS_BACKTEST_CACHE_PATH = DATA_DIR / "trade_ideas_backtest_latest.csv"
+TRADE_IDEAS_BACKTEST_CACHE_PATH = DATA_DIR / "trade_ideas_backtest_latest_v2.csv"
 PORTFOLIO_SHEETS = {
     "dinamic": {"sheet": "DINAMIC", "label": "Portofoliu Dinamic"},
     "dividend": {"sheet": "DIVIDEND", "label": "Portofoliu Dividend"},
@@ -240,14 +242,26 @@ COMPANY_GRID_SCORE_COLUMNS = [
     "Quality FS",
     "Risk FS",
 ]
+COMPANY_GRID_RSI_COLUMNS = ["RSI Daily", "RSI Weekly"]
 COMPANY_GRID_SIGN_COLUMNS = [
     "Short Term Flow",
+    "RS vs 20D",
+    "OBVM vs 20D",
     "RSI Divergence (D)",
     "RSI Divergence (W)",
     "Rel Strength",
     "Rel Volume",
 ]
-COMPANY_GRID_PERFORMANCE_COLUMNS = ["1W", "1M", "3M", "YTD", "Dist to MA200"]
+COMPANY_GRID_PERFORMANCE_COLUMNS = ["1W", "1M", "3M", "YTD", "Dist to MA20", "Dist to MA50", "Dist to MA200"]
+COMPANY_GRID_REQUIRED_VISIBLE_COLUMNS = [
+    "RSI Daily",
+    "RSI Weekly",
+    "RS vs 20D",
+    "OBVM vs 20D",
+    "Dist to MA20",
+    "Dist to MA50",
+    "Dist to MA200",
+]
 COMPANY_GRID_VALUATION_COLUMNS = ["PEG", "PER Trailing", "PER Fwd", "P/S TTM", "EV/Revenues", "EV/EBITDA"]
 COMPANY_GRID_LEFT_COLUMNS = [
     "Thematic",
@@ -293,6 +307,12 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "1M": 95,
     "3M": 95,
     "YTD": 95,
+    "RSI Daily": 105,
+    "RSI Weekly": 110,
+    "RS vs 20D": 105,
+    "OBVM vs 20D": 115,
+    "Dist to MA20": 120,
+    "Dist to MA50": 120,
     "Dist to MA200": 125,
     "TS": 110,
     "RSI Regime": 120,
@@ -4187,6 +4207,19 @@ function(params) {
 }
         """
     )
+    rsi_style_js = JsCode(
+        """
+function(params) {
+  const match = String(params.value ?? "").replace(/,/g, "").match(/[-+]?\\d+(?:\\.\\d+)?/);
+  if (!match) return { color: "#A0A8B5", textAlign: "center", whiteSpace: "nowrap" };
+  const numeric = parseFloat(match[0]);
+  if (Number.isNaN(numeric)) return { color: "#A0A8B5", textAlign: "center", whiteSpace: "nowrap" };
+  if (numeric > 70) return { color: "#15803D", fontWeight: "700", textAlign: "center", whiteSpace: "nowrap" };
+  if (numeric < 30) return { color: "#B42318", fontWeight: "700", textAlign: "center", whiteSpace: "nowrap" };
+  return { color: "#D97706", fontWeight: "700", textAlign: "center", whiteSpace: "nowrap" };
+}
+        """
+    )
     sign_style_js = JsCode(
         """
 function(params) {
@@ -4304,6 +4337,9 @@ function(valueA, valueB) {
             config["lockPinned"] = True
         if column_name in COMPANY_GRID_SCORE_COLUMNS:
             config["cellStyle"] = score_style_js
+            config["comparator"] = numeric_comparator_js
+        elif column_name in COMPANY_GRID_RSI_COLUMNS:
+            config["cellStyle"] = rsi_style_js
             config["comparator"] = numeric_comparator_js
         elif column_name in COMPANY_GRID_SIGN_COLUMNS:
             config["cellStyle"] = sign_style_js
@@ -4615,6 +4651,7 @@ def _render_company_grid_column_selector(
         available,
     )
     preferred_with_required = list(preferred_visible_columns or [])
+    preferred_with_required.extend(COMPANY_GRID_REQUIRED_VISIBLE_COLUMNS)
     preferred_with_required.extend(COMPANY_GRID_VALUATION_COLUMNS)
     merged_visible_columns = _merge_preferred_visible_columns(
         visible_columns,
@@ -4948,6 +4985,17 @@ def _score_color_css(value: object) -> str:
     if numeric >= 40:
         return "color:#F2994A; font-weight:700; text-align:center; white-space:nowrap;"
     return "color:#EB5757; font-weight:700; text-align:center; white-space:nowrap;"
+
+
+def _rsi_color_css(value: object) -> str:
+    numeric = _parse_number(value)
+    if numeric is None:
+        return "color:#A0A8B5; text-align:center; white-space:nowrap;"
+    if numeric > 70:
+        return "color:#15803D; font-weight:700; text-align:center; white-space:nowrap;"
+    if numeric < 30:
+        return "color:#B42318; font-weight:700; text-align:center; white-space:nowrap;"
+    return "color:#D97706; font-weight:700; text-align:center; white-space:nowrap;"
 
 
 def _variation_color_css(value: object) -> str:
@@ -5830,6 +5878,20 @@ def _prepare_company_drilldown_universe(
     working["market_cap_bucket"] = working["market_cap"].apply(_market_cap_bucket_from_usd)
     working["rel_strength"] = working["rs_monthly"].map(_sign_label)
     working["rel_volume"] = working["obvm_monthly"].map(_sign_label)
+    rs_vs_sma_valid_mask = working[["rs_daily", "rs_sma20"]].notna().all(axis=1)
+    obvm_vs_sma_valid_mask = working[["obvm_daily", "obvm_sma20"]].notna().all(axis=1)
+    working["rs_daily_vs_sma20_sign"] = "N/A"
+    working["obvm_daily_vs_sma20_sign"] = "N/A"
+    working.loc[rs_vs_sma_valid_mask, "rs_daily_vs_sma20_sign"] = np.where(
+        working.loc[rs_vs_sma_valid_mask, "rs_daily"] >= working.loc[rs_vs_sma_valid_mask, "rs_sma20"],
+        "Positive",
+        "Negative",
+    )
+    working.loc[obvm_vs_sma_valid_mask, "obvm_daily_vs_sma20_sign"] = np.where(
+        working.loc[obvm_vs_sma_valid_mask, "obvm_daily"] >= working.loc[obvm_vs_sma_valid_mask, "obvm_sma20"],
+        "Positive",
+        "Negative",
+    )
     working["short_term_flow"] = pd.NA
     short_term_valid_mask = working[["rs_daily", "rs_sma20", "obvm_daily", "obvm_sma20"]].notna().all(axis=1)
     short_term_positive_mask = (
@@ -5845,17 +5907,20 @@ def _prepare_company_drilldown_universe(
     working.loc[short_term_valid_mask, "short_term_flow"] = "neutral"
     working.loc[short_term_positive_mask, "short_term_flow"] = "positive"
     working.loc[short_term_negative_mask, "short_term_flow"] = "negative"
-    ma200_valid_mask = (
-        working["eod_price_used"].notna()
-        & working["sma_daily_200"].notna()
-        & (working["sma_daily_200"] != 0)
-    )
-    working["dist_to_ma200"] = np.nan
-    working.loc[ma200_valid_mask, "dist_to_ma200"] = (
-        (working.loc[ma200_valid_mask, "eod_price_used"] / working.loc[ma200_valid_mask, "sma_daily_200"] - 1.0)
-        * 100.0
-    ).round(1)
-    working["dist_to_ma200_sign"] = working["dist_to_ma200"].map(_sign_label)
+    for ma_window, ma_column in [("20", "sma_daily_20"), ("50", "sma_daily_50"), ("200", "sma_daily_200")]:
+        distance_column = f"dist_to_ma{ma_window}"
+        sign_column = f"{distance_column}_sign"
+        valid_mask = (
+            working["eod_price_used"].notna()
+            & working[ma_column].notna()
+            & (working[ma_column] != 0)
+        )
+        working[distance_column] = np.nan
+        working.loc[valid_mask, distance_column] = (
+            (working.loc[valid_mask, "eod_price_used"] / working.loc[valid_mask, ma_column] - 1.0)
+            * 100.0
+        ).round(1)
+        working[sign_column] = working[distance_column].map(_sign_label)
 
     ai_lookup = (
         build_ai_exposure_lookup(str(THEMATICS_CONFIG_PATH), thematics_config_signature)
@@ -5938,7 +6003,7 @@ def _load_prepared_company_universe_for_report_path(
         "prices_path": prices_cache_path_str,
         "prices": prices_cache_signature,
         "schema": PERF_CACHE_SCHEMA_VERSION,
-        "company_universe_columns": "trade_ideas_raw_indicators_v3_ma200_distance",
+        "company_universe_columns": "company_grid_indicators_v4_rsi_ma20_ma50_flow_components",
     }
     cached_universe = load_company_universe_cached(evaluation_date, cache_signatures)
     if cached_universe is not None:
@@ -6221,9 +6286,15 @@ def _build_company_filter_state(
     tech_trend_dir: str = "All",
     daily_rsi_divergence: str = "All",
     weekly_rsi_divergence: str = "All",
+    rsi_daily_level: str = "All",
+    rsi_weekly_level: str = "All",
     short_term_flow: str = "All",
+    rs_daily_vs_sma20: str = "All",
+    obvm_daily_vs_sma20: str = "All",
     rel_strength: str = "All",
     rel_volume: str = "All",
+    ma20_distance: str = "All",
+    ma50_distance: str = "All",
     ma200_distance: str = "All",
     ai_revenue_exposure: str = "All",
     ai_disruption_risk: str = "All",
@@ -6243,9 +6314,15 @@ def _build_company_filter_state(
         "tech_trend_dir": tech_trend_dir,
         "daily_rsi_divergence": daily_rsi_divergence,
         "weekly_rsi_divergence": weekly_rsi_divergence,
+        "rsi_daily_level": rsi_daily_level,
+        "rsi_weekly_level": rsi_weekly_level,
         "short_term_flow": short_term_flow,
+        "rs_daily_vs_sma20": rs_daily_vs_sma20,
+        "obvm_daily_vs_sma20": obvm_daily_vs_sma20,
         "rel_strength": rel_strength,
         "rel_volume": rel_volume,
+        "ma20_distance": ma20_distance,
+        "ma50_distance": ma50_distance,
         "ma200_distance": ma200_distance,
         "ai_revenue_exposure": ai_revenue_exposure,
         "ai_disruption_risk": ai_disruption_risk,
@@ -6284,9 +6361,15 @@ def _load_company_filter_default_state(prefix: str) -> dict[str, object]:
             f"{prefix}_drilldown_filter_default_weekly_rsi_divergence",
             "All",
         ),
+        rsi_daily_level=st.session_state.get(f"{prefix}_drilldown_filter_default_rsi_daily_level", "All"),
+        rsi_weekly_level=st.session_state.get(f"{prefix}_drilldown_filter_default_rsi_weekly_level", "All"),
         short_term_flow=st.session_state.get(f"{prefix}_drilldown_filter_default_short_term_flow", "All"),
+        rs_daily_vs_sma20=st.session_state.get(f"{prefix}_drilldown_filter_default_rs_daily_vs_sma20", "All"),
+        obvm_daily_vs_sma20=st.session_state.get(f"{prefix}_drilldown_filter_default_obvm_daily_vs_sma20", "All"),
         rel_strength=st.session_state.get(f"{prefix}_drilldown_filter_default_rel_strength", "All"),
         rel_volume=st.session_state.get(f"{prefix}_drilldown_filter_default_rel_volume", "All"),
+        ma20_distance=st.session_state.get(f"{prefix}_drilldown_filter_default_ma20_distance", "All"),
+        ma50_distance=st.session_state.get(f"{prefix}_drilldown_filter_default_ma50_distance", "All"),
         ma200_distance=st.session_state.get(f"{prefix}_drilldown_filter_default_ma200_distance", "All"),
         ai_revenue_exposure=st.session_state.get(
             f"{prefix}_drilldown_filter_default_ai_revenue_exposure",
@@ -6369,9 +6452,15 @@ def _sync_drilldown_filter_defaults(
     default_tech_trend_dir: str = "All",
     default_daily_rsi_divergence: str = "All",
     default_weekly_rsi_divergence: str = "All",
+    default_rsi_daily_level: str = "All",
+    default_rsi_weekly_level: str = "All",
     default_short_term_flow: str = "All",
+    default_rs_daily_vs_sma20: str = "All",
+    default_obvm_daily_vs_sma20: str = "All",
     default_rel_strength: str = "All",
     default_rel_volume: str = "All",
+    default_ma20_distance: str = "All",
+    default_ma50_distance: str = "All",
     default_ma200_distance: str = "All",
     default_ai_revenue_exposure: str = "All",
     default_ai_disruption_risk: str = "All",
@@ -6395,9 +6484,15 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_default_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_default_daily_rsi_divergence"] = default_daily_rsi_divergence
     st.session_state[f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"] = default_weekly_rsi_divergence
+    st.session_state[f"{prefix}_drilldown_filter_default_rsi_daily_level"] = default_rsi_daily_level
+    st.session_state[f"{prefix}_drilldown_filter_default_rsi_weekly_level"] = default_rsi_weekly_level
     st.session_state[f"{prefix}_drilldown_filter_default_short_term_flow"] = default_short_term_flow
+    st.session_state[f"{prefix}_drilldown_filter_default_rs_daily_vs_sma20"] = default_rs_daily_vs_sma20
+    st.session_state[f"{prefix}_drilldown_filter_default_obvm_daily_vs_sma20"] = default_obvm_daily_vs_sma20
     st.session_state[f"{prefix}_drilldown_filter_default_rel_strength"] = default_rel_strength
     st.session_state[f"{prefix}_drilldown_filter_default_rel_volume"] = default_rel_volume
+    st.session_state[f"{prefix}_drilldown_filter_default_ma20_distance"] = default_ma20_distance
+    st.session_state[f"{prefix}_drilldown_filter_default_ma50_distance"] = default_ma50_distance
     st.session_state[f"{prefix}_drilldown_filter_default_ma200_distance"] = default_ma200_distance
     st.session_state[f"{prefix}_drilldown_filter_default_ai_revenue_exposure"] = default_ai_revenue_exposure
     st.session_state[f"{prefix}_drilldown_filter_default_ai_disruption_risk"] = default_ai_disruption_risk
@@ -6460,6 +6555,37 @@ def _bind_ctrl_f_to_ticker_filter(input_label: str, scope_key: str) -> None:
     )
 
 
+def _filter_by_rsi_level(company_df: pd.DataFrame, column: str, selected_value: str) -> pd.DataFrame:
+    if selected_value == "All" or column not in company_df.columns:
+        return company_df
+    match = re.match(r"([<>])\s*(\d+(?:\.\d+)?)", str(selected_value).strip())
+    if not match:
+        return company_df
+    operator, threshold_text = match.groups()
+    threshold = float(threshold_text)
+    values = pd.to_numeric(company_df[column], errors="coerce")
+    if operator == ">":
+        return company_df[values > threshold].copy()
+    return company_df[values < threshold].copy()
+
+
+def _filter_by_ma_distance(company_df: pd.DataFrame, column: str, selected_value: str) -> pd.DataFrame:
+    if selected_value == "All" or column not in company_df.columns:
+        return company_df
+    values = pd.to_numeric(company_df[column], errors="coerce")
+    if selected_value == "Above":
+        return company_df[values > 0].copy()
+    if selected_value == "Below":
+        return company_df[values < 0].copy()
+    if selected_value == "Within +/-10%":
+        return company_df[values.between(-10.0, 10.0, inclusive="both")].copy()
+    if selected_value == "Above +10%":
+        return company_df[values > 10.0].copy()
+    if selected_value == "Below -10%":
+        return company_df[values < -10.0].copy()
+    return company_df
+
+
 def render_company_drilldown_filters(
     company_df: pd.DataFrame,
     *,
@@ -6498,9 +6624,15 @@ def render_company_drilldown_filters(
     tech_trend_dir_key = f"{prefix}_drilldown_filter_tech_trend_dir"
     daily_rsi_divergence_key = f"{prefix}_drilldown_filter_daily_rsi_divergence"
     weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_weekly_rsi_divergence"
+    rsi_daily_level_key = f"{prefix}_drilldown_filter_rsi_daily_level"
+    rsi_weekly_level_key = f"{prefix}_drilldown_filter_rsi_weekly_level"
     short_term_flow_key = f"{prefix}_drilldown_filter_short_term_flow"
+    rs_daily_vs_sma20_key = f"{prefix}_drilldown_filter_rs_daily_vs_sma20"
+    obvm_daily_vs_sma20_key = f"{prefix}_drilldown_filter_obvm_daily_vs_sma20"
     rel_strength_key = f"{prefix}_drilldown_filter_rel_strength"
     rel_volume_key = f"{prefix}_drilldown_filter_rel_volume"
+    ma20_distance_key = f"{prefix}_drilldown_filter_ma20_distance"
+    ma50_distance_key = f"{prefix}_drilldown_filter_ma50_distance"
     ma200_distance_key = f"{prefix}_drilldown_filter_ma200_distance"
     ai_revenue_exposure_key = f"{prefix}_drilldown_filter_ai_revenue_exposure"
     ai_disruption_risk_key = f"{prefix}_drilldown_filter_ai_disruption_risk"
@@ -6519,9 +6651,15 @@ def render_company_drilldown_filters(
     default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
     default_daily_rsi_divergence_key = f"{prefix}_drilldown_filter_default_daily_rsi_divergence"
     default_weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"
+    default_rsi_daily_level_key = f"{prefix}_drilldown_filter_default_rsi_daily_level"
+    default_rsi_weekly_level_key = f"{prefix}_drilldown_filter_default_rsi_weekly_level"
     default_short_term_flow_key = f"{prefix}_drilldown_filter_default_short_term_flow"
+    default_rs_daily_vs_sma20_key = f"{prefix}_drilldown_filter_default_rs_daily_vs_sma20"
+    default_obvm_daily_vs_sma20_key = f"{prefix}_drilldown_filter_default_obvm_daily_vs_sma20"
     default_rel_strength_key = f"{prefix}_drilldown_filter_default_rel_strength"
     default_rel_volume_key = f"{prefix}_drilldown_filter_default_rel_volume"
+    default_ma20_distance_key = f"{prefix}_drilldown_filter_default_ma20_distance"
+    default_ma50_distance_key = f"{prefix}_drilldown_filter_default_ma50_distance"
     default_ma200_distance_key = f"{prefix}_drilldown_filter_default_ma200_distance"
     default_ai_revenue_exposure_key = f"{prefix}_drilldown_filter_default_ai_revenue_exposure"
     default_ai_disruption_risk_key = f"{prefix}_drilldown_filter_default_ai_disruption_risk"
@@ -6571,10 +6709,14 @@ def render_company_drilldown_filters(
         weekly_rsi_divergence_key,
         st.session_state.get(default_weekly_rsi_divergence_key, "All"),
     )
+    st.session_state.setdefault(rsi_daily_level_key, st.session_state.get(default_rsi_daily_level_key, "All"))
+    st.session_state.setdefault(rsi_weekly_level_key, st.session_state.get(default_rsi_weekly_level_key, "All"))
     st.session_state.setdefault(
         short_term_flow_key,
         st.session_state.get(default_short_term_flow_key, "All"),
     )
+    st.session_state.setdefault(rs_daily_vs_sma20_key, st.session_state.get(default_rs_daily_vs_sma20_key, "All"))
+    st.session_state.setdefault(obvm_daily_vs_sma20_key, st.session_state.get(default_obvm_daily_vs_sma20_key, "All"))
     st.session_state.setdefault(
         rel_strength_key,
         st.session_state.get(default_rel_strength_key, "All"),
@@ -6583,6 +6725,8 @@ def render_company_drilldown_filters(
         rel_volume_key,
         st.session_state.get(default_rel_volume_key, "All"),
     )
+    st.session_state.setdefault(ma20_distance_key, st.session_state.get(default_ma20_distance_key, "All"))
+    st.session_state.setdefault(ma50_distance_key, st.session_state.get(default_ma50_distance_key, "All"))
     st.session_state.setdefault(
         ma200_distance_key,
         st.session_state.get(default_ma200_distance_key, "All"),
@@ -6717,12 +6861,56 @@ def render_company_drilldown_filters(
         else:
             beta_range = (0.0, 5.0)
 
+        rsi_cols = st.columns([1, 1, 1, 1])
+        with rsi_cols[0]:
+            rsi_daily_level_value = st.selectbox(
+                "RSI Daily",
+                options=RSI_LEVEL_FILTER_OPTIONS,
+                key=rsi_daily_level_key,
+            )
+        with rsi_cols[1]:
+            rsi_weekly_level_value = st.selectbox(
+                "RSI Weekly",
+                options=RSI_LEVEL_FILTER_OPTIONS,
+                key=rsi_weekly_level_key,
+            )
+        with rsi_cols[2]:
+            rs_daily_vs_sma20_value = st.selectbox(
+                "RS vs 20D",
+                options=SIGN_FILTER_OPTIONS,
+                key=rs_daily_vs_sma20_key,
+            )
+        with rsi_cols[3]:
+            obvm_daily_vs_sma20_value = st.selectbox(
+                "OBVM vs 20D",
+                options=SIGN_FILTER_OPTIONS,
+                key=obvm_daily_vs_sma20_key,
+            )
+
+        ma_cols = st.columns([1, 1, 1])
+        with ma_cols[0]:
+            ma20_distance_value = st.selectbox(
+                "MA20 Distance",
+                options=MA_DISTANCE_FILTER_OPTIONS,
+                key=ma20_distance_key,
+            )
+        with ma_cols[1]:
+            ma50_distance_value = st.selectbox(
+                "MA50 Distance",
+                options=MA_DISTANCE_FILTER_OPTIONS,
+                key=ma50_distance_key,
+            )
+        with ma_cols[2]:
+            ma200_distance_value = st.selectbox(
+                "MA200 Distance",
+                options=MA_DISTANCE_FILTER_OPTIONS,
+                key=ma200_distance_key,
+            )
+
         bottom_layout: list[float] = [1, 1, 1]
         if include_rel_strength_filter:
             bottom_layout.append(1)
         if include_rel_volume_filter:
-            bottom_layout.append(1)
-        if include_ma200_distance_filter:
             bottom_layout.append(1)
         if include_ai_exposure_filters:
             bottom_layout.extend([1, 1])
@@ -6734,7 +6922,6 @@ def render_company_drilldown_filters(
         short_term_flow_value = "All"
         rel_strength_value = "All"
         rel_volume_value = "All"
-        ma200_distance_value = "All"
         ai_revenue_exposure_value = "All"
         ai_disruption_risk_value = "All"
         with filter_cols_bottom[next_bottom_col]:
@@ -6772,14 +6959,6 @@ def render_company_drilldown_filters(
                     "Rel Volume",
                     options=SIGN_FILTER_OPTIONS,
                     key=rel_volume_key,
-                )
-            next_bottom_col += 1
-        if include_ma200_distance_filter:
-            with filter_cols_bottom[next_bottom_col]:
-                ma200_distance_value = st.selectbox(
-                    "MA200 Distance",
-                    options=SIGN_FILTER_OPTIONS,
-                    key=ma200_distance_key,
                 )
             next_bottom_col += 1
         if include_ai_exposure_filters:
@@ -6890,6 +7069,15 @@ def render_company_drilldown_filters(
         selected_value=short_term_flow_value,
         label_map={"Positive": "positive", "Negative": "negative", "Neutral": "neutral"},
     )
+    filtered = _filter_by_rsi_level(filtered, "rsi_daily", rsi_daily_level_value)
+    filtered = _filter_by_rsi_level(filtered, "rsi_weekly", rsi_weekly_level_value)
+    if rs_daily_vs_sma20_value != "All" and "rs_daily_vs_sma20_sign" in filtered.columns:
+        filtered = filtered[filtered["rs_daily_vs_sma20_sign"] == rs_daily_vs_sma20_value]
+    if obvm_daily_vs_sma20_value != "All" and "obvm_daily_vs_sma20_sign" in filtered.columns:
+        filtered = filtered[filtered["obvm_daily_vs_sma20_sign"] == obvm_daily_vs_sma20_value]
+    filtered = _filter_by_ma_distance(filtered, "dist_to_ma20", ma20_distance_value)
+    filtered = _filter_by_ma_distance(filtered, "dist_to_ma50", ma50_distance_value)
+    filtered = _filter_by_ma_distance(filtered, "dist_to_ma200", ma200_distance_value)
     if include_fundamental_momentum_filter and "fundamental_momentum" in filtered.columns:
         if (
             filtered["fundamental_momentum"].notna().any()
@@ -6914,8 +7102,6 @@ def render_company_drilldown_filters(
         filtered = filtered[filtered["rel_strength"] == rel_strength_value]
     if include_rel_volume_filter and rel_volume_value != "All" and "rel_volume" in filtered.columns:
         filtered = filtered[filtered["rel_volume"] == rel_volume_value]
-    if include_ma200_distance_filter and ma200_distance_value != "All" and "dist_to_ma200_sign" in filtered.columns:
-        filtered = filtered[filtered["dist_to_ma200_sign"] == ma200_distance_value]
     if include_ai_exposure_filters and ai_revenue_exposure_value != "All" and "ai_revenue_exposure" in filtered.columns:
         filtered = filtered[filtered["ai_revenue_exposure"] == ai_revenue_exposure_value]
     if include_ai_exposure_filters and ai_disruption_risk_value != "All" and "ai_disruption_risk" in filtered.columns:
@@ -6947,6 +7133,12 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "1M",
                 "3M",
                 "YTD",
+                "RSI Daily",
+                "RSI Weekly",
+                "RS vs 20D",
+                "OBVM vs 20D",
+                "Dist to MA20",
+                "Dist to MA50",
                 "Dist to MA200",
                 "TS",
                 "Relative Performance",
@@ -7002,8 +7194,18 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     for performance_column in ["1w_perf", "1m_perf", "3m_perf", "ytd_perf"]:
         if performance_column not in sorted_df.columns:
             sorted_df[performance_column] = np.nan
-    if "dist_to_ma200" not in sorted_df.columns:
-        sorted_df["dist_to_ma200"] = np.nan
+    for technical_value_column in [
+        "rsi_daily",
+        "rsi_weekly",
+        "dist_to_ma20",
+        "dist_to_ma50",
+        "dist_to_ma200",
+    ]:
+        if technical_value_column not in sorted_df.columns:
+            sorted_df[technical_value_column] = np.nan
+    for technical_sign_column in ["rs_daily_vs_sma20_sign", "obvm_daily_vs_sma20_sign"]:
+        if technical_sign_column not in sorted_df.columns:
+            sorted_df[technical_sign_column] = "N/A"
     if "anchor_fallback_used" not in sorted_df.columns:
         sorted_df["anchor_fallback_used"] = False
     if "rel_strength" not in sorted_df.columns:
@@ -7054,6 +7256,12 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
             "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
             "YTD": pd.to_numeric(sorted_df["ytd_perf"], errors="coerce"),
+            "RSI Daily": pd.to_numeric(sorted_df["rsi_daily"], errors="coerce"),
+            "RSI Weekly": pd.to_numeric(sorted_df["rsi_weekly"], errors="coerce"),
+            "RS vs 20D": sorted_df["rs_daily_vs_sma20_sign"].fillna("N/A"),
+            "OBVM vs 20D": sorted_df["obvm_daily_vs_sma20_sign"].fillna("N/A"),
+            "Dist to MA20": pd.to_numeric(sorted_df["dist_to_ma20"], errors="coerce"),
+            "Dist to MA50": pd.to_numeric(sorted_df["dist_to_ma50"], errors="coerce"),
             "Dist to MA200": pd.to_numeric(sorted_df["dist_to_ma200"], errors="coerce"),
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
             "Relative Performance": pd.to_numeric(sorted_df["relative_performance"], errors="coerce"),
@@ -7097,7 +7305,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             _format_percent_value_with_fallback_marker(value, fallback_used)
             for value, fallback_used in zip(display_df[perf_column].tolist(), perf_fallback_flags)
         ]
-    display_df["Dist to MA200"] = display_df["Dist to MA200"].map(_format_percent_value)
+    display_df["RSI Daily"] = display_df["RSI Daily"].map(_format_numeric_value)
+    display_df["RSI Weekly"] = display_df["RSI Weekly"].map(_format_numeric_value)
+    for ma_distance_column in ["Dist to MA20", "Dist to MA50", "Dist to MA200"]:
+        display_df[ma_distance_column] = display_df[ma_distance_column].map(_format_percent_value)
 
     trend_columns = [
         ("TS", "technical_trend_symbol"),
@@ -7204,8 +7415,11 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
     usable_score_columns = [column for column in score_columns if column in display_df.columns]
     if usable_score_columns:
         styler = styler.applymap(_score_color_css, subset=usable_score_columns)
+    usable_rsi_columns = [column for column in COMPANY_GRID_RSI_COLUMNS if column in display_df.columns]
+    if usable_rsi_columns:
+        styler = styler.applymap(_rsi_color_css, subset=usable_rsi_columns)
     usable_sign_columns = [
-        column for column in ["Short Term Flow", "Rel Strength", "Rel Volume"] if column in display_df.columns
+        column for column in ["Short Term Flow", "RS vs 20D", "OBVM vs 20D", "Rel Strength", "Rel Volume"] if column in display_df.columns
     ]
     if usable_sign_columns:
         styler = styler.applymap(_style_sign_label_value, subset=usable_sign_columns)
@@ -8313,7 +8527,7 @@ TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
     {
         "key": "acceleration",
         "name": "Acceleration",
-        "subtitle": "Full-on bullish acceleration: price above aligned moving averages, sustained/current money flow, improving relative strength, strong RSI momentum, bullish RSI regime, and no bearish divergence lifecycle warnings.",
+        "subtitle": "Early bullish acceleration: price close to/above aligned moving averages, sustained/current money flow, improving relative strength, strong RSI momentum, bullish RSI regime, and no bearish divergence lifecycle warnings.",
         "sort_by": "technical",
     },
     {
@@ -8412,13 +8626,13 @@ def _filter_trade_idea_basket(
         m &= quality >= float(thresholds["fundamental_quality"])
         m &= fm >= float(thresholds["fundamental_momentum"])
         m &= rsi_regime > 70
-        m &= rsi_w > 60
+        m &= rsi_w > 55
         m &= rsi_d > 70
-        m &= rs_m > -0.5
+        m &= rs_m > -0.1
         m &= rs_d > rs_sma
         m &= obvm_m > 0
         m &= obvm_d > obvm_sma
-        m &= price > sma20
+        m &= price > (0.9 * sma20)
         m &= price > sma50
         m &= price > sma200
         m &= sma20 >= sma50
@@ -8783,7 +8997,7 @@ Fundamental overlays
 - Fundamental momentum score >= {fundamental_thresholds['fundamental_momentum']:.0f}
 
 Trend structure
-- eod_price_used > sma_daily_20
+- eod_price_used > 0.9 * sma_daily_20
 - eod_price_used > sma_daily_50
 - eod_price_used > sma_daily_200
 - sma_daily_20 >= sma_daily_50
@@ -8794,12 +9008,12 @@ Money flow
 - obvm_daily > obvm_sma20
 
 Relative performance vs S&P 500
-- rs_monthly > -0.5
+- rs_monthly > -0.1
 - rs_daily > rs_sma20
 
 Momentum / regime
 - rsi_daily > 70
-- rsi_weekly > 60
+- rsi_weekly > 55
 - stock_rsi_regime_score > 70
 
 Divergence guardrail
@@ -11589,6 +11803,13 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "1M",
                 "3M",
                 "YTD",
+                "RSI Daily",
+                "RSI Weekly",
+                "RS vs 20D",
+                "OBVM vs 20D",
+                "Dist to MA20",
+                "Dist to MA50",
+                "Dist to MA200",
                 "TS",
                 "RSI Regime",
                 "Sector Regime Fit",
@@ -11623,6 +11844,18 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["short_term_flow"] = pd.NA
     if "anchor_fallback_used" not in sorted_df.columns:
         sorted_df["anchor_fallback_used"] = False
+    for technical_value_column in [
+        "rsi_daily",
+        "rsi_weekly",
+        "dist_to_ma20",
+        "dist_to_ma50",
+        "dist_to_ma200",
+    ]:
+        if technical_value_column not in sorted_df.columns:
+            sorted_df[technical_value_column] = np.nan
+    for technical_sign_column in ["rs_daily_vs_sma20_sign", "obvm_daily_vs_sma20_sign"]:
+        if technical_sign_column not in sorted_df.columns:
+            sorted_df[technical_sign_column] = "N/A"
     if "rsi_divergence_daily_flag" not in sorted_df.columns:
         sorted_df["rsi_divergence_daily_flag"] = pd.NA
     if "rsi_divergence_weekly_flag" not in sorted_df.columns:
@@ -11666,6 +11899,13 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "1M": pd.to_numeric(sorted_df["1m_perf"], errors="coerce"),
             "3M": pd.to_numeric(sorted_df["3m_perf"], errors="coerce"),
             "YTD": pd.to_numeric(sorted_df["ytd_perf"], errors="coerce"),
+            "RSI Daily": pd.to_numeric(sorted_df["rsi_daily"], errors="coerce"),
+            "RSI Weekly": pd.to_numeric(sorted_df["rsi_weekly"], errors="coerce"),
+            "RS vs 20D": sorted_df["rs_daily_vs_sma20_sign"].fillna("N/A"),
+            "OBVM vs 20D": sorted_df["obvm_daily_vs_sma20_sign"].fillna("N/A"),
+            "Dist to MA20": pd.to_numeric(sorted_df["dist_to_ma20"], errors="coerce"),
+            "Dist to MA50": pd.to_numeric(sorted_df["dist_to_ma50"], errors="coerce"),
+            "Dist to MA200": pd.to_numeric(sorted_df["dist_to_ma200"], errors="coerce"),
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
             "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
             "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
@@ -11694,6 +11934,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             _format_percent_value_with_fallback_marker(value, fallback_used)
             for value, fallback_used in zip(display_df[perf_column].tolist(), perf_fallback_flags)
         ]
+    display_df["RSI Daily"] = display_df["RSI Daily"].map(_format_numeric_value)
+    display_df["RSI Weekly"] = display_df["RSI Weekly"].map(_format_numeric_value)
+    for ma_distance_column in ["Dist to MA20", "Dist to MA50", "Dist to MA200"]:
+        display_df[ma_distance_column] = display_df[ma_distance_column].map(_format_percent_value)
     display_df["RSI Regime"] = display_df["RSI Regime"].map(_format_numeric_value)
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     for display_column, symbol_column in [
@@ -12809,8 +13053,11 @@ def _build_thematics_company_styler(
     ]
     if usable_score_columns:
         styler = styler.applymap(_score_color_css, subset=usable_score_columns)
+    usable_rsi_columns = [column for column in COMPANY_GRID_RSI_COLUMNS if column in display_df.columns]
+    if usable_rsi_columns:
+        styler = styler.applymap(_rsi_color_css, subset=usable_rsi_columns)
     usable_sign_columns = [
-        column for column in ["Short Term Flow", "Rel Strength", "Rel Volume"] if column in display_df.columns
+        column for column in ["Short Term Flow", "RS vs 20D", "OBVM vs 20D", "Rel Strength", "Rel Volume"] if column in display_df.columns
     ]
     if usable_sign_columns:
         styler = styler.applymap(_style_sign_label_value, subset=usable_sign_columns)
@@ -13123,25 +13370,44 @@ def render_thematics_tab(config: ReportConfig) -> None:
         selected_basket = st.session_state.get("thematics_impl_selected_basket")
         if show_all_companies or selected_basket:
             if show_all_companies:
-                company_scope = "show_all"
-                company_scope_name = "All thematic companies"
+                company_scope = "all"
+                company_scope_name = "All companies"
             else:
                 company_scope = "selected"
                 company_scope_name = str(selected_basket)
             t_start = time.perf_counter()
-            company_universe, company_anchor_missing = _build_thematics_company_universe_for_scope_cached(
-                company_scope,
-                company_scope_name,
-                str(THEMATICS_CONFIG_PATH),
-                thematics_config_signature,
-                str(current_report_path) if current_report_path is not None else "",
-                _path_cache_signature(current_report_path) if current_report_path is not None else "",
-                str(prices_cache_file) if prices_cache_file.exists() else "",
-                prices_cache_signature,
-                reference_date,
-                _market_regime_company_metrics_cache_signature(reference_date),
-                _company_divergence_cache_signature(),
-            )
+            company_anchor_missing = False
+            company_universe_warning: Optional[str] = None
+            if show_all_companies:
+                if current_report_path is None:
+                    company_universe = pd.DataFrame()
+                else:
+                    _details_title, all_company_universe, _default_sectors, _default_industries, details_error, company_universe_warning = build_company_drilldown_context_from_path(
+                        current_report_path,
+                        evaluation_date=reference_date,
+                        selected_sector="All sectors",
+                        selected_mode="all",
+                        selected_key="__all__",
+                    )
+                    if details_error:
+                        st.warning(details_error)
+                        company_universe = pd.DataFrame()
+                    else:
+                        company_universe = all_company_universe if all_company_universe is not None else pd.DataFrame()
+            else:
+                company_universe, company_anchor_missing = _build_thematics_company_universe_for_scope_cached(
+                    company_scope,
+                    company_scope_name,
+                    str(THEMATICS_CONFIG_PATH),
+                    thematics_config_signature,
+                    str(current_report_path) if current_report_path is not None else "",
+                    _path_cache_signature(current_report_path) if current_report_path is not None else "",
+                    str(prices_cache_file) if prices_cache_file.exists() else "",
+                    prices_cache_signature,
+                    reference_date,
+                    _market_regime_company_metrics_cache_signature(reference_date),
+                    _company_divergence_cache_signature(),
+                )
             _perf_mark(timings, "company universe", t_start)
             if company_anchor_missing:
                 st.warning(
@@ -13150,6 +13416,8 @@ def render_thematics_tab(config: ReportConfig) -> None:
                         "their performance falls back to the latest prior EOD, highlighted with an orange border."
                     )
                 )
+            if company_universe_warning:
+                st.caption(company_universe_warning)
             if previous_ready and previous_report_df is not None and not company_universe.empty:
                 t_start = time.perf_counter()
                 company_universe = _annotate_company_score_trends(company_universe, previous_report_df, threshold=5.0)
@@ -13182,7 +13450,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
             )
             st.markdown("---")
             if show_all_companies:
-                st.caption("Companies across all thematic baskets")
+                st.caption("All companies from the report_select universe")
             else:
                 st.caption(f"Companies in thematic basket: {selected_basket}")
             _, regime_warning = _load_market_regime_company_metrics_for_date(reference_date)
@@ -13198,8 +13466,10 @@ def render_thematics_tab(config: ReportConfig) -> None:
                 include_thematic_filter=True,
                 include_rel_strength_filter=True,
                 include_rel_volume_filter=True,
+                include_ma200_distance_filter=True,
                 include_ai_exposure_filters=True,
                 include_beta_filter=True,
+                default_action_label="Apply strict filters",
             )
             _perf_mark(timings, "company filters", t_start)
             st.caption(f"Companies after filters: {len(filtered_companies)} of {len(company_universe)}")

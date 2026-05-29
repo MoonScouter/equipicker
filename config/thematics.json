@@ -692,6 +692,10 @@
     "Defense & Rearming": {
       "description": "Defense modernization, NATO spending, public-safety technology, and adjacent space/ISR exposure.",
       "tier": 2,
+      "is_parent": true,
+      "sub_baskets": [
+        "Defense: Drones"
+      ],
       "tickers": [
         "LMT",
         "RTX",
@@ -710,6 +714,10 @@
         "AXON",
         "KTOS",
         "AVAV",
+        "ONDS",
+        "AVEX",
+        "UMAC",
+        "RCAT",
         "ESLT",
         "HII",
         "CW",
@@ -725,6 +733,19 @@
         "BKSY",
         "SATL",
         "VOYG"
+      ]
+    },
+    "Defense: Drones": {
+      "description": "Unmanned aerial systems, autonomous defense platforms, and drone-enabled ISR exposure.",
+      "tier": 3,
+      "parent": "Defense & Rearming",
+      "tickers": [
+        "AVAV",
+        "KTOS",
+        "ONDS",
+        "AVEX",
+        "UMAC",
+        "RCAT"
       ]
     },
     "Digital Infrastructure REITs": {

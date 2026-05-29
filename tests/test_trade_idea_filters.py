@@ -87,7 +87,7 @@ class TradeIdeaFilterTests(unittest.TestCase):
 
         out = accel_up_weak(df, Path("."), save_output=False)
 
-        self.assertEqual(out["ticker"].tolist(), ["PASS_BY_WEEKLY", "PASS_BY_DAILY"])
+        self.assertEqual(out["ticker"].tolist(), ["PASS_BY_DAILY", "PASS_BY_WEEKLY"])
         self.assertTrue(all(value.endswith("M") for value in out["market_cap"]))
 
     def test_extreme_accel_down_mirror_rules(self) -> None:

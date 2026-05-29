@@ -25,6 +25,7 @@ from equipilot_app import (
     _enrich_company_universe_with_market_regime,
     _enrich_company_universe_with_rsi_divergence,
     _filter_company_grid_by_ticker_list,
+    _filter_trade_idea_basket,
     _filter_thematics_basket_table_for_view,
     _filter_by_optional_label_value,
     _filter_by_optional_numeric_range,
@@ -69,6 +70,12 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         "1M",
         "3M",
         "YTD",
+        "RSI Daily",
+        "RSI Weekly",
+        "RS vs 20D",
+        "OBVM vs 20D",
+        "Dist to MA20",
+        "Dist to MA50",
         "Dist to MA200",
         "TS",
         "Relative Performance",
@@ -117,7 +124,11 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "obvm_sma20": 100.0,
                     "rs_monthly": 1.2,
                     "obvm_monthly": -0.4,
+                    "rsi_daily": 72.4,
+                    "rsi_weekly": 58.2,
                     "eod_price_used": 105.0,
+                    "sma_daily_20": 100.0,
+                    "sma_daily_50": 110.0,
                     "sma_daily_200": 100.0,
                 },
                 {
@@ -135,7 +146,11 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "obvm_sma20": 100.0,
                     "rs_monthly": -0.1,
                     "obvm_monthly": 0.3,
+                    "rsi_daily": 28.6,
+                    "rsi_weekly": 41.5,
                     "eod_price_used": 90.0,
+                    "sma_daily_20": 100.0,
+                    "sma_daily_50": 80.0,
                     "sma_daily_200": 100.0,
                 },
             ]
@@ -156,6 +171,12 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertTrue(pd.isna(prepared.loc[1, "peg_ratio"]))
         self.assertEqual(prepared["rel_strength"].tolist(), ["Positive", "Negative"])
         self.assertEqual(prepared["rel_volume"].tolist(), ["Negative", "Positive"])
+        self.assertEqual(prepared["rs_daily_vs_sma20_sign"].tolist(), ["Positive", "Negative"])
+        self.assertEqual(prepared["obvm_daily_vs_sma20_sign"].tolist(), ["Positive", "Negative"])
+        self.assertEqual(prepared["dist_to_ma20"].tolist(), [5.0, -10.0])
+        self.assertEqual(prepared["dist_to_ma20_sign"].tolist(), ["Positive", "Negative"])
+        self.assertEqual(prepared["dist_to_ma50"].tolist(), [-4.5, 12.5])
+        self.assertEqual(prepared["dist_to_ma50_sign"].tolist(), ["Negative", "Positive"])
         self.assertEqual(prepared["dist_to_ma200"].tolist(), [5.0, -10.0])
         self.assertEqual(prepared["dist_to_ma200_sign"].tolist(), ["Positive", "Negative"])
         self.assertEqual(prepared["short_term_flow"].tolist(), ["positive", "negative"])
@@ -484,6 +505,42 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(by_ticker.loc["RETURN.US", "trade_idea_setup_badge"], "🆕 First")
         self.assertEqual(by_ticker.loc["RETURN.US", "trade_idea_first_seen_date"], date(2026, 3, 13))
         self.assertNotIn("OLD.US", by_ticker.index)
+
+    def test_acceleration_trade_idea_allows_early_20dma_setup(self) -> None:
+        base_row = {
+            "market_cap_bucket": "Mid",
+            "fundamental_total_score": 60.0,
+            "fundamental_momentum": 55.0,
+            "fundamental_quality": 58.0,
+            "fundamental_risk": 62.0,
+            "stock_rsi_regime_score": 72.0,
+            "rsi_daily": 71.0,
+            "rsi_weekly": 56.0,
+            "rs_daily": 12.0,
+            "rs_sma20": 10.0,
+            "rs_monthly": -0.05,
+            "obvm_daily": 105.0,
+            "obvm_sma20": 100.0,
+            "obvm_monthly": 0.2,
+            "eod_price_used": 91.0,
+            "sma_daily_20": 100.0,
+            "sma_daily_50": 90.0,
+            "sma_daily_200": 80.0,
+            "rsi_divergence_daily_flag": "none",
+            "rsi_divergence_weekly_flag": "none",
+        }
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "PASS.US", **base_row},
+                {"ticker": "FAIL_WEEKLY.US", **base_row, "rsi_weekly": 55.0},
+                {"ticker": "FAIL_RS.US", **base_row, "rs_monthly": -0.1},
+                {"ticker": "FAIL_20DMA.US", **base_row, "eod_price_used": 90.0},
+            ]
+        )
+
+        filtered = _filter_trade_idea_basket(company_df, "acceleration")
+
+        self.assertEqual(filtered["ticker"].tolist(), ["PASS.US"])
 
     def test_trade_idea_display_adds_setup_columns_next_to_company(self) -> None:
         company_df = pd.DataFrame(
@@ -1026,6 +1083,13 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "1M",
                 "3M",
                 "YTD",
+                "RSI Daily",
+                "RSI Weekly",
+                "RS vs 20D",
+                "OBVM vs 20D",
+                "Dist to MA20",
+                "Dist to MA50",
+                "Dist to MA200",
                 "TS",
                 "RSI Regime",
                 "Sector Regime Fit",
@@ -1265,9 +1329,15 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(state["tech_trend_dir"], "All")
         self.assertEqual(state["daily_rsi_divergence"], "All")
         self.assertEqual(state["weekly_rsi_divergence"], "All")
+        self.assertEqual(state["rsi_daily_level"], "All")
+        self.assertEqual(state["rsi_weekly_level"], "All")
         self.assertEqual(state["short_term_flow"], "All")
+        self.assertEqual(state["rs_daily_vs_sma20"], "All")
+        self.assertEqual(state["obvm_daily_vs_sma20"], "All")
         self.assertEqual(state["rel_strength"], "All")
         self.assertEqual(state["rel_volume"], "All")
+        self.assertEqual(state["ma20_distance"], "All")
+        self.assertEqual(state["ma50_distance"], "All")
         self.assertEqual(state["ma200_distance"], "All")
         self.assertEqual(state["ai_revenue_exposure"], "All")
         self.assertEqual(state["ai_disruption_risk"], "All")
@@ -1789,7 +1859,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(thematics["Energy Midstream & LNG"]["tickers"], ["LNG", "NEXT", "KMI", "TRGP", "ET"])
         self.assertEqual(
             thematics["Energy Midstream: Core Pipelines & Cash Flows"]["tickers"],
-            ["WMB", "EPD", "ENB", "OKE", "MPLX", "VNOM"],
+            ["WMB", "EPD", "ENB", "OKE", "MPLX"],
         )
         midstream_union = []
         for child_name in thematics["Energy: Oil & Gas Midstream"]["sub_baskets"]:
@@ -1799,6 +1869,15 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             thematics["Energy: Oilfield Services & Drilling"]["tickers"],
             ["SLB", "HAL", "BKR", "NOV", "FTI", "LBRT", "PTEN", "NBR"],
         )
+        self.assertTrue(thematics["Defense & Rearming"]["is_parent"])
+        self.assertEqual(thematics["Defense & Rearming"]["sub_baskets"], ["Defense: Drones"])
+        self.assertEqual(thematics["Defense: Drones"]["parent"], "Defense & Rearming")
+        self.assertEqual(
+            thematics["Defense: Drones"]["tickers"],
+            ["AVAV", "KTOS", "ONDS", "AVEX", "UMAC", "RCAT"],
+        )
+        for ticker in thematics["Defense: Drones"]["tickers"]:
+            self.assertIn(ticker, thematics["Defense & Rearming"]["tickers"])
         self.assertEqual(thematics["Energy Security & Geopolitics"]["tickers"], ["LNG", "NEXT", "CCJ", "LEU", "TPL", "UUUU"])
         self.assertEqual(
             thematics["Nuclear Renaissance"],
