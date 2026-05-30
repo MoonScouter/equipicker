@@ -3,10 +3,14 @@
     "dinamic": [
       "AA"
     ],
-    "dividend": []
+    "dividend": [
+      "LMT"
+    ]
   },
   "segment_overrides": {
     "dinamic": {
+      "AVGO": "Growth",
+      "GOOG": "Growth",
       "MSFT": "Growth",
       "STX": "Growth",
       "PWR": "Growth",
