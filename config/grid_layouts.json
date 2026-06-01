@@ -1,17 +1,4 @@
 {
-  "thematics_basket_table": {
-    "visible_columns": [
-      "Name",
-      "Beta",
-      "YTD",
-      "FS",
-      "Mom. FS",
-      "Growth FS",
-      "Value FS",
-      "Quality FS",
-      "Risk FS"
-    ]
-  },
   "thematics_company_grid": {
     "visible_columns": [
       "Thematic",
@@ -781,6 +768,17 @@
       "Risk FS",
       "Rel Strength",
       "Rel Volume"
+    ]
+  },
+  "thematics_basket_table": {
+    "visible_columns": [
+      "Name",
+      "Beta",
+      "1M",
+      "YTD",
+      "TS",
+      "FS",
+      "Mom. FS"
     ]
   }
 }
