@@ -53,6 +53,27 @@
     },
     {
       "ticker": "SLNH"
+    },
+    {
+      "ticker": "INTC"
+    },
+    {
+      "ticker": "NET"
+    },
+    {
+      "ticker": "ORCL"
+    },
+    {
+      "ticker": "HIVE"
+    },
+    {
+      "ticker": "ABCL"
+    },
+    {
+      "ticker": "PLTR"
+    },
+    {
+      "ticker": "ADBE"
     }
   ]
 }
