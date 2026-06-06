@@ -135,6 +135,8 @@ CONFIG_DIR = CONFIG_PATH.parent
 THEMATICS_CONFIG_PATH = CONFIG_DIR / "thematics.json"
 GRID_LAYOUT_CONFIG_PATH = CONFIG_DIR / "grid_layouts.json"
 SUMMARY_JSON_PATH = CONFIG_DIR / "text_generated.json"
+DEFAULT_PRICES_DAILY_CUTOFF_DATE = date(2025, 3, 31)
+PRICES_WEEKLY_DEFAULT_LOOKBACK_YEARS = 5
 BANNER_CANDIDATES = [
     BASE_DIR / "banner_equipilot.png",
     BASE_DIR / "banner_.png",
@@ -691,6 +693,16 @@ def _render_report_select_calendar_highlight_layer() -> None:
 def render_report_select_date_input(*args, **kwargs):
     _render_report_select_calendar_highlight_layer()
     return st.date_input(*args, **kwargs)
+
+
+def default_prices_weekly_cutoff_date(daily_cutoff_date: date) -> date:
+    try:
+        return daily_cutoff_date.replace(year=daily_cutoff_date.year - PRICES_WEEKLY_DEFAULT_LOOKBACK_YEARS)
+    except ValueError:
+        return daily_cutoff_date.replace(
+            year=daily_cutoff_date.year - PRICES_WEEKLY_DEFAULT_LOOKBACK_YEARS,
+            day=28,
+        )
 
 
 def resolve_report_select_path(date_value: date) -> Tuple[Optional[Path], Tuple[Path, Path]]:
@@ -10156,13 +10168,34 @@ def render_home_prices_import_subtab() -> None:
     )
     today_local = date.today()
     cache_year = today_local.year
-    default_cutoff_date = date(cache_year - 1, 12, 31)
-    cutoff_date = render_report_select_date_input(
-        "SQL start date (exclusive)",
-        value=default_cutoff_date,
-        key="home_prices_cutoff_date",
-        help="Query uses date > selected day at 00:00:00.",
-    )
+    daily_weekly_date_cols = st.columns(2)
+    with daily_weekly_date_cols[0]:
+        daily_cutoff_date = render_report_select_date_input(
+            "Daily SQL start date (exclusive)",
+            value=DEFAULT_PRICES_DAILY_CUTOFF_DATE,
+            key="home_prices_daily_cutoff_date",
+            help="Daily query uses date > selected day at 00:00:00.",
+        )
+    weekly_cutoff_date_key = "home_prices_weekly_cutoff_date"
+    previous_daily_cutoff_date_key = "home_prices_previous_daily_cutoff_date"
+    previous_daily_cutoff_date = st.session_state.get(previous_daily_cutoff_date_key)
+    weekly_default_cutoff_date = default_prices_weekly_cutoff_date(daily_cutoff_date)
+    if weekly_cutoff_date_key not in st.session_state:
+        st.session_state[weekly_cutoff_date_key] = weekly_default_cutoff_date
+    elif isinstance(previous_daily_cutoff_date, date):
+        previous_weekly_default_cutoff_date = default_prices_weekly_cutoff_date(previous_daily_cutoff_date)
+        if st.session_state.get(weekly_cutoff_date_key) == previous_weekly_default_cutoff_date:
+            st.session_state[weekly_cutoff_date_key] = weekly_default_cutoff_date
+    st.session_state[previous_daily_cutoff_date_key] = daily_cutoff_date
+    with daily_weekly_date_cols[1]:
+        weekly_cutoff_date = render_report_select_date_input(
+            "Weekly SQL start date (exclusive)",
+            key=weekly_cutoff_date_key,
+            help="Weekly query uses date > selected day at 00:00:00.",
+        )
+        st.caption(
+            f"Defaults to {weekly_default_cutoff_date.isoformat()}, five years before the daily start date."
+        )
     scope_label = st.radio(
         "Import scope",
         ["All tickers", "Specific tickers"],
@@ -10210,11 +10243,12 @@ def render_home_prices_import_subtab() -> None:
         if scope_key == "specific" and not requested_tickers:
             st.error("Enter at least one ticker before running a specific-ticker prices import.")
             return
+        import_cutoff_date = daily_cutoff_date if frequency == "daily" else weekly_cutoff_date
         with st.spinner(f"Importing {frequency} prices..."):
             try:
                 result = import_prices_cache(
                     frequency,
-                    cutoff_date,
+                    import_cutoff_date,
                     scope=scope_key,
                     manual_tickers=requested_tickers,
                 )
@@ -10227,7 +10261,8 @@ def render_home_prices_import_subtab() -> None:
                 st.success(
                     f"{frequency.capitalize()} prices cache updated: {result['saved_path']} "
                     f"({result['saved_rows']} rows, latest date {latest_date_note}, "
-                    f"tickers requested {result['requested_tickers_count']})."
+                    f"tickers requested {result['requested_tickers_count']}, "
+                    f"SQL start {import_cutoff_date.isoformat()})."
                 )
 
     action_cols = st.columns(2)

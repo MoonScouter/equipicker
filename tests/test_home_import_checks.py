@@ -7,6 +7,8 @@ from unittest.mock import patch
 import pandas as pd
 
 from equipilot_app import (
+    DEFAULT_PRICES_DAILY_CUTOFF_DATE,
+    default_prices_weekly_cutoff_date,
     evaluate_home_import_checks,
     get_latest_indices_cache_date,
     get_latest_prices_cache_date,
@@ -32,6 +34,13 @@ class HomeImportCheckTests(unittest.TestCase):
                 updated.setdefault("rsi_divergence_flag", "none")
             normalized_rows.append(updated)
         pd.DataFrame(normalized_rows).to_json(path, orient="records", lines=True)
+
+    def test_prices_import_daily_cutoff_default_is_fixed_march_2025(self) -> None:
+        self.assertEqual(DEFAULT_PRICES_DAILY_CUTOFF_DATE, date(2025, 3, 31))
+
+    def test_prices_import_weekly_cutoff_defaults_five_years_before_daily(self) -> None:
+        self.assertEqual(default_prices_weekly_cutoff_date(date(2025, 3, 31)), date(2020, 3, 31))
+        self.assertEqual(default_prices_weekly_cutoff_date(date(2024, 2, 29)), date(2019, 2, 28))
 
     def test_report_select_state_detects_existing_repo_snapshot(self) -> None:
         state = get_report_select_import_state(date(2026, 3, 6))
