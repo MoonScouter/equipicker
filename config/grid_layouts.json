@@ -127,6 +127,10 @@
       "RSI Divergence (W)",
       "FS",
       "Mom. FS",
+      "Growth FS",
+      "Value FS",
+      "Quality FS",
+      "Risk FS",
       "Rel Strength",
       "Rel Volume"
     ]
