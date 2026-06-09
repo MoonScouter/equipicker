@@ -24,6 +24,7 @@ from equipilot_app import (
     _default_sector_regime_fit_range_for_company_scope,
     _enrich_company_universe_with_market_regime,
     _enrich_company_universe_with_rsi_divergence,
+    _company_grid_default_visible_columns,
     _filter_company_grid_by_ticker_list,
     _filter_trade_idea_basket,
     _filter_thematics_basket_table_for_view,
@@ -36,6 +37,11 @@ from equipilot_app import (
     _latest_divergence_flags_for_frequency,
     _normalize_grid_visible_columns,
     _normalize_watchlist_tickers,
+    _ordered_visible_column_selection,
+    _portfolio_preferred_columns,
+    _should_annotate_trade_idea_occurrences,
+    _trade_idea_ma200_overlap_tickers,
+    _trade_ideas_preferred_columns,
     _company_grid_height,
     _compute_company_return_metrics,
     _load_market_regime_company_metrics_for_date,
@@ -84,6 +90,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         "Intermediate Trend",
         "Long-term Trend",
         "RSI Regime",
+        "RSI Regime 20D",
+        "RSI Regime 50D",
+        "RSI Regime Δ",
+        "RSI Regime Cross",
         "Sector Regime Fit",
         "Short Term Flow",
         "RSI Divergence (D)",
@@ -526,6 +536,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             "sma_daily_20": 100.0,
             "sma_daily_50": 90.0,
             "sma_daily_200": 80.0,
+            "stock_rsi_regime_20d_vs_50d_flag": "Positive",
             "rsi_divergence_daily_flag": "none",
             "rsi_divergence_weekly_flag": "none",
         }
@@ -535,12 +546,144 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 {"ticker": "FAIL_WEEKLY.US", **base_row, "rsi_weekly": 55.0},
                 {"ticker": "FAIL_RS.US", **base_row, "rs_monthly": -0.1},
                 {"ticker": "FAIL_20DMA.US", **base_row, "eod_price_used": 90.0},
+                {"ticker": "FAIL_RSI_CROSS.US", **base_row, "stock_rsi_regime_20d_vs_50d_flag": "Negative"},
             ]
         )
 
         filtered = _filter_trade_idea_basket(company_df, "acceleration")
 
         self.assertEqual(filtered["ticker"].tolist(), ["PASS.US"])
+
+    def test_around_ma200_daily_uses_percent_distance_band(self) -> None:
+        base_row = {
+            "market_cap_bucket": "Mid",
+            "eod_price_used": 105.0,
+            "sma_daily_20": 102.0,
+            "sma_daily_50": 100.0,
+            "obvm_daily": 105.0,
+            "obvm_sma20": 100.0,
+            "rs_daily": 105.0,
+            "rs_sma20": 100.0,
+            "rsi_daily": 61.0,
+            "rsi_weekly": 41.0,
+            "stock_rsi_regime_score": 41.0,
+            "stock_rsi_regime_20d_vs_50d_flag": "Positive",
+            "rsi_divergence_daily_flag": "none",
+            "rsi_divergence_weekly_flag": "none",
+        }
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "LOW_EDGE.US", **base_row, "dist_to_ma200": -20.0},
+                {"ticker": "HIGH_EDGE.US", **base_row, "dist_to_ma200": 10.0},
+                {"ticker": "BELOW.US", **base_row, "dist_to_ma200": -20.1},
+                {"ticker": "ABOVE.US", **base_row, "dist_to_ma200": 10.1},
+                {"ticker": "FAIL_RSI_CROSS.US", **base_row, "dist_to_ma200": 0.0, "stock_rsi_regime_20d_vs_50d_flag": "Negative"},
+            ]
+        )
+
+        filtered = _filter_trade_idea_basket(company_df, "below_ma200")
+
+        self.assertEqual(filtered["ticker"].tolist(), ["LOW_EDGE.US", "HIGH_EDGE.US"])
+
+    def test_around_ma200_weekly_uses_percent_distance_band(self) -> None:
+        base_row = {
+            "market_cap_bucket": "Mid",
+            "eod_price_used": 105.0,
+            "sma_daily_20": 102.0,
+            "sma_daily_50": 100.0,
+            "obvm_daily": 105.0,
+            "obvm_sma20": 100.0,
+            "rs_daily": 105.0,
+            "rs_sma20": 100.0,
+            "rsi_daily": 61.0,
+            "rsi_weekly": 41.0,
+            "stock_rsi_regime_score": 41.0,
+            "stock_rsi_regime_20d_vs_50d_flag": "Positive",
+            "rsi_divergence_daily_flag": "none",
+            "rsi_divergence_weekly_flag": "none",
+        }
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "LOW_EDGE.US", **base_row, "dist_to_ma200_weekly": -20.0},
+                {"ticker": "HIGH_EDGE.US", **base_row, "dist_to_ma200_weekly": 10.0},
+                {"ticker": "BELOW.US", **base_row, "dist_to_ma200_weekly": -20.1},
+                {"ticker": "ABOVE.US", **base_row, "dist_to_ma200_weekly": 10.1},
+                {"ticker": "FAIL_VOLUME.US", **base_row, "dist_to_ma200_weekly": 0.0, "obvm_daily": 99.0},
+            ]
+        )
+
+        filtered = _filter_trade_idea_basket(company_df, "around_ma200_weekly")
+
+        self.assertEqual(filtered["ticker"].tolist(), ["LOW_EDGE.US", "HIGH_EDGE.US"])
+
+    def test_ma200_overlap_tickers_intersects_daily_and_weekly_baskets(self) -> None:
+        base_row = {
+            "market_cap_bucket": "Mid",
+            "eod_price_used": 105.0,
+            "sma_daily_20": 102.0,
+            "sma_daily_50": 100.0,
+            "obvm_daily": 105.0,
+            "obvm_sma20": 100.0,
+            "rs_daily": 105.0,
+            "rs_sma20": 100.0,
+            "rsi_daily": 61.0,
+            "rsi_weekly": 41.0,
+            "stock_rsi_regime_score": 41.0,
+            "stock_rsi_regime_20d_vs_50d_flag": "Positive",
+            "rsi_divergence_daily_flag": "none",
+            "rsi_divergence_weekly_flag": "none",
+        }
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "BOTH.US", **base_row, "dist_to_ma200": 0.0, "dist_to_ma200_weekly": 0.0},
+                {"ticker": "DAILY_ONLY.US", **base_row, "dist_to_ma200": 0.0, "dist_to_ma200_weekly": 20.0},
+                {"ticker": "WEEKLY_ONLY.US", **base_row, "dist_to_ma200": 20.0, "dist_to_ma200_weekly": 0.0},
+                {"ticker": "NEITHER.US", **base_row, "dist_to_ma200": 20.0, "dist_to_ma200_weekly": 20.0},
+            ]
+        )
+
+        with patch(
+            "equipilot_app._enrich_trade_ideas_with_weekly_ma200_distance",
+            side_effect=lambda df, _selected_eod: df,
+        ):
+            overlap = _trade_idea_ma200_overlap_tickers(
+                company_df,
+                selected_eod=date(2026, 6, 5),
+                fundamental_thresholds=None,
+            )
+
+        self.assertEqual(overlap, ("BOTH.US",))
+
+    def test_positive_divergence_bottoming_requires_strict_positive_divergence(self) -> None:
+        base_row = {
+            "obvm_daily": 105.0,
+            "obvm_sma20": 100.0,
+            "rs_daily": 105.0,
+            "rs_sma20": 100.0,
+            "stock_rsi_regime_20d_vs_50d_flag": "Neutral",
+            "rsi_divergence_daily_flag": "none",
+            "rsi_divergence_weekly_flag": "none",
+        }
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "PASS_DAILY.US", **base_row, "rsi_divergence_daily_flag": "positive"},
+                {"ticker": "PASS_WEEKLY.US", **base_row, "rsi_divergence_weekly_flag": "positive"},
+                {"ticker": "FAIL_POTENTIAL.US", **base_row, "rsi_divergence_daily_flag": "potential-positive"},
+                {"ticker": "FAIL_CONFIRMED.US", **base_row, "rsi_divergence_daily_flag": "positive-confirmed"},
+                {"ticker": "FAIL_EXTENSION.US", **base_row, "rsi_divergence_weekly_flag": "extension-positive"},
+                {"ticker": "FAIL_FLOW.US", **base_row, "rsi_divergence_daily_flag": "positive", "obvm_daily": 99.0},
+                {
+                    "ticker": "FAIL_RSI_CROSS.US",
+                    **base_row,
+                    "rsi_divergence_daily_flag": "positive",
+                    "stock_rsi_regime_20d_vs_50d_flag": "Negative",
+                },
+            ]
+        )
+
+        filtered = _filter_trade_idea_basket(company_df, "positive_divergence_bottoming")
+
+        self.assertEqual(filtered["ticker"].tolist(), ["PASS_DAILY.US", "PASS_WEEKLY.US"])
 
     def test_trade_idea_display_adds_setup_columns_next_to_company(self) -> None:
         company_df = pd.DataFrame(
@@ -567,6 +710,41 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(rendered.columns.tolist()[0:5], ["Thematic", "Ticker", "Company", "Setup", "First Seen"])
         self.assertEqual(rendered.iloc[0]["Setup"], "🔁 3x")
         self.assertEqual(rendered.iloc[0]["First Seen"], "2026-03-06")
+
+    def test_trade_idea_display_adds_consecutive_appearances_column(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha Inc",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 92.0,
+                    "fundamental_momentum": 85.0,
+                    "general_technical_score": 70.0,
+                    "stock_rsi_regime_score": 76.0,
+                    "sector_regime_fit_score": 68.0,
+                    "trade_idea_streak_count": 3,
+                }
+            ]
+        )
+
+        rendered = format_company_drilldown_display(company_df, sort_by="fundamental")
+
+        self.assertIn("Consecutive Appearances", rendered.columns.tolist())
+        self.assertEqual(rendered.iloc[0]["Consecutive Appearances"], 3)
+
+    def test_trade_ideas_preferred_columns_place_occurrence_fields_before_market_cap(self) -> None:
+        preferred = _trade_ideas_preferred_columns()
+
+        self.assertLess(preferred.index("Industry"), preferred.index("First Seen"))
+        self.assertLess(preferred.index("First Seen"), preferred.index("Consecutive Appearances"))
+        self.assertLess(preferred.index("Consecutive Appearances"), preferred.index("Market Cap"))
+
+    def test_trade_idea_occurrence_metadata_is_skipped_for_broad_baskets(self) -> None:
+        self.assertTrue(_should_annotate_trade_idea_occurrences(200))
+        self.assertFalse(_should_annotate_trade_idea_occurrences(201))
 
     def test_fundamental_and_technical_display_include_ai_and_signal_fields(self) -> None:
         company_df = pd.DataFrame(
@@ -622,6 +800,7 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "Beta": "1.1",
                     "TS": "91.0",
                     "RSI Regime": "84.0",
+                    "RSI Regime Cross": "Negative",
                     "Sector Regime Fit": "72.0",
                     "Short Term Flow": "Neutral",
                     "RSI Divergence (D)": "Positive",
@@ -645,6 +824,49 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertIn("#15803D", html)
         self.assertIn("#B42318", html)
         self.assertIn("#B45309", html)
+        self.assertIn("RSI Regime Cross", html)
+
+    def test_company_drilldown_styler_keeps_zero_rsi_regime_delta_neutral(self) -> None:
+        display_df = pd.DataFrame(
+            [
+                {
+                    "Thematic": "AI Infra",
+                    "Ticker": "AAA.US",
+                    "Company": "Alpha Inc",
+                    "Sector": "Technology",
+                    "Industry": "Software",
+                    "Market Cap": "1.50B",
+                    "Beta": "1.1",
+                    "TS": "91.0",
+                    "RSI Regime": "84.0",
+                    "RSI Regime 20D": "84.0",
+                    "RSI Regime 50D": "84.0",
+                    "RSI Regime Δ": "0.0",
+                    "RSI Regime Cross": "Neutral",
+                    "Sector Regime Fit": "72.0",
+                    "Short Term Flow": "Neutral",
+                    "RSI Divergence (D)": "Positive",
+                    "RSI Divergence (W)": "None",
+                    "FS": "88.0",
+                    "Mom. FS": "77.0",
+                    "Growth FS": "69.0",
+                    "Value FS": "61.0",
+                    "Quality FS": "73.0",
+                    "Risk FS": "65.0",
+                    "Rel Strength": "Positive",
+                    "Rel Volume": "Negative",
+                    "AI Revenue Exposure": "indirect",
+                    "AI Disruption Risk": "medium",
+                }
+            ]
+        )
+
+        html = _build_company_drilldown_styler(display_df).to_html()
+
+        self.assertIn("0.0", html)
+        self.assertIn("#T_", html)
+        self.assertIn("_col11", html)
+        self.assertIn("color: #334E68;", html)
 
     def test_company_drilldown_styler_colors_confirmed_divergence_labels(self) -> None:
         display_df = pd.DataFrame(
@@ -1092,6 +1314,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Dist to MA200",
                 "TS",
                 "RSI Regime",
+                "RSI Regime 20D",
+                "RSI Regime 50D",
+                "RSI Regime Δ",
+                "RSI Regime Cross",
                 "Sector Regime Fit",
                 "Short Term Flow",
                 "RSI Divergence (D)",
@@ -1287,6 +1513,175 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         )
 
         self.assertNotEqual(first_key, second_key)
+
+    def test_company_grid_default_visible_columns_match_shared_default_order(self) -> None:
+        available_columns = [
+            "Ticker",
+            "Company",
+            "Thematic",
+            "Sector",
+            "Industry",
+            "Market Cap",
+            "Beta",
+            "PEG",
+            "PER Trailing",
+            "PER Fwd",
+            "P/S TTM",
+            "EV/Revenues",
+            "EV/EBITDA",
+            "1W",
+            "1M",
+            "3M",
+            "YTD",
+            "Dist to MA20",
+            "Dist to MA50",
+            "Dist to MA200",
+            "RSI Daily",
+            "RSI Divergence (D)",
+            "RSI Weekly",
+            "RSI Divergence (W)",
+            "Rel Strength",
+            "Rel Volume",
+            "RS vs 20D",
+            "OBVM vs 20D",
+            "RSI Regime",
+            "RSI Regime 20D",
+            "RSI Regime 50D",
+            "RSI Regime Cross",
+            "Sector Regime Fit",
+            "TS",
+            "Relative Performance",
+            "Relative Volume",
+            "Momentum",
+            "Intermediate Trend",
+            "Long-term Trend",
+            "FS",
+            "Growth FS",
+            "Value FS",
+            "Quality FS",
+            "Risk FS",
+            "Mom. FS",
+            "Short Term Flow",
+            "AI Revenue Exposure",
+        ]
+
+        self.assertEqual(
+            _company_grid_default_visible_columns(available_columns),
+            [
+                "Ticker",
+                "Company",
+                "Thematic",
+                "Sector",
+                "Industry",
+                "Market Cap",
+                "Beta",
+                "PEG",
+                "PER Trailing",
+                "PER Fwd",
+                "P/S TTM",
+                "EV/Revenues",
+                "EV/EBITDA",
+                "1W",
+                "1M",
+                "YTD",
+                "Dist to MA20",
+                "Dist to MA50",
+                "Dist to MA200",
+                "RSI Daily",
+                "RSI Divergence (D)",
+                "RSI Weekly",
+                "RSI Divergence (W)",
+                "Rel Strength",
+                "Rel Volume",
+                "RS vs 20D",
+                "OBVM vs 20D",
+                "RSI Regime 20D",
+                "RSI Regime 50D",
+                "RSI Regime Cross",
+                "TS",
+                "Relative Performance",
+                "Relative Volume",
+                "Momentum",
+                "Intermediate Trend",
+                "Long-term Trend",
+                "FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
+                "Mom. FS",
+            ],
+        )
+
+    def test_ordered_visible_column_selection_preserves_current_order(self) -> None:
+        available_columns = ["Thematic", "Ticker", "Company", "Sector", "Industry"]
+        selected_lookup = {
+            "Thematic": True,
+            "Ticker": True,
+            "Company": True,
+            "Sector": True,
+            "Industry": True,
+        }
+        current_order = ["Ticker", "Company", "Thematic", "Sector", "Industry"]
+
+        self.assertEqual(
+            _ordered_visible_column_selection(available_columns, selected_lookup, current_order),
+            ["Ticker", "Company", "Thematic", "Sector", "Industry"],
+        )
+
+    def test_portfolio_preferred_columns_place_portfolio_fields_after_market_cap(self) -> None:
+        self.assertEqual(
+            _portfolio_preferred_columns(),
+            [
+                "Ticker",
+                "Company",
+                "Thematic",
+                "Sector",
+                "Industry",
+                "Market Cap",
+                "Alert Levels",
+                "Last EOD Price",
+                "Transaction Date",
+                "Transaction Price",
+                "Net PnL",
+                "Beta",
+                "PEG",
+                "PER Trailing",
+                "PER Fwd",
+                "P/S TTM",
+                "EV/Revenues",
+                "EV/EBITDA",
+                "1W",
+                "1M",
+                "YTD",
+                "Dist to MA20",
+                "Dist to MA50",
+                "Dist to MA200",
+                "RSI Daily",
+                "RSI Divergence (D)",
+                "RSI Weekly",
+                "RSI Divergence (W)",
+                "Rel Strength",
+                "Rel Volume",
+                "RS vs 20D",
+                "OBVM vs 20D",
+                "RSI Regime 20D",
+                "RSI Regime 50D",
+                "RSI Regime Cross",
+                "TS",
+                "Relative Performance",
+                "Relative Volume",
+                "Momentum",
+                "Intermediate Trend",
+                "Long-term Trend",
+                "FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
+                "Mom. FS",
+            ],
+        )
 
 
     def test_apply_trend_symbols_to_table_formats_threshold_crossings_and_missing_previous(self) -> None:
@@ -1573,6 +1968,16 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "ev_ebitda": 21.4,
                     "rs_monthly": 0.5,
                     "obvm_monthly": 0.4,
+                    "rsi_daily": 58.0,
+                    "rsi_weekly": 61.0,
+                    "eod_price_used": 110.0,
+                    "sma_daily_20": 100.0,
+                    "sma_daily_50": 105.0,
+                    "sma_daily_200": 95.0,
+                    "rs_daily": 1.2,
+                    "rs_sma20": 1.0,
+                    "obvm_daily": 1.3,
+                    "obvm_sma20": 1.1,
                 },
                 {
                     "ticker": "BBB.US",
@@ -1627,6 +2032,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "price_to_sales_ttm"]), 7.1)
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "ev_revenue"]), 8.2)
         self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "ev_ebitda"]), 21.4)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "rsi_weekly"]), 61.0)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "dist_to_ma20"]), 10.0)
+        self.assertAlmostEqual(float(by_ticker.loc["AAA.US", "dist_to_ma50"]), 4.8)
+        self.assertEqual(by_ticker.loc["AAA.US", "short_term_flow"], "positive")
 
     def test_build_thematics_company_universe_normalizes_raw_tickers_for_price_metrics(self) -> None:
         catalog = {

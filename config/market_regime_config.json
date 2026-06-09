@@ -14,6 +14,11 @@
     "max_daily_rsi_lookback": 20,
     "risk_appetite_warning_min_cohort_size": 5
   },
+  "stock_rsi_regime_overlay": {
+    "short_window_days": 20,
+    "long_window_days": 50,
+    "neutral_delta_abs": 3.0
+  },
   "stock_rsi_weights": {
     "weekly_range_persistence": 0.45,
     "expansion_frequency": 0.25,

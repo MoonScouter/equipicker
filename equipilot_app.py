@@ -118,8 +118,11 @@ from market_service import (
     load_market_methodology_text,
     load_market_regime_config,
     load_sector_families,
+    load_stock_rsi_regime_overlay_cache,
     market_cache_status,
+    refresh_stock_rsi_regime_overlay_cache,
     resolve_anchor_on_or_before,
+    stock_rsi_regime_overlay_path,
 )
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
 from weekly_scoring_board import compute_sector_overview_stats
@@ -166,6 +169,7 @@ TREND_FILTER_LABELS = {
 }
 TREND_FILTER_OPTIONS = ["All", TREND_FILTER_LABELS["up"], TREND_FILTER_LABELS["flat"], TREND_FILTER_LABELS["down"]]
 SIGN_FILTER_OPTIONS = ["All", "Positive", "Negative"]
+RSI_REGIME_CROSS_FILTER_OPTIONS = ["All", "Positive", "Negative", "Neutral", "N/A"]
 RSI_LEVEL_FILTER_OPTIONS = ["All", "> 70", "> 60", "> 40", "> 30", "< 70", "< 60", "< 40", "< 30"]
 MA_DISTANCE_FILTER_OPTIONS = ["All", "Above", "Below", "Within +/-10%", "Above +10%", "Below -10%"]
 DIVERGENCE_FILTER_OPTIONS = [
@@ -209,7 +213,7 @@ GRID_SURFACE_FUNDAMENTAL_COMPANY = "fundamental_company_grid"
 GRID_SURFACE_TECHNICAL_COMPANY = "technical_company_grid"
 GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
 GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
-GRID_SURFACE_TRADE_IDEAS_PREFIX = "trade_ideas_company_grid"
+GRID_SURFACE_TRADE_IDEAS_PREFIX = "trade_ideas_company_grid_v3"
 GRID_SURFACE_MARKET_SECTOR_TABLE = "market_sector_table"
 GRID_SURFACE_PORTFOLIO_PREFIX = "portfolio_company_grid"
 GRID_SURFACE_WATCHLIST_COMPANY = "watchlist_company_grid"
@@ -220,7 +224,7 @@ PORTFOLIO_JOURNAL_PATH = Path(
 PORTFOLIO_CONFIG_PATH = CONFIG_DIR / "portfolio_config.json"
 PORTFOLIO_ALERTS_PATH = CONFIG_DIR / "portfolio_alerts.json"
 WATCHLIST_CONFIG_PATH = CONFIG_DIR / "watchlist.json"
-TRADE_IDEAS_BACKTEST_CACHE_PATH = DATA_DIR / "trade_ideas_backtest_latest_v2.csv"
+TRADE_IDEAS_BACKTEST_CACHE_PATH = DATA_DIR / "trade_ideas_backtest_latest_v3.csv"
 PORTFOLIO_SHEETS = {
     "dinamic": {"sheet": "DINAMIC", "label": "Portofoliu Dinamic"},
     "dividend": {"sheet": "DIVIDEND", "label": "Portofoliu Dividend"},
@@ -236,6 +240,9 @@ COMPANY_GRID_SCORE_COLUMNS = [
     "Intermediate Trend",
     "Long-term Trend",
     "RSI Regime",
+    "RSI Regime 20D",
+    "RSI Regime 50D",
+    "RSI Regime Δ",
     "Sector Regime Fit",
     "FS",
     "Mom. FS",
@@ -247,6 +254,7 @@ COMPANY_GRID_SCORE_COLUMNS = [
 COMPANY_GRID_RSI_COLUMNS = ["RSI Daily", "RSI Weekly"]
 COMPANY_GRID_SIGN_COLUMNS = [
     "Short Term Flow",
+    "RSI Regime Cross",
     "RS vs 20D",
     "OBVM vs 20D",
     "RSI Divergence (D)",
@@ -265,6 +273,55 @@ COMPANY_GRID_REQUIRED_VISIBLE_COLUMNS = [
     "Dist to MA200",
 ]
 COMPANY_GRID_VALUATION_COLUMNS = ["PEG", "PER Trailing", "PER Fwd", "P/S TTM", "EV/Revenues", "EV/EBITDA"]
+COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS = [
+    "Ticker",
+    "Company",
+    "Thematic",
+    "Sector",
+    "Industry",
+    "Market Cap",
+    "Beta",
+    "PEG",
+    "PER Trailing",
+    "PER Fwd",
+    "P/S TTM",
+    "EV/Revenues",
+    "EV/EBITDA",
+    "1W",
+    "1M",
+    "YTD",
+    "Dist to MA20",
+    "Dist to MA50",
+    "Dist to MA200",
+    "RSI Daily",
+    "RSI Divergence (D)",
+    "RSI Weekly",
+    "RSI Divergence (W)",
+    "Rel Strength",
+    "Rel Volume",
+    "RS vs 20D",
+    "OBVM vs 20D",
+    "RSI Regime 20D",
+    "RSI Regime 50D",
+    "RSI Regime Cross",
+    "TS",
+    "Relative Performance",
+    "Relative Volume",
+    "Momentum",
+    "Intermediate Trend",
+    "Long-term Trend",
+    "FS",
+    "Growth FS",
+    "Value FS",
+    "Quality FS",
+    "Risk FS",
+    "Mom. FS",
+]
+PORTFOLIO_GRID_CONTEXT_COLUMNS = [
+    "Transaction Date",
+    "Alert Levels",
+    "Transaction Price",
+]
 COMPANY_GRID_LEFT_COLUMNS = [
     "Thematic",
     "Portfolio Segment",
@@ -292,11 +349,12 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "First Seen": 115,
     "Sector": 150,
     "Industry": 260,
+    "Consecutive Appearances": 145,
     "Transaction Price": 165,
     "Transaction Date": 155,
     "Last EOD Price": 155,
     "Net PnL": 115,
-    "Alert Levels": 260,
+    "Alert Levels": 110,
     "Market Cap": 120,
     "Beta": 90,
     "PEG": 85,
@@ -333,7 +391,7 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "AI Revenue Exposure": 155,
     "AI Disruption Risk": 150,
 }
-COMPANY_GRID_WIDE_TEXT_COLUMNS = {"Thematic", "Portfolio Segment", "Company", "Sector", "Industry", "Alert Levels"}
+COMPANY_GRID_WIDE_TEXT_COLUMNS = {"Thematic", "Portfolio Segment", "Company", "Sector", "Industry"}
 COMPANY_GRID_TOP_SCROLL_COMPONENT_HEIGHT = 24
 PERFORMANCE_FALLBACK_MARKER = "\u2063"
 
@@ -403,17 +461,18 @@ def _get_grid_visible_columns(
     available_columns: Sequence[str],
     *,
     locked_columns: Optional[Sequence[str]] = None,
+    default_columns: Optional[Sequence[str]] = None,
 ) -> list[str]:
     available = list(available_columns)
     state_key = _grid_layout_state_key(surface_id)
     state_value = st.session_state.get(state_key)
-    default_columns = list(available)
+    resolved_default_columns = list(default_columns) if default_columns is not None else list(available)
     if isinstance(state_value, list):
         visible_columns = _normalize_grid_visible_columns(
             state_value,
             available,
             locked_columns=locked_columns,
-            default_columns=default_columns,
+            default_columns=resolved_default_columns,
         )
     else:
         saved_layout = load_grid_layout(surface_id, GRID_LAYOUT_CONFIG_PATH)
@@ -421,7 +480,7 @@ def _get_grid_visible_columns(
             saved_layout,
             available,
             locked_columns=locked_columns,
-            default_columns=default_columns,
+            default_columns=resolved_default_columns,
         )
     st.session_state[state_key] = list(visible_columns)
     return list(visible_columns)
@@ -454,6 +513,41 @@ def _merge_preferred_visible_columns(
     return merged
 
 
+def _ordered_visible_column_selection(
+    available_columns: Sequence[str],
+    selected_lookup: Mapping[str, bool],
+    current_order: Sequence[str],
+) -> list[str]:
+    available = [column for column in dict.fromkeys(available_columns)]
+    current = [column for column in current_order if column in available]
+    selected = {column for column, is_selected in selected_lookup.items() if is_selected and column in available}
+    ordered_selection = [column for column in current if column in selected]
+    ordered_selection.extend(
+        column for column in available
+        if column not in ordered_selection and column in selected
+    )
+    return ordered_selection
+
+
+def _company_grid_default_visible_columns(
+    available_columns: Sequence[str],
+    *,
+    extra_columns: Optional[Sequence[str]] = None,
+) -> list[str]:
+    available = list(dict.fromkeys(str(column).strip() for column in available_columns if str(column).strip()))
+    available_set = set(available)
+    if not {"Ticker", "Company"}.issubset(available_set):
+        return list(available)
+
+    default_columns = list(COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS)
+    if extra_columns:
+        insert_at = default_columns.index("Market Cap") + 1 if "Market Cap" in default_columns else len(default_columns)
+        for column_name in reversed(list(extra_columns)):
+            if column_name not in default_columns:
+                default_columns.insert(insert_at, column_name)
+    return [column_name for column_name in default_columns if column_name in available_set]
+
+
 def _render_grid_column_customizer(
     surface_id: str,
     available_columns: Sequence[str],
@@ -473,7 +567,7 @@ def _render_grid_column_customizer(
             st.caption("All columns are visible by default. Use Fields to hide or add columns.")
 
         checkbox_columns = st.columns(5)
-        updated_selection: list[str] = []
+        selected_lookup: dict[str, bool] = {}
         locked_set = set(locked)
         for index, column_name in enumerate(available):
             checkbox_key = f"{surface_id}_grid_layout_field_{index}"
@@ -488,8 +582,13 @@ def _render_grid_column_customizer(
                     key=checkbox_key,
                     disabled=column_name in locked_set,
                 )
-            if is_visible or column_name in locked_set:
-                updated_selection.append(column_name)
+            selected_lookup[column_name] = bool(is_visible or column_name in locked_set)
+
+        updated_selection = _ordered_visible_column_selection(
+            available,
+            selected_lookup,
+            visible_columns,
+        )
 
         normalized_selection = _normalize_grid_visible_columns(
             updated_selection,
@@ -4006,11 +4105,11 @@ def _use_fast_company_grid_render(row_count: int) -> bool:
 
 
 def _company_grid_layout_storage_key(surface_id: str) -> str:
-    return f"equipicker.company_grid_layout.v2.{surface_id}"
+    return f"equipicker.company_grid_layout.v7.{surface_id}"
 
 
 def _company_grid_visible_columns_surface_id(surface_id: str) -> str:
-    return f"{surface_id}_company_visible_columns_v2"
+    return f"{surface_id}_company_visible_columns_v7"
 
 
 def _company_grid_layout_reset_pending_key(surface_id: str) -> str:
@@ -4109,11 +4208,18 @@ def _build_company_grid_options(
     surface_id: str,
     *,
     pinned_columns: Optional[Sequence[str]] = None,
+    highlight_tickers: Optional[Sequence[str]] = None,
 ) -> dict[str, object]:
     if not AGGRID_AVAILABLE or GridOptionsBuilder is None or JsCode is None:
         return {}
 
     pinned_set = set(pinned_columns or [])
+    normalized_highlight_tickers = {
+        normalize_price_ticker(ticker_value)
+        for ticker_value in list(highlight_tickers or [])
+        if normalize_price_ticker(ticker_value)
+    }
+    highlight_tickers_json = json.dumps(sorted(normalized_highlight_tickers))
     builder = GridOptionsBuilder.from_dataframe(display_df)
     builder.configure_default_column(
         sortable=True,
@@ -4266,6 +4372,32 @@ function(params) {
 }
         """
     )
+    ticker_highlight_style_js = JsCode(
+        f"""
+function(params) {{
+  const highlighted = new Set({highlight_tickers_json});
+  const raw = String(params.value ?? "").trim().toUpperCase();
+  const ticker = raw.endsWith(".US") ? raw : raw + ".US";
+  const baseStyle = {{
+    textAlign: "center",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis"
+  }};
+  if (highlighted.has(ticker)) {{
+    return Object.assign(baseStyle, {{
+      border: "2px solid #2F855A",
+      borderRadius: "5px",
+      boxShadow: "inset 0 0 0 1px rgba(47, 133, 90, 0.18)",
+      backgroundColor: "rgba(47, 133, 90, 0.08)",
+      color: "#0F5132",
+      fontWeight: "800"
+    }});
+  }}
+  return baseStyle;
+}}
+        """
+    )
     ai_exposure_style_js = JsCode(
         """
 function(params) {
@@ -4340,6 +4472,8 @@ function(valueA, valueB) {
             config["cellStyle"] = left_align_style
         else:
             config["cellStyle"] = center_style
+        if column_name == "Ticker" and normalized_highlight_tickers:
+            config["cellStyle"] = ticker_highlight_style_js
         config["width"] = COMPANY_GRID_DEFAULT_WIDTHS.get(column_name, 128)
         if column_name in COMPANY_GRID_WIDE_TEXT_COLUMNS:
             config["minWidth"] = 72
@@ -4364,7 +4498,14 @@ function(valueA, valueB) {
             config["cellStyle"] = ai_risk_style_js
         elif column_name == "Market Cap":
             config["comparator"] = market_cap_comparator_js
-        elif column_name in {"Beta", "Transaction Price", "Last EOD Price", *COMPANY_GRID_VALUATION_COLUMNS}:
+        elif column_name in {
+            "Alert Levels",
+            "Beta",
+            "Consecutive Appearances",
+            "Transaction Price",
+            "Last EOD Price",
+            *COMPANY_GRID_VALUATION_COLUMNS,
+        }:
             config["comparator"] = numeric_comparator_js
         builder.configure_column(column_name, **config)
 
@@ -4658,13 +4799,19 @@ def _render_company_grid_column_selector(
         return [], []
 
     layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
+    resolved_preferred_columns = (
+        list(preferred_visible_columns)
+        if preferred_visible_columns is not None
+        else _company_grid_default_visible_columns(available)
+    )
+    preferred_with_required = list(resolved_preferred_columns)
+    preferred_with_required.extend(COMPANY_GRID_REQUIRED_VISIBLE_COLUMNS)
+    preferred_with_required.extend(COMPANY_GRID_VALUATION_COLUMNS)
     visible_columns = _get_grid_visible_columns(
         layout_surface_id,
         available,
+        default_columns=preferred_with_required,
     )
-    preferred_with_required = list(preferred_visible_columns or [])
-    preferred_with_required.extend(COMPANY_GRID_REQUIRED_VISIBLE_COLUMNS)
-    preferred_with_required.extend(COMPANY_GRID_VALUATION_COLUMNS)
     merged_visible_columns = _merge_preferred_visible_columns(
         visible_columns,
         available,
@@ -4675,7 +4822,7 @@ def _render_company_grid_column_selector(
         _set_grid_visible_columns(layout_surface_id, visible_columns)
         save_grid_layout(layout_surface_id, visible_columns, GRID_LAYOUT_CONFIG_PATH)
     if not load_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH):
-        if default_to_preferred_columns and preferred_visible_columns:
+        if default_to_preferred_columns and resolved_preferred_columns:
             visible_columns = _normalize_grid_visible_columns(
                 preferred_with_required,
                 available,
@@ -4705,15 +4852,20 @@ def _render_company_grid_column_selector(
 
         st.caption("Visible columns")
         checkbox_columns = st.columns(5)
-        updated_selection: list[str] = []
+        selected_lookup: dict[str, bool] = {}
         for index, column_name in enumerate(available):
             checkbox_key = _company_grid_column_checkbox_key(surface_id, index)
             if checkbox_key not in st.session_state:
                 st.session_state[checkbox_key] = column_name in visible_columns
             with checkbox_columns[index % len(checkbox_columns)]:
                 is_visible = st.checkbox(column_name, key=checkbox_key)
-            if is_visible:
-                updated_selection.append(column_name)
+            selected_lookup[column_name] = bool(is_visible)
+
+        updated_selection = _ordered_visible_column_selection(
+            available,
+            selected_lookup,
+            visible_columns,
+        )
 
         normalized_selection = _normalize_grid_visible_columns(
             updated_selection,
@@ -4764,7 +4916,7 @@ def _render_company_grid_shared_controls(
             button_label=f"Download CSV{label_suffix}",
         )
     with action_cols[2]:
-        st.caption("Shared layout for all portfolio sections below. Open Fields to hide/add columns, and drag headers in the grid to reorder.")
+        st.caption("Shared layout for all portfolio sections below. Open Fields to show or hide columns, and drag headers in the grid to reorder.")
     if reset_clicked:
         layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
         clear_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH)
@@ -4784,12 +4936,13 @@ def _render_company_grid(
     show_top_scrollbar: bool = False,
     grid_label: Optional[str] = None,
     compact_height: bool = False,
-    default_to_preferred_columns: bool = False,
+    default_to_preferred_columns: bool = True,
     show_controls: bool = True,
     visible_columns_override: Optional[Sequence[str]] = None,
     pinned_columns_override: Optional[Sequence[str]] = None,
     fallback_styler_builder: Optional[Callable[[pd.DataFrame], object]] = None,
     csv_file_name: Optional[str] = None,
+    highlight_tickers: Optional[Sequence[str]] = None,
 ) -> None:
     all_columns = display_df.columns.tolist()
     if show_controls:
@@ -4853,7 +5006,7 @@ def _render_company_grid(
                 label_visibility="collapsed",
             )
         with action_cols[3]:
-            st.caption("All columns are visible by default. Open Fields to hide/add columns, and drag headers in the grid to reorder. Layout auto-saves.")
+            st.caption("Open Fields to show or hide columns, and drag headers in the grid to reorder. Layout auto-saves.")
         if reset_clicked:
             layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
             clear_grid_layout(layout_surface_id, GRID_LAYOUT_CONFIG_PATH)
@@ -4878,6 +5031,7 @@ def _render_company_grid(
             render_df,
             surface_id,
             pinned_columns=pinned_columns,
+            highlight_tickers=highlight_tickers,
         )
         data_signature = _company_grid_data_signature(render_df)
         if show_top_scrollbar:
@@ -5010,6 +5164,12 @@ def _rsi_color_css(value: object) -> str:
     return "color:#D97706; font-weight:700; text-align:center; white-space:nowrap;"
 
 
+def _styler_applymap(styler: object, func: Callable[[object], str], *, subset: object):
+    if hasattr(styler, "map"):
+        return styler.map(func, subset=subset)
+    return styler.applymap(func, subset=subset)
+
+
 def _variation_color_css(value: object) -> str:
     numeric = _parse_number(value)
     if numeric is None:
@@ -5096,7 +5256,7 @@ def render_pdf_like_table(
             if value_color_rules:
                 for col, rule_fn in value_color_rules.items():
                     if col in display_frame.columns:
-                        selectable_view = selectable_view.applymap(rule_fn, subset=[col])
+                        selectable_view = _styler_applymap(selectable_view, rule_fn, subset=[col])
             if highlight_max_cols:
                 for col in highlight_max_cols:
                     if col in display_frame.columns:
@@ -5187,7 +5347,7 @@ def render_pdf_like_table(
     if value_color_rules:
         for col, rule_fn in value_color_rules.items():
             if col in style_frame.columns:
-                styler = styler.applymap(rule_fn, subset=[col])
+                styler = _styler_applymap(styler, rule_fn, subset=[col])
 
     if highlight_max_cols:
         for col in highlight_max_cols:
@@ -5590,6 +5750,103 @@ def _enrich_company_universe_with_rsi_divergence(
     return merged
 
 
+@st.cache_data(show_spinner=False)
+def _load_stock_rsi_regime_overlay_for_date_cached(
+    evaluation_date: date,
+    overlay_path_str: str,
+    overlay_signature: str,
+) -> tuple[pd.DataFrame, Optional[str]]:
+    del overlay_signature
+    overlay_path = Path(overlay_path_str)
+    columns = [
+        "ticker",
+        "stock_rsi_regime_20d_score",
+        "stock_rsi_regime_50d_score",
+        "stock_rsi_regime_20d_vs_50d_delta",
+        "stock_rsi_regime_20d_vs_50d_flag",
+    ]
+    if not overlay_path.exists():
+        return pd.DataFrame(columns=columns), None
+    try:
+        overlay_df = load_stock_rsi_regime_overlay_cache(overlay_path)
+    except Exception as exc:  # pragma: no cover - defensive cache feedback
+        return pd.DataFrame(columns=columns), f"RSI regime overlay cache could not be loaded: {exc}"
+    if overlay_df.empty:
+        return pd.DataFrame(columns=columns), None
+    working = overlay_df.copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working = working[working["date"] <= evaluation_date]
+    if working.empty:
+        return pd.DataFrame(columns=columns), f"RSI regime overlay has no rows on or before {evaluation_date.isoformat()}."
+    latest = (
+        working.sort_values(["ticker", "date"], kind="stable")
+        .drop_duplicates(subset=["ticker"], keep="last")
+        .loc[:, columns]
+        .reset_index(drop=True)
+    )
+    for column in [
+        "stock_rsi_regime_20d_score",
+        "stock_rsi_regime_50d_score",
+        "stock_rsi_regime_20d_vs_50d_delta",
+    ]:
+        latest[column] = pd.to_numeric(latest[column], errors="coerce")
+    latest["stock_rsi_regime_20d_vs_50d_flag"] = (
+        latest["stock_rsi_regime_20d_vs_50d_flag"].fillna("N/A").astype(str)
+    )
+    warning = None
+    if latest["stock_rsi_regime_20d_vs_50d_flag"].eq("N/A").any():
+        warning = (
+            "Some RSI regime cross values are N/A because weekly RSI history is unavailable "
+            "or too sparse for the selected date/window."
+        )
+    return latest, warning
+
+
+def _load_stock_rsi_regime_overlay_for_date(evaluation_date: date) -> tuple[pd.DataFrame, Optional[str]]:
+    overlay_path = stock_rsi_regime_overlay_path(evaluation_date.year)
+    return _load_stock_rsi_regime_overlay_for_date_cached(
+        evaluation_date,
+        str(overlay_path),
+        _path_cache_signature(overlay_path),
+    )
+
+
+def _enrich_company_universe_with_stock_rsi_regime_overlay(
+    company_df: pd.DataFrame,
+    evaluation_date: date,
+) -> tuple[pd.DataFrame, Optional[str]]:
+    enriched = company_df.copy()
+    overlay_columns = [
+        "stock_rsi_regime_20d_score",
+        "stock_rsi_regime_50d_score",
+        "stock_rsi_regime_20d_vs_50d_delta",
+    ]
+    for column in overlay_columns:
+        if column not in enriched.columns:
+            enriched[column] = np.nan
+    if "stock_rsi_regime_20d_vs_50d_flag" not in enriched.columns:
+        enriched["stock_rsi_regime_20d_vs_50d_flag"] = "N/A"
+    if enriched.empty:
+        return enriched, None
+
+    overlay_df, warning_message = _load_stock_rsi_regime_overlay_for_date(evaluation_date)
+    if overlay_df.empty:
+        return enriched, warning_message
+    merged = enriched.drop(
+        columns=[
+            column
+            for column in overlay_columns + ["stock_rsi_regime_20d_vs_50d_flag"]
+            if column in enriched.columns
+        ],
+        errors="ignore",
+    ).merge(overlay_df, on="ticker", how="left")
+    merged["stock_rsi_regime_20d_vs_50d_flag"] = (
+        merged["stock_rsi_regime_20d_vs_50d_flag"].fillna("N/A").astype(str)
+    )
+    return merged, warning_message
+
+
 def _market_cap_bucket_from_usd(value: object) -> str:
     market_cap_num = pd.to_numeric(value, errors="coerce")
     if pd.isna(market_cap_num) or float(market_cap_num) < 0:
@@ -5978,10 +6235,15 @@ def build_company_drilldown_context(
         company_universe,
         evaluation_date,
     )
+    company_universe, overlay_warning = _enrich_company_universe_with_stock_rsi_regime_overlay(
+        company_universe,
+        evaluation_date,
+    )
     company_universe = _enrich_company_universe_with_rsi_divergence(
         company_universe,
         evaluation_date,
     )
+    regime_warning = _combine_optional_messages(regime_warning, overlay_warning)
     if selected_mode == "all":
         return "All companies", company_universe, [], [], None, regime_warning
     if selected_mode == "sector":
@@ -6003,6 +6265,7 @@ def _load_prepared_company_universe_for_report_path(
     thematics_config_signature: str,
     market_cache_signature: str,
     divergence_cache_signature: str,
+    overlay_cache_signature: str,
     prices_cache_path_str: str,
     prices_cache_signature: str,
 ) -> tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
@@ -6012,10 +6275,11 @@ def _load_prepared_company_universe_for_report_path(
         "thematics": thematics_config_signature,
         "market": market_cache_signature,
         "divergence": divergence_cache_signature,
+        "rsi_overlay": overlay_cache_signature,
         "prices_path": prices_cache_path_str,
         "prices": prices_cache_signature,
         "schema": PERF_CACHE_SCHEMA_VERSION,
-        "company_universe_columns": "company_grid_indicators_v4_rsi_ma20_ma50_flow_components",
+        "company_universe_columns": "company_grid_indicators_v5_rsi_regime_overlay",
     }
     cached_universe = load_company_universe_cached(evaluation_date, cache_signatures)
     if cached_universe is not None:
@@ -6075,11 +6339,18 @@ def _load_prepared_company_universe_for_report_path(
         company_universe,
         evaluation_date,
     )
+    company_universe, overlay_warning = _enrich_company_universe_with_stock_rsi_regime_overlay(
+        company_universe,
+        evaluation_date,
+    )
     company_universe = _enrich_company_universe_with_rsi_divergence(
         company_universe,
         evaluation_date,
     )
-    combined_warning = _combine_optional_messages(performance_warning, regime_warning)
+    combined_warning = _combine_optional_messages(
+        _combine_optional_messages(performance_warning, regime_warning),
+        overlay_warning,
+    )
     try:
         save_company_universe_cached(
             company_universe,
@@ -6107,6 +6378,7 @@ def build_company_drilldown_context_from_path(
         _path_cache_signature(THEMATICS_CONFIG_PATH),
         _market_regime_company_metrics_cache_signature(evaluation_date),
         _company_divergence_cache_signature(),
+        _path_cache_signature(stock_rsi_regime_overlay_path(evaluation_date.year)),
         str(prices_cache_path("daily", evaluation_date.year)) if prices_cache_path("daily", evaluation_date.year).exists() else "",
         _path_cache_signature(prices_cache_path("daily", evaluation_date.year)),
     )
@@ -6298,6 +6570,7 @@ def _build_company_filter_state(
     tech_trend_dir: str = "All",
     daily_rsi_divergence: str = "All",
     weekly_rsi_divergence: str = "All",
+    rsi_regime_cross: str = "All",
     rsi_daily_level: str = "All",
     rsi_weekly_level: str = "All",
     short_term_flow: str = "All",
@@ -6326,6 +6599,7 @@ def _build_company_filter_state(
         "tech_trend_dir": tech_trend_dir,
         "daily_rsi_divergence": daily_rsi_divergence,
         "weekly_rsi_divergence": weekly_rsi_divergence,
+        "rsi_regime_cross": rsi_regime_cross,
         "rsi_daily_level": rsi_daily_level,
         "rsi_weekly_level": rsi_weekly_level,
         "short_term_flow": short_term_flow,
@@ -6373,6 +6647,7 @@ def _load_company_filter_default_state(prefix: str) -> dict[str, object]:
             f"{prefix}_drilldown_filter_default_weekly_rsi_divergence",
             "All",
         ),
+        rsi_regime_cross=st.session_state.get(f"{prefix}_drilldown_filter_default_rsi_regime_cross", "All"),
         rsi_daily_level=st.session_state.get(f"{prefix}_drilldown_filter_default_rsi_daily_level", "All"),
         rsi_weekly_level=st.session_state.get(f"{prefix}_drilldown_filter_default_rsi_weekly_level", "All"),
         short_term_flow=st.session_state.get(f"{prefix}_drilldown_filter_default_short_term_flow", "All"),
@@ -6464,6 +6739,7 @@ def _sync_drilldown_filter_defaults(
     default_tech_trend_dir: str = "All",
     default_daily_rsi_divergence: str = "All",
     default_weekly_rsi_divergence: str = "All",
+    default_rsi_regime_cross: str = "All",
     default_rsi_daily_level: str = "All",
     default_rsi_weekly_level: str = "All",
     default_short_term_flow: str = "All",
@@ -6496,6 +6772,7 @@ def _sync_drilldown_filter_defaults(
     st.session_state[f"{prefix}_drilldown_filter_default_tech_trend_dir"] = default_tech_trend_dir
     st.session_state[f"{prefix}_drilldown_filter_default_daily_rsi_divergence"] = default_daily_rsi_divergence
     st.session_state[f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"] = default_weekly_rsi_divergence
+    st.session_state[f"{prefix}_drilldown_filter_default_rsi_regime_cross"] = default_rsi_regime_cross
     st.session_state[f"{prefix}_drilldown_filter_default_rsi_daily_level"] = default_rsi_daily_level
     st.session_state[f"{prefix}_drilldown_filter_default_rsi_weekly_level"] = default_rsi_weekly_level
     st.session_state[f"{prefix}_drilldown_filter_default_short_term_flow"] = default_short_term_flow
@@ -6636,6 +6913,7 @@ def render_company_drilldown_filters(
     tech_trend_dir_key = f"{prefix}_drilldown_filter_tech_trend_dir"
     daily_rsi_divergence_key = f"{prefix}_drilldown_filter_daily_rsi_divergence"
     weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_weekly_rsi_divergence"
+    rsi_regime_cross_key = f"{prefix}_drilldown_filter_rsi_regime_cross"
     rsi_daily_level_key = f"{prefix}_drilldown_filter_rsi_daily_level"
     rsi_weekly_level_key = f"{prefix}_drilldown_filter_rsi_weekly_level"
     short_term_flow_key = f"{prefix}_drilldown_filter_short_term_flow"
@@ -6663,6 +6941,7 @@ def render_company_drilldown_filters(
     default_tech_trend_dir_key = f"{prefix}_drilldown_filter_default_tech_trend_dir"
     default_daily_rsi_divergence_key = f"{prefix}_drilldown_filter_default_daily_rsi_divergence"
     default_weekly_rsi_divergence_key = f"{prefix}_drilldown_filter_default_weekly_rsi_divergence"
+    default_rsi_regime_cross_key = f"{prefix}_drilldown_filter_default_rsi_regime_cross"
     default_rsi_daily_level_key = f"{prefix}_drilldown_filter_default_rsi_daily_level"
     default_rsi_weekly_level_key = f"{prefix}_drilldown_filter_default_rsi_weekly_level"
     default_short_term_flow_key = f"{prefix}_drilldown_filter_default_short_term_flow"
@@ -6720,6 +6999,10 @@ def render_company_drilldown_filters(
     st.session_state.setdefault(
         weekly_rsi_divergence_key,
         st.session_state.get(default_weekly_rsi_divergence_key, "All"),
+    )
+    st.session_state.setdefault(
+        rsi_regime_cross_key,
+        st.session_state.get(default_rsi_regime_cross_key, "All"),
     )
     st.session_state.setdefault(rsi_daily_level_key, st.session_state.get(default_rsi_daily_level_key, "All"))
     st.session_state.setdefault(rsi_weekly_level_key, st.session_state.get(default_rsi_weekly_level_key, "All"))
@@ -6873,7 +7156,7 @@ def render_company_drilldown_filters(
         else:
             beta_range = (0.0, 5.0)
 
-        rsi_cols = st.columns([1, 1, 1, 1])
+        rsi_cols = st.columns([1, 1, 1, 1, 1])
         with rsi_cols[0]:
             rsi_daily_level_value = st.selectbox(
                 "RSI Daily",
@@ -6887,12 +7170,18 @@ def render_company_drilldown_filters(
                 key=rsi_weekly_level_key,
             )
         with rsi_cols[2]:
+            rsi_regime_cross_value = st.selectbox(
+                "RSI Regime Cross",
+                options=RSI_REGIME_CROSS_FILTER_OPTIONS,
+                key=rsi_regime_cross_key,
+            )
+        with rsi_cols[3]:
             rs_daily_vs_sma20_value = st.selectbox(
                 "RS vs 20D",
                 options=SIGN_FILTER_OPTIONS,
                 key=rs_daily_vs_sma20_key,
             )
-        with rsi_cols[3]:
+        with rsi_cols[4]:
             obvm_daily_vs_sma20_value = st.selectbox(
                 "OBVM vs 20D",
                 options=SIGN_FILTER_OPTIONS,
@@ -7043,6 +7332,8 @@ def render_company_drilldown_filters(
         column="sector_regime_fit_score",
         range_value=tuple(sector_regime_fit_range),
     )
+    if rsi_regime_cross_value != "All" and "stock_rsi_regime_20d_vs_50d_flag" in filtered.columns:
+        filtered = filtered[filtered["stock_rsi_regime_20d_vs_50d_flag"].fillna("N/A") == rsi_regime_cross_value]
     filtered, _ = _filter_by_optional_label_value(
         filtered,
         column="rsi_divergence_daily_flag",
@@ -7159,6 +7450,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Intermediate Trend",
                 "Long-term Trend",
                 "RSI Regime",
+                "RSI Regime 20D",
+                "RSI Regime 50D",
+                "RSI Regime Δ",
+                "RSI Regime Cross",
                 "Sector Regime Fit",
                 "Short Term Flow",
                 "RSI Divergence (D)",
@@ -7235,6 +7530,15 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             sorted_df[technical_pillar_column] = np.nan
     if "stock_rsi_regime_score" not in sorted_df.columns:
         sorted_df["stock_rsi_regime_score"] = np.nan
+    for rsi_overlay_column in [
+        "stock_rsi_regime_20d_score",
+        "stock_rsi_regime_50d_score",
+        "stock_rsi_regime_20d_vs_50d_delta",
+    ]:
+        if rsi_overlay_column not in sorted_df.columns:
+            sorted_df[rsi_overlay_column] = np.nan
+    if "stock_rsi_regime_20d_vs_50d_flag" not in sorted_df.columns:
+        sorted_df["stock_rsi_regime_20d_vs_50d_flag"] = "N/A"
     if "sector_regime_fit_score" not in sorted_df.columns:
         sorted_df["sector_regime_fit_score"] = np.nan
     if "rsi_divergence_daily_flag" not in sorted_df.columns:
@@ -7282,6 +7586,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "Intermediate Trend": pd.to_numeric(sorted_df["intermediate_trend"], errors="coerce"),
             "Long-term Trend": pd.to_numeric(sorted_df["long_term_trend"], errors="coerce"),
             "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
+            "RSI Regime 20D": pd.to_numeric(sorted_df["stock_rsi_regime_20d_score"], errors="coerce"),
+            "RSI Regime 50D": pd.to_numeric(sorted_df["stock_rsi_regime_50d_score"], errors="coerce"),
+            "RSI Regime Δ": pd.to_numeric(sorted_df["stock_rsi_regime_20d_vs_50d_delta"], errors="coerce"),
+            "RSI Regime Cross": sorted_df["stock_rsi_regime_20d_vs_50d_flag"].fillna("N/A"),
             "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
             "Short Term Flow": sorted_df["short_term_flow"],
             "RSI Divergence (D)": sorted_df["rsi_divergence_daily_flag"],
@@ -7306,6 +7614,12 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             4 if "Setup" in display_df.columns else 3,
             "First Seen",
             [value.isoformat() if value is not None and not pd.isna(value) else "N/A" for value in first_seen],
+        )
+    if "trade_idea_streak_count" in sorted_df.columns:
+        display_df.insert(
+            5 if "First Seen" in display_df.columns else (4 if "Setup" in display_df.columns else 3),
+            "Consecutive Appearances",
+            pd.to_numeric(sorted_df["trade_idea_streak_count"], errors="coerce").fillna(1).astype(int),
         )
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
@@ -7354,6 +7668,8 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
     ]:
         display_df[technical_display_column] = display_df[technical_display_column].map(_format_numeric_value)
     display_df["RSI Regime"] = display_df["RSI Regime"].map(_format_numeric_value)
+    for rsi_overlay_display_column in ["RSI Regime 20D", "RSI Regime 50D", "RSI Regime Δ"]:
+        display_df[rsi_overlay_display_column] = display_df[rsi_overlay_display_column].map(_format_numeric_value)
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     display_df["Short Term Flow"] = display_df["Short Term Flow"].map(_format_short_term_flow_flag)
     display_df["RSI Divergence (D)"] = display_df["RSI Divergence (D)"].map(_format_divergence_flag)
@@ -7426,24 +7742,28 @@ def _build_company_drilldown_styler(display_df: pd.DataFrame) -> "Styler":
     score_columns = COMPANY_GRID_SCORE_COLUMNS
     usable_score_columns = [column for column in score_columns if column in display_df.columns]
     if usable_score_columns:
-        styler = styler.applymap(_score_color_css, subset=usable_score_columns)
+        styler = _styler_applymap(styler, _score_color_css, subset=usable_score_columns)
+    if "RSI Regime Δ" in display_df.columns:
+        styler = _styler_applymap(styler, _style_positive_negative_value, subset=["RSI Regime Δ"])
     usable_rsi_columns = [column for column in COMPANY_GRID_RSI_COLUMNS if column in display_df.columns]
     if usable_rsi_columns:
-        styler = styler.applymap(_rsi_color_css, subset=usable_rsi_columns)
+        styler = _styler_applymap(styler, _rsi_color_css, subset=usable_rsi_columns)
     usable_sign_columns = [
-        column for column in ["Short Term Flow", "RS vs 20D", "OBVM vs 20D", "Rel Strength", "Rel Volume"] if column in display_df.columns
+        column
+        for column in ["Short Term Flow", "RSI Regime Cross", "RS vs 20D", "OBVM vs 20D", "Rel Strength", "Rel Volume"]
+        if column in display_df.columns
     ]
     if usable_sign_columns:
-        styler = styler.applymap(_style_sign_label_value, subset=usable_sign_columns)
+        styler = _styler_applymap(styler, _style_sign_label_value, subset=usable_sign_columns)
     usable_divergence_columns = [
         column for column in ["RSI Divergence (D)", "RSI Divergence (W)"] if column in display_df.columns
     ]
     if usable_divergence_columns:
-        styler = styler.applymap(_style_sign_label_value, subset=usable_divergence_columns)
+        styler = _styler_applymap(styler, _style_sign_label_value, subset=usable_divergence_columns)
     if "AI Revenue Exposure" in display_df.columns:
-        styler = styler.applymap(_style_ai_exposure_value, subset=["AI Revenue Exposure"])
+        styler = _styler_applymap(styler, _style_ai_exposure_value, subset=["AI Revenue Exposure"])
     if "AI Disruption Risk" in display_df.columns:
-        styler = styler.applymap(_style_ai_risk_value, subset=["AI Disruption Risk"])
+        styler = _styler_applymap(styler, _style_ai_risk_value, subset=["AI Disruption Risk"])
 
     return styler
 
@@ -8498,7 +8818,6 @@ def _render_technical_scoring_content(
                     surface_id=GRID_SURFACE_TECHNICAL_COMPANY,
                     row_height=34,
                     min_height=220,
-                    preferred_visible_columns=["1M", "YTD", "TS"],
                     default_row_limit="All",
                     show_top_scrollbar=False,
                     fallback_styler_builder=_build_company_drilldown_styler,
@@ -8538,15 +8857,27 @@ def render_sector_screener_board(config: ReportConfig) -> None:
 TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
     {
         "key": "acceleration",
-        "name": "Acceleration",
-        "subtitle": "Early bullish acceleration: price close to/above aligned moving averages, sustained/current money flow, improving relative strength, strong RSI momentum, bullish RSI regime, and no bearish divergence lifecycle warnings.",
+        "name": "Full Acceleration",
+        "subtitle": "Early bullish acceleration: price close to/above aligned moving averages, sustained/current money flow, improving relative strength, strong RSI momentum, bullish RSI regime, non-negative RSI regime cross, and no bearish divergence lifecycle warnings.",
         "sort_by": "technical",
     },
     {
         "key": "below_ma200",
-        "name": "Below MA200",
-        "subtitle": "Companies where the current daily close is below the 200-day moving average. Uses the same fundamental threshold controls as Acceleration.",
+        "name": "Around MA200 daily",
+        "subtitle": "Companies where the daily MA200 distance is between -20% and +10%, with improving short-term structure, money flow, relative strength, RSI regime, and no bearish divergence warnings.",
         "sort_by": "fundamental",
+    },
+    {
+        "key": "around_ma200_weekly",
+        "name": "Around MA200 weekly",
+        "subtitle": "Companies where the weekly MA200 distance is between -20% and +10%, with the same constructive trend-repair guardrails as the daily MA200 setup.",
+        "sort_by": "fundamental",
+    },
+    {
+        "key": "positive_divergence_bottoming",
+        "name": "Positive Divergence",
+        "subtitle": "Early bottoming watchlist: positive RSI divergence on daily or weekly, improving money flow, improving relative strength, and a non-negative RSI regime cross.",
+        "sort_by": "technical",
     },
 ]
 
@@ -8557,6 +8888,39 @@ TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS = {
     "fundamental_momentum": 0.0,
 }
 TRADE_IDEA_SOLID_FUNDAMENTAL_THRESHOLD = 40.0
+TRADE_IDEA_OCCURRENCE_METADATA_ROW_LIMIT = 200
+TRADE_IDEA_SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Bullish", ("Full Acceleration",)),
+    ("Constructive within Bear", ("Around MA200 daily", "Around MA200 weekly", "Positive Divergence")),
+    ("Analysis", ("Backtest",)),
+)
+
+
+def _trade_idea_strategy_description(basket_key: str) -> str:
+    descriptions = {
+        "acceleration": (
+            "Strategy context: momentum continuation / breakout-strength basket. "
+            "It looks for stocks that are already technically strong, with aligned trend, strong RSI, "
+            "confirming money flow, improving relative strength, and no bearish divergence warning."
+        ),
+        "below_ma200": (
+            "Strategy context: constructive daily 200MA repair. "
+            "This is meant for stocks rebuilding structure around the long-term daily trend line, "
+            "where the setup is close enough to the MA200 to be actionable but still protected by "
+            "trend, money-flow, relative-strength, RSI, and divergence guardrails."
+        ),
+        "around_ma200_weekly": (
+            "Strategy context: constructive weekly 200MA repair. "
+            "This is the slower, more structural version of the MA200 setup, useful for spotting "
+            "larger bases, long-term support zones, or recoveries that are starting to behave better."
+        ),
+        "positive_divergence_bottoming": (
+            "Strategy context: strict early bottoming signal. "
+            "This basket looks for exactly positive daily or weekly RSI divergence, then requires "
+            "money flow, relative strength, and the RSI regime cross to stop deteriorating."
+        ),
+    }
+    return descriptions.get(basket_key, "")
 
 
 def _trade_ideas_num(df: pd.DataFrame, column: str) -> pd.Series:
@@ -8591,12 +8955,94 @@ def _trade_ideas_no_divergence(df: pd.DataFrame, blocked: set[str]) -> pd.Series
     return ~(daily.isin(blocked) | weekly.isin(blocked))
 
 
+@st.cache_data(show_spinner=False)
+def _load_weekly_ma200_distance_for_date_cached(
+    evaluation_date: date,
+    weekly_prices_path_str: str,
+    weekly_prices_signature: str,
+) -> pd.DataFrame:
+    del weekly_prices_signature
+    weekly_prices_path = Path(weekly_prices_path_str)
+    if not weekly_prices_path.exists():
+        return pd.DataFrame(columns=["ticker", "dist_to_ma200_weekly"])
+    weekly_prices = load_prices_cache_file(str(weekly_prices_path), _path_cache_signature(weekly_prices_path))
+    if weekly_prices.empty or "dist_from_200" not in weekly_prices.columns:
+        return pd.DataFrame(columns=["ticker", "dist_to_ma200_weekly"])
+    working = weekly_prices[["ticker", "date", "dist_from_200"]].copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["dist_to_ma200_weekly"] = pd.to_numeric(working["dist_from_200"], errors="coerce")
+    working = working.dropna(subset=["ticker", "date", "dist_to_ma200_weekly"])
+    working = working[working["date"] <= evaluation_date]
+    if working.empty:
+        return pd.DataFrame(columns=["ticker", "dist_to_ma200_weekly"])
+    return (
+        working.sort_values(["ticker", "date"], kind="stable")
+        .drop_duplicates(subset=["ticker"], keep="last")
+        .loc[:, ["ticker", "dist_to_ma200_weekly"]]
+        .reset_index(drop=True)
+    )
+
+
+def _enrich_trade_ideas_with_weekly_ma200_distance(company_df: pd.DataFrame, evaluation_date: date) -> pd.DataFrame:
+    enriched = company_df.copy()
+    if "dist_to_ma200_weekly" not in enriched.columns:
+        enriched["dist_to_ma200_weekly"] = np.nan
+    weekly_prices_path = prices_cache_path("weekly", evaluation_date.year)
+    weekly_ma200_distance = _load_weekly_ma200_distance_for_date_cached(
+        evaluation_date,
+        str(weekly_prices_path),
+        _path_cache_signature(weekly_prices_path),
+    )
+    if weekly_ma200_distance.empty:
+        return enriched
+    return enriched.drop(columns=["dist_to_ma200_weekly"], errors="ignore").merge(
+        weekly_ma200_distance,
+        on="ticker",
+        how="left",
+    )
+
+
 def _trade_ideas_base_mask(df: pd.DataFrame) -> pd.Series:
     return pd.Series(True, index=df.index)
 
 
 def _trade_ideas_default_fundamental_thresholds() -> dict[str, float]:
     return dict(TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS)
+
+
+def _should_annotate_trade_idea_occurrences(row_count: int) -> bool:
+    return int(row_count) <= TRADE_IDEA_OCCURRENCE_METADATA_ROW_LIMIT
+
+
+def _trade_ideas_ma200_setup_mask(
+    df: pd.DataFrame,
+    *,
+    price: pd.Series,
+    sma20: pd.Series,
+    sma50: pd.Series,
+    obvm_d: pd.Series,
+    obvm_sma: pd.Series,
+    rs_d: pd.Series,
+    rs_sma: pd.Series,
+    rsi_d: pd.Series,
+    rsi_w: pd.Series,
+    rsi_regime: pd.Series,
+    rsi_regime_cross: pd.Series,
+    bearish_divergence: set[str],
+) -> pd.Series:
+    return (
+        _trade_ideas_cap_in(df, {"Small", "Mid", "Large", "Mega"})
+        & (price > sma50)
+        & (sma20 >= sma50)
+        & (obvm_d > obvm_sma)
+        & (rs_d > rs_sma)
+        & (rsi_d > 60)
+        & (rsi_w > 40)
+        & (rsi_regime > 40)
+        & (rsi_regime_cross != "negative")
+        & _trade_ideas_no_divergence(df, bearish_divergence)
+    )
 
 
 def _filter_trade_idea_basket(
@@ -8628,8 +9074,12 @@ def _filter_trade_idea_basket(
     sma20 = _trade_ideas_num(df, "sma_daily_20")
     sma50 = _trade_ideas_num(df, "sma_daily_50")
     sma200 = _trade_ideas_num(df, "sma_daily_200")
+    daily_ma200_distance = _trade_ideas_num(df, "dist_to_ma200")
+    weekly_ma200_distance = _trade_ideas_num(df, "dist_to_ma200_weekly")
+    rsi_regime_cross = _trade_ideas_text(df, "stock_rsi_regime_20d_vs_50d_flag")
 
     bearish_divergence = {"negative", "negative-confirmed", "extension-negative"}
+    bullish_divergence = {"positive"}
 
     if basket_key == "acceleration":
         m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large", "Mega"})
@@ -8649,13 +9099,49 @@ def _filter_trade_idea_basket(
         m &= price > sma200
         m &= sma20 >= sma50
         m &= sma50 >= sma200
+        m &= rsi_regime_cross != "negative"
         m &= _trade_ideas_no_divergence(df, bearish_divergence)
     elif basket_key == "below_ma200":
-        m &= fs >= float(thresholds["fundamental_total_score"])
-        m &= risk >= float(thresholds["fundamental_risk"])
-        m &= quality >= float(thresholds["fundamental_quality"])
-        m &= fm >= float(thresholds["fundamental_momentum"])
-        m &= price < sma200
+        m &= _trade_ideas_ma200_setup_mask(
+            df,
+            price=price,
+            sma20=sma20,
+            sma50=sma50,
+            obvm_d=obvm_d,
+            obvm_sma=obvm_sma,
+            rs_d=rs_d,
+            rs_sma=rs_sma,
+            rsi_d=rsi_d,
+            rsi_w=rsi_w,
+            rsi_regime=rsi_regime,
+            rsi_regime_cross=rsi_regime_cross,
+            bearish_divergence=bearish_divergence,
+        )
+        m &= daily_ma200_distance >= -20.0
+        m &= daily_ma200_distance <= 10.0
+    elif basket_key == "around_ma200_weekly":
+        m &= _trade_ideas_ma200_setup_mask(
+            df,
+            price=price,
+            sma20=sma20,
+            sma50=sma50,
+            obvm_d=obvm_d,
+            obvm_sma=obvm_sma,
+            rs_d=rs_d,
+            rs_sma=rs_sma,
+            rsi_d=rsi_d,
+            rsi_w=rsi_w,
+            rsi_regime=rsi_regime,
+            rsi_regime_cross=rsi_regime_cross,
+            bearish_divergence=bearish_divergence,
+        )
+        m &= weekly_ma200_distance >= -20.0
+        m &= weekly_ma200_distance <= 10.0
+    elif basket_key == "positive_divergence_bottoming":
+        m &= _trade_ideas_any_divergence(df, bullish_divergence)
+        m &= obvm_d > obvm_sma
+        m &= rs_d > rs_sma
+        m &= rsi_regime_cross != "negative"
     else:
         raise ValueError(f"Unsupported trade-idea basket: {basket_key}")
 
@@ -8763,12 +9249,14 @@ def _trade_idea_membership_for_date(
         thematics_config_signature,
         market_cache_signature,
         divergence_cache_signature,
+        _path_cache_signature(stock_rsi_regime_overlay_path(evaluation_date.year)),
         prices_cache_path_str,
         prices_cache_signature,
     )
     if universe_error or company_universe is None:
         return tuple()
     company_universe, _rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
+    company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, evaluation_date)
     basket_df = _filter_trade_idea_basket(
         company_universe,
         basket_key,
@@ -8880,15 +9368,53 @@ def _annotate_trade_idea_occurrences(
     return annotated
 
 
+def _trade_idea_ma200_overlap_tickers(
+    company_universe: pd.DataFrame,
+    *,
+    selected_eod: date,
+    fundamental_thresholds: Optional[dict[str, float]],
+) -> tuple[str, ...]:
+    enriched_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, selected_eod)
+    daily_df = _filter_trade_idea_basket(
+        enriched_universe,
+        "below_ma200",
+        fundamental_thresholds=fundamental_thresholds,
+    )
+    weekly_df = _filter_trade_idea_basket(
+        enriched_universe,
+        "around_ma200_weekly",
+        fundamental_thresholds=fundamental_thresholds,
+    )
+    if "ticker" not in daily_df.columns or "ticker" not in weekly_df.columns:
+        return tuple()
+    daily_tickers = {
+        normalize_price_ticker(ticker_value)
+        for ticker_value in daily_df["ticker"].dropna().astype(str).tolist()
+        if normalize_price_ticker(ticker_value)
+    }
+    weekly_tickers = {
+        normalize_price_ticker(ticker_value)
+        for ticker_value in weekly_df["ticker"].dropna().astype(str).tolist()
+        if normalize_price_ticker(ticker_value)
+    }
+    return tuple(sorted(daily_tickers.intersection(weekly_tickers)))
+
+
 def _render_trade_idea_basket(
     *,
     basket_spec: dict[str, object],
     company_universe: pd.DataFrame,
     selected_eod: date,
     fundamental_thresholds: Optional[dict[str, float]] = None,
+    overlap_highlight_tickers: Optional[Sequence[str]] = None,
 ) -> None:
     basket_key = str(basket_spec["key"])
     st.caption(str(basket_spec["subtitle"]))
+    if basket_key in {"below_ma200", "around_ma200_weekly"} and overlap_highlight_tickers:
+        st.caption(
+            f"Green-bordered tickers also appear in the other MA200 basket ({len(overlap_highlight_tickers)} overlap)."
+        )
+    company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, selected_eod)
     ideas_df = _filter_trade_idea_basket(
         company_universe,
         basket_key,
@@ -8898,12 +9424,17 @@ def _render_trade_idea_basket(
     if ideas_df.empty:
         st.info("No stocks matched this basket for the selected EOD.")
         return
-    ideas_df = _annotate_trade_idea_occurrences(
-        ideas_df,
-        basket_key=basket_key,
-        selected_eod=selected_eod,
-        fundamental_thresholds=fundamental_thresholds,
-    )
+    if _should_annotate_trade_idea_occurrences(len(ideas_df)):
+        ideas_df = _annotate_trade_idea_occurrences(
+            ideas_df,
+            basket_key=basket_key,
+            selected_eod=selected_eod,
+            fundamental_thresholds=fundamental_thresholds,
+        )
+    else:
+        st.caption(
+            f"Occurrence history is skipped for baskets above {TRADE_IDEA_OCCURRENCE_METADATA_ROW_LIMIT} rows to keep the grid responsive."
+        )
 
     display_df = format_company_drilldown_display(
         ideas_df,
@@ -8912,13 +9443,14 @@ def _render_trade_idea_basket(
     _render_company_grid(
         display_df,
         surface_id=f"{GRID_SURFACE_TRADE_IDEAS_PREFIX}_{basket_key}",
+        preferred_visible_columns=_trade_ideas_preferred_columns(),
         row_height=36,
         min_height=260,
-        preferred_visible_columns=["Setup", "First Seen"],
         default_row_limit="All",
         show_top_scrollbar=False,
         csv_file_name=f"trade_ideas_{basket_key}_{selected_eod.isoformat()}.csv",
         fallback_styler_builder=_build_company_drilldown_styler,
+        highlight_tickers=overlap_highlight_tickers if basket_key in {"below_ma200", "around_ma200_weekly"} else None,
     )
 
 
@@ -8975,22 +9507,103 @@ def _render_trade_idea_basket_rules_expander(
     basket_key: str,
     fundamental_thresholds: dict[str, float],
 ) -> None:
+    def render_strategy_context() -> None:
+        description = _trade_idea_strategy_description(basket_key)
+        if description:
+            st.markdown(description)
+
     with st.expander("Filters used for this setup", expanded=False):
         if basket_key == "below_ma200":
             st.markdown(
-                f"""
+                """
 ```text
-Fundamental overlays
-- Fundamental total score >= {fundamental_thresholds['fundamental_total_score']:.0f}
-- Risk score >= {fundamental_thresholds['fundamental_risk']:.0f}
-- Quality score >= {fundamental_thresholds['fundamental_quality']:.0f}
-- Fundamental momentum score >= {fundamental_thresholds['fundamental_momentum']:.0f}
+Universe
+- Market cap bucket: Small, Mid, Large, Mega
+- Excluded: Nano, Micro
 
 Price / trend
-- eod_price_used < sma_daily_200
+- dist_to_ma200 >= -20
+- dist_to_ma200 <= 10
+
+Trend structure
+- eod_price_used > sma_daily_50
+- sma_daily_20 >= sma_daily_50
+
+Money flow
+- obvm_daily > obvm_sma20
+
+Relative performance vs S&P 500
+- rs_daily > rs_sma20
+
+Momentum / regime
+- rsi_daily > 60
+- rsi_weekly > 40
+- stock_rsi_regime_score > 40
+- stock_rsi_regime_20d_vs_50d_flag is not Negative
+
+Divergence guardrail
+- Daily RSI divergence is not Negative, Negative - Confirmed, or Negative Extension
+- Weekly RSI divergence is not Negative, Negative - Confirmed, or Negative Extension
 ```
                 """
             )
+            render_strategy_context()
+            return
+        if basket_key == "around_ma200_weekly":
+            st.markdown(
+                """
+```text
+Universe
+- Market cap bucket: Small, Mid, Large, Mega
+- Excluded: Nano, Micro
+
+Price / trend
+- dist_to_ma200_weekly >= -20
+- dist_to_ma200_weekly <= 10
+
+Trend structure
+- eod_price_used > sma_daily_50
+- sma_daily_20 >= sma_daily_50
+
+Money flow
+- obvm_daily > obvm_sma20
+
+Relative performance vs S&P 500
+- rs_daily > rs_sma20
+
+Momentum / regime
+- rsi_daily > 60
+- rsi_weekly > 40
+- stock_rsi_regime_score > 40
+- stock_rsi_regime_20d_vs_50d_flag is not Negative
+
+Divergence guardrail
+- Daily RSI divergence is not Negative, Negative - Confirmed, or Negative Extension
+- Weekly RSI divergence is not Negative, Negative - Confirmed, or Negative Extension
+```
+                """
+            )
+            render_strategy_context()
+            return
+        if basket_key == "positive_divergence_bottoming":
+            st.markdown(
+                """
+```text
+Divergence trigger
+- Daily or weekly RSI divergence is Positive
+
+Money flow
+- obvm_daily > obvm_sma20
+
+Relative performance vs S&P 500
+- rs_daily > rs_sma20
+
+Momentum / regime
+- stock_rsi_regime_20d_vs_50d_flag is not Negative
+```
+                """
+            )
+            render_strategy_context()
             return
         if basket_key != "acceleration":
             st.caption("No rule summary is available for this setup yet.")
@@ -9027,6 +9640,7 @@ Momentum / regime
 - rsi_daily > 70
 - rsi_weekly > 55
 - stock_rsi_regime_score > 70
+- stock_rsi_regime_20d_vs_50d_flag is not Negative
 
 Divergence guardrail
 - Daily RSI divergence is not Negative, Negative - Confirmed, or Negative Extension
@@ -9034,6 +9648,7 @@ Divergence guardrail
 ```
             """
         )
+        render_strategy_context()
 
 
 @st.cache_data(show_spinner=False)
@@ -9237,6 +9852,7 @@ def _build_trade_ideas_backtest_matrix(
             _path_cache_signature(THEMATICS_CONFIG_PATH),
             _market_regime_company_metrics_cache_signature(evaluation_date),
             _company_divergence_cache_signature(),
+            _path_cache_signature(stock_rsi_regime_overlay_path(evaluation_date.year)),
             str(prices_cache_path("daily", evaluation_date.year)) if prices_cache_path("daily", evaluation_date.year).exists() else "",
             _path_cache_signature(prices_cache_path("daily", evaluation_date.year)),
         )
@@ -9250,6 +9866,7 @@ def _build_trade_ideas_backtest_matrix(
             rows.append(row)
             continue
         company_universe, rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
+        company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, evaluation_date)
         for spec in basket_specs:
             basket_name = str(spec["name"])
             basket_df = _filter_trade_idea_basket(
@@ -9415,6 +10032,41 @@ def _render_trade_ideas_backtest(
     _render_trade_ideas_backtest_matrix(matrix)
 
 
+def _render_trade_ideas_section_picker(section_labels: Sequence[str]) -> str:
+    if not section_labels:
+        return ""
+    state_key = "trade_ideas_active_section"
+    selected_section = str(st.session_state.get(state_key) or section_labels[0])
+    if selected_section not in section_labels:
+        selected_section = section_labels[0]
+        st.session_state[state_key] = selected_section
+
+    for group_index, (group_label, group_options) in enumerate(TRADE_IDEA_SECTION_GROUPS):
+        visible_options = [label for label in group_options if label in section_labels]
+        if not visible_options:
+            continue
+        st.markdown(
+            f"""
+<div style="font-size:0.76rem; font-weight:600; color:#6f7f91; letter-spacing:0.02em; margin:0.35rem 0 0.2rem;">
+{group_label}
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        cols = st.columns(len(visible_options))
+        for option_index, label in enumerate(visible_options):
+            with cols[option_index]:
+                if st.button(
+                    label,
+                    key=f"trade_ideas_section_{group_index}_{option_index}",
+                    type="primary" if label == selected_section else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state[state_key] = label
+                    st.rerun()
+    return selected_section
+
+
 def render_trade_ideas(config: ReportConfig) -> None:
     render_page_intro(
         "Trade Ideas",
@@ -9443,6 +10095,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
         _path_cache_signature(THEMATICS_CONFIG_PATH),
         _market_regime_company_metrics_cache_signature(selected_eod),
         _company_divergence_cache_signature(),
+        _path_cache_signature(stock_rsi_regime_overlay_path(selected_eod.year)),
         str(prices_cache_path("daily", selected_eod.year)) if prices_cache_path("daily", selected_eod.year).exists() else "",
         _path_cache_signature(prices_cache_path("daily", selected_eod.year)),
     )
@@ -9470,12 +10123,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
     )
     fundamental_thresholds = _render_trade_idea_fundamental_filters()
     section_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest"]
-    selected_section = st.radio(
-        "Trade Ideas section",
-        options=section_labels,
-        horizontal=True,
-        key="trade_ideas_active_section",
-    )
+    selected_section = _render_trade_ideas_section_picker(section_labels)
     if selected_section == "Backtest":
         render_board_title_band("Backtest")
         backtest_thresholds = {
@@ -9491,9 +10139,17 @@ def render_trade_ideas(config: ReportConfig) -> None:
     selected_basket_spec = next(
         spec for spec in TRADE_IDEA_BASKET_SPECS if str(spec["name"]) == selected_section
     )
+    basket_key = str(selected_basket_spec["key"])
+    ma200_overlap_tickers: tuple[str, ...] = tuple()
+    if basket_key in {"below_ma200", "around_ma200_weekly"}:
+        ma200_overlap_tickers = _trade_idea_ma200_overlap_tickers(
+            company_universe,
+            selected_eod=selected_eod,
+            fundamental_thresholds=fundamental_thresholds,
+        )
     render_board_title_band(str(selected_basket_spec["name"]))
     _render_trade_idea_basket_rules_expander(
-        basket_key=str(selected_basket_spec["key"]),
+        basket_key=basket_key,
         fundamental_thresholds=fundamental_thresholds,
     )
     _render_trade_idea_basket(
@@ -9501,6 +10157,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
         company_universe=company_universe,
         selected_eod=selected_eod,
         fundamental_thresholds=fundamental_thresholds,
+        overlap_highlight_tickers=ma200_overlap_tickers,
     )
 
 
@@ -9650,7 +10307,6 @@ def render_watchlist_tab(config: ReportConfig) -> None:
         surface_id=GRID_SURFACE_WATCHLIST_COMPANY,
         row_height=34,
         min_height=220,
-        preferred_visible_columns=["1M", "YTD", "TS"],
         default_row_limit="All",
         fallback_styler_builder=_build_company_drilldown_styler,
         csv_file_name=f"watchlist_{selected_eod.isoformat()}.csv",
@@ -10164,12 +10820,12 @@ def render_home_prices_import_subtab() -> None:
         "Import yearly daily or weekly ticker price history used by thematic and market-regime workflows.",
     )
     st.caption(
-        "Each prices import also recomputes `rsi_14` and `rsi_divergence_flag` for that frequency. Specific-ticker imports refresh both indicators only for the selected tickers."
+        "Each prices import recomputes `rsi_14` and RSI divergence for that frequency, then refreshes the 20D/50D RSI regime overlay when both daily and weekly RSI history are available."
     )
     today_local = date.today()
     cache_year = today_local.year
     daily_weekly_date_cols = st.columns(2)
-    with daily_weekly_date_cols[0]:
+    with daily_weekly_date_cols[1]:
         daily_cutoff_date = render_report_select_date_input(
             "Daily SQL start date (exclusive)",
             value=DEFAULT_PRICES_DAILY_CUTOFF_DATE,
@@ -10187,7 +10843,7 @@ def render_home_prices_import_subtab() -> None:
         if st.session_state.get(weekly_cutoff_date_key) == previous_weekly_default_cutoff_date:
             st.session_state[weekly_cutoff_date_key] = weekly_default_cutoff_date
     st.session_state[previous_daily_cutoff_date_key] = daily_cutoff_date
-    with daily_weekly_date_cols[1]:
+    with daily_weekly_date_cols[0]:
         weekly_cutoff_date = render_report_select_date_input(
             "Weekly SQL start date (exclusive)",
             key=weekly_cutoff_date_key,
@@ -10236,6 +10892,41 @@ def render_home_prices_import_subtab() -> None:
             f"Cache year: {cache_year}",
         ]
     )
+    report_select_overlay_dates = [
+        entry for entry in get_available_report_select_dates() if entry.year == cache_year
+    ]
+
+    def _run_overlay_refresh(*, tickers: Sequence[str] | None = None, scope_label: str) -> None:
+        if not report_select_overlay_dates:
+            st.warning(
+                f"No report_select dates were found for {cache_year}. "
+                "The RSI regime overlay refresh is skipped until report_select files exist."
+            )
+            return
+        st.caption(
+            f"Refreshing 20D/50D RSI regime overlay for {scope_label} "
+            f"across {len(report_select_overlay_dates)} report_select date(s). "
+            "This runs only after both daily and weekly RSI history are available."
+        )
+        with st.spinner("Refreshing RSI regime overlay..."):
+            try:
+                overlay_result = refresh_stock_rsi_regime_overlay_cache(
+                    cache_year=cache_year,
+                    config=load_market_regime_config(),
+                    tickers=tickers,
+                    evaluation_dates=report_select_overlay_dates,
+                )
+            except Exception as exc:  # pragma: no cover - UI feedback
+                st.warning(f"RSI regime overlay refresh failed: {exc}")
+            else:
+                overlay_warning = overlay_result.get("warning_message")
+                if overlay_warning:
+                    st.warning(str(overlay_warning))
+                else:
+                    st.success(
+                        f"RSI regime overlay refreshed: {overlay_result['saved_path']} "
+                        f"({overlay_result['valid_rows']} usable rows)."
+                    )
 
     def _run_prices_import(frequency: str) -> None:
         scope_key = "all" if scope_label == "All tickers" else "specific"
@@ -10244,6 +10935,7 @@ def render_home_prices_import_subtab() -> None:
             st.error("Enter at least one ticker before running a specific-ticker prices import.")
             return
         import_cutoff_date = daily_cutoff_date if frequency == "daily" else weekly_cutoff_date
+        result: dict[str, object] | None = None
         with st.spinner(f"Importing {frequency} prices..."):
             try:
                 result = import_prices_cache(
@@ -10255,40 +10947,53 @@ def render_home_prices_import_subtab() -> None:
                 invalidate_prices_cache_views()
             except Exception as exc:  # pragma: no cover - UI feedback
                 st.error(f"{frequency.capitalize()} prices import failed: {exc}")
-            else:
-                latest_date = result.get("latest_date")
-                latest_date_note = latest_date.isoformat() if isinstance(latest_date, date) else "n/a"
-                st.success(
-                    f"{frequency.capitalize()} prices cache updated: {result['saved_path']} "
-                    f"({result['saved_rows']} rows, latest date {latest_date_note}, "
-                    f"tickers requested {result['requested_tickers_count']}, "
-                    f"SQL start {import_cutoff_date.isoformat()})."
-                )
+        if result is None:
+            return
+
+        latest_date = result.get("latest_date")
+        latest_date_note = latest_date.isoformat() if isinstance(latest_date, date) else "n/a"
+        st.success(
+            f"{frequency.capitalize()} prices cache updated: {result['saved_path']} "
+            f"({result['saved_rows']} rows, latest date {latest_date_note}, "
+            f"tickers requested {result['requested_tickers_count']}, "
+            f"SQL start {import_cutoff_date.isoformat()})."
+        )
+
+        if frequency == "weekly":
+            st.caption(
+                "Weekly RSI history is ready. The RSI regime overlay will refresh automatically after daily import."
+            )
+            return
+
+        if not weekly_cache_file.exists():
+            st.warning(
+                "Daily import finished, but weekly RSI history is not available yet. "
+                "Run weekly import first, then daily import to refresh the RSI regime overlay."
+            )
+            return
+
+        overlay_scope_label = (
+            f"{len(requested_tickers)} selected ticker(s)"
+            if scope_key == "specific"
+            else "all imported tickers and dates"
+        )
+        _run_overlay_refresh(
+            tickers=requested_tickers if scope_key == "specific" else None,
+            scope_label=overlay_scope_label,
+        )
 
     action_cols = st.columns(2)
     with action_cols[0]:
-        if st.button("Import daily prices", use_container_width=True, key="home_prices_import_daily"):
-            _run_prices_import("daily")
-    with action_cols[1]:
         if st.button("Import weekly prices", use_container_width=True, key="home_prices_import_weekly"):
             _run_prices_import("weekly")
+    with action_cols[1]:
+        if st.button("Import daily prices", use_container_width=True, key="home_prices_import_daily"):
+            _run_prices_import("daily")
 
     daily_state = load_prices_cache_state("daily", cache_year)
     weekly_state = load_prices_cache_state("weekly", cache_year)
     summary_cols = st.columns(2)
     with summary_cols[0]:
-        st.markdown("**Daily cache**")
-        st.caption(f"Cache path: {daily_cache_file}")
-        st.caption(f"Last updated: {_format_ts(daily_cache_file)}")
-        if render_indices_cache_state_feedback(
-            daily_state,
-            hint="Run Home > Prices Import > Import daily prices to populate the cache.",
-        ):
-            render_chip_row([
-                f"Rows: {daily_state.get('row_count', 0)}",
-                f"Latest date: {daily_state.get('latest_date').isoformat() if isinstance(daily_state.get('latest_date'), date) else 'n/a'}",
-            ])
-    with summary_cols[1]:
         st.markdown("**Weekly cache**")
         st.caption(f"Cache path: {weekly_cache_file}")
         st.caption(f"Last updated: {_format_ts(weekly_cache_file)}")
@@ -10300,6 +11005,27 @@ def render_home_prices_import_subtab() -> None:
                 f"Rows: {weekly_state.get('row_count', 0)}",
                 f"Latest date: {weekly_state.get('latest_date').isoformat() if isinstance(weekly_state.get('latest_date'), date) else 'n/a'}",
             ])
+    with summary_cols[1]:
+        st.markdown("**Daily cache**")
+        st.caption(f"Cache path: {daily_cache_file}")
+        st.caption(f"Last updated: {_format_ts(daily_cache_file)}")
+        if render_indices_cache_state_feedback(
+            daily_state,
+            hint="Run Home > Prices Import > Import daily prices to populate the cache.",
+        ):
+            render_chip_row([
+                f"Rows: {daily_state.get('row_count', 0)}",
+                f"Latest date: {daily_state.get('latest_date').isoformat() if isinstance(daily_state.get('latest_date'), date) else 'n/a'}",
+            ])
+    overlay_file = stock_rsi_regime_overlay_path(cache_year)
+    st.caption(f"RSI regime overlay cache: {overlay_file} | Last updated: {_format_ts(overlay_file)}")
+    if st.button("Refresh RSI regime overlay", use_container_width=True, key="home_prices_refresh_rsi_overlay"):
+        if not daily_cache_file.exists() or not weekly_cache_file.exists():
+            st.warning(
+                "Both daily and weekly price caches need to exist before the RSI regime overlay can be refreshed."
+            )
+        else:
+            _run_overlay_refresh(tickers=None, scope_label="all cached tickers and dates")
 
 
 def warm_performance_cache_for_eod(eod_date: date) -> tuple[bool, str]:
@@ -11317,6 +12043,13 @@ def _prepare_thematics_report_frame(report_df: Optional[pd.DataFrame]) -> pd.Dat
         "obvm_sma20",
         "rs_monthly",
         "obvm_monthly",
+        "obvm_weekly",
+        "rsi_daily",
+        "rsi_weekly",
+        "eod_price_used",
+        "sma_daily_20",
+        "sma_daily_50",
+        "sma_daily_200",
     ]:
         if column in working.columns:
             working[column] = pd.to_numeric(working[column], errors="coerce")
@@ -11434,6 +12167,13 @@ def _build_thematics_company_universe_from_scope(
                 "obvm_sma20",
                 "rs_monthly",
                 "obvm_monthly",
+                "obvm_weekly",
+                "rsi_daily",
+                "rsi_weekly",
+                "eod_price_used",
+                "sma_daily_20",
+                "sma_daily_50",
+                "sma_daily_200",
             ]
             if column in current_report.columns
         ]
@@ -11464,6 +12204,13 @@ def _build_thematics_company_universe_from_scope(
         "ev_ebitda",
         "rs_monthly",
         "obvm_monthly",
+        "obvm_weekly",
+        "rsi_daily",
+        "rsi_weekly",
+        "eod_price_used",
+        "sma_daily_20",
+        "sma_daily_50",
+        "sma_daily_200",
     ]:
         if required_numeric not in base_df.columns:
             base_df[required_numeric] = np.nan
@@ -11477,6 +12224,10 @@ def _build_thematics_company_universe_from_scope(
     if error_message or company_universe is None:
         return pd.DataFrame(), False
     company_universe, _ = _enrich_company_universe_with_market_regime(
+        company_universe,
+        reference_date,
+    )
+    company_universe, _ = _enrich_company_universe_with_stock_rsi_regime_overlay(
         company_universe,
         reference_date,
     )
@@ -11558,6 +12309,7 @@ def _build_thematics_company_universe_for_scope_cached(
     reference_date: date,
     market_cache_signature: str,
     divergence_cache_signature: str,
+    overlay_cache_signature: str,
 ) -> tuple[pd.DataFrame, bool]:
     cache_signatures = {
         "scope_mode": scope_mode,
@@ -11568,8 +12320,9 @@ def _build_thematics_company_universe_for_scope_cached(
         "prices": prices_cache_signature,
         "market": market_cache_signature,
         "divergence": divergence_cache_signature,
+        "rsi_overlay": overlay_cache_signature,
         "schema": PERF_CACHE_SCHEMA_VERSION,
-        "company_universe_columns": "thematics_scope_v1",
+        "company_universe_columns": "thematics_scope_v3_rsi_ma_inputs",
     }
     cached_universe = load_company_universe_cached(reference_date, cache_signatures)
     if cached_universe is not None:
@@ -11847,6 +12600,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "Dist to MA200",
                 "TS",
                 "RSI Regime",
+                "RSI Regime 20D",
+                "RSI Regime 50D",
+                "RSI Regime Δ",
+                "RSI Regime Cross",
                 "Sector Regime Fit",
                 "Short Term Flow",
                 "RSI Divergence (D)",
@@ -11907,6 +12664,15 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
         sorted_df["rel_strength"] = "N/A"
     if "rel_volume" not in sorted_df.columns:
         sorted_df["rel_volume"] = "N/A"
+    for rsi_overlay_column in [
+        "stock_rsi_regime_20d_score",
+        "stock_rsi_regime_50d_score",
+        "stock_rsi_regime_20d_vs_50d_delta",
+    ]:
+        if rsi_overlay_column not in sorted_df.columns:
+            sorted_df[rsi_overlay_column] = np.nan
+    if "stock_rsi_regime_20d_vs_50d_flag" not in sorted_df.columns:
+        sorted_df["stock_rsi_regime_20d_vs_50d_flag"] = "N/A"
     if "ai_revenue_exposure" not in sorted_df.columns:
         sorted_df["ai_revenue_exposure"] = "none"
     if "ai_disruption_risk" not in sorted_df.columns:
@@ -11943,6 +12709,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "Dist to MA200": pd.to_numeric(sorted_df["dist_to_ma200"], errors="coerce"),
             "TS": pd.to_numeric(sorted_df["general_technical_score"], errors="coerce"),
             "RSI Regime": pd.to_numeric(sorted_df["stock_rsi_regime_score"], errors="coerce"),
+            "RSI Regime 20D": pd.to_numeric(sorted_df["stock_rsi_regime_20d_score"], errors="coerce"),
+            "RSI Regime 50D": pd.to_numeric(sorted_df["stock_rsi_regime_50d_score"], errors="coerce"),
+            "RSI Regime Δ": pd.to_numeric(sorted_df["stock_rsi_regime_20d_vs_50d_delta"], errors="coerce"),
+            "RSI Regime Cross": sorted_df["stock_rsi_regime_20d_vs_50d_flag"].fillna("N/A"),
             "Sector Regime Fit": pd.to_numeric(sorted_df["sector_regime_fit_score"], errors="coerce"),
             "Short Term Flow": sorted_df["short_term_flow"].map(_format_short_term_flow_flag),
             "RSI Divergence (D)": sorted_df["rsi_divergence_daily_flag"].map(_format_divergence_flag),
@@ -11974,6 +12744,8 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
     for ma_distance_column in ["Dist to MA20", "Dist to MA50", "Dist to MA200"]:
         display_df[ma_distance_column] = display_df[ma_distance_column].map(_format_percent_value)
     display_df["RSI Regime"] = display_df["RSI Regime"].map(_format_numeric_value)
+    for rsi_overlay_display_column in ["RSI Regime 20D", "RSI Regime 50D", "RSI Regime Δ"]:
+        display_df[rsi_overlay_display_column] = display_df[rsi_overlay_display_column].map(_format_numeric_value)
     display_df["Sector Regime Fit"] = display_df["Sector Regime Fit"].map(_format_numeric_value)
     for display_column, symbol_column in [
         ("TS", "technical_trend_symbol"),
@@ -12930,6 +13702,9 @@ def _build_thematics_hierarchy_styler(
         for column in [
             "TS",
             "RSI Regime",
+            "RSI Regime 20D",
+            "RSI Regime 50D",
+            "RSI Regime Δ",
             "Sector Regime Fit",
             "FS",
             "Mom. FS",
@@ -12998,7 +13773,7 @@ def _build_thematics_hierarchy_styler(
     if value_color_rules:
         for column, rule_fn in value_color_rules.items():
             if column in display_df.columns:
-                styler = styler.applymap(rule_fn, subset=[column])
+                styler = _styler_applymap(styler, rule_fn, subset=[column])
 
     if format_map:
         valid_formats = {column: formatter for column, formatter in format_map.items() if column in display_df.columns}
@@ -13070,12 +13845,15 @@ def _build_thematics_company_styler(
     styler = styler.apply(stripe_rows, axis=1)
     usable_perf_columns = [column for column in ["1W", "1M", "3M", "YTD"] if column in display_df.columns]
     if usable_perf_columns:
-        styler = styler.applymap(_style_positive_negative_value, subset=usable_perf_columns)
+        styler = _styler_applymap(styler, _style_positive_negative_value, subset=usable_perf_columns)
     usable_score_columns = [
         column
         for column in [
             "TS",
             "RSI Regime",
+            "RSI Regime 20D",
+            "RSI Regime 50D",
+            "RSI Regime Δ",
             "Sector Regime Fit",
             "FS",
             "Mom. FS",
@@ -13087,20 +13865,24 @@ def _build_thematics_company_styler(
         if column in display_df.columns
     ]
     if usable_score_columns:
-        styler = styler.applymap(_score_color_css, subset=usable_score_columns)
+        styler = _styler_applymap(styler, _score_color_css, subset=usable_score_columns)
+    if "RSI Regime Δ" in display_df.columns:
+        styler = _styler_applymap(styler, _style_positive_negative_value, subset=["RSI Regime Δ"])
     usable_rsi_columns = [column for column in COMPANY_GRID_RSI_COLUMNS if column in display_df.columns]
     if usable_rsi_columns:
-        styler = styler.applymap(_rsi_color_css, subset=usable_rsi_columns)
+        styler = _styler_applymap(styler, _rsi_color_css, subset=usable_rsi_columns)
     usable_sign_columns = [
-        column for column in ["Short Term Flow", "RS vs 20D", "OBVM vs 20D", "Rel Strength", "Rel Volume"] if column in display_df.columns
+        column
+        for column in ["Short Term Flow", "RSI Regime Cross", "RS vs 20D", "OBVM vs 20D", "Rel Strength", "Rel Volume"]
+        if column in display_df.columns
     ]
     if usable_sign_columns:
-        styler = styler.applymap(_style_sign_label_value, subset=usable_sign_columns)
+        styler = _styler_applymap(styler, _style_sign_label_value, subset=usable_sign_columns)
     usable_divergence_columns = [
         column for column in ["RSI Divergence (D)", "RSI Divergence (W)"] if column in display_df.columns
     ]
     if usable_divergence_columns:
-        styler = styler.applymap(_style_sign_label_value, subset=usable_divergence_columns)
+        styler = _styler_applymap(styler, _style_sign_label_value, subset=usable_divergence_columns)
     return styler
 
 
@@ -13442,6 +14224,7 @@ def render_thematics_tab(config: ReportConfig) -> None:
                     reference_date,
                     _market_regime_company_metrics_cache_signature(reference_date),
                     _company_divergence_cache_signature(),
+                    _path_cache_signature(stock_rsi_regime_overlay_path(reference_date.year)),
                 )
             _perf_mark(timings, "company universe", t_start)
             if company_anchor_missing:
@@ -14091,11 +14874,11 @@ def _portfolio_segment_overrides(
 
 def _portfolio_surface_id(portfolio_key: str, segment_name: str) -> str:
     normalized_segment = re.sub(r"[^0-9a-zA-Z]+", "_", segment_name.strip().lower()).strip("_")
-    return f"{GRID_SURFACE_PORTFOLIO_PREFIX}_v7_{portfolio_key}_{normalized_segment}"
+    return f"{GRID_SURFACE_PORTFOLIO_PREFIX}_v8_{portfolio_key}_{normalized_segment}"
 
 
 def _portfolio_shared_surface_id(portfolio_key: str) -> str:
-    return f"{GRID_SURFACE_PORTFOLIO_PREFIX}_v7_{portfolio_key}_shared"
+    return f"{GRID_SURFACE_PORTFOLIO_PREFIX}_v8_{portfolio_key}_shared"
 
 
 def _portfolio_preferred_columns() -> list[str]:
@@ -14106,28 +14889,58 @@ def _portfolio_preferred_columns() -> list[str]:
         "Sector",
         "Industry",
         "Market Cap",
+        "Alert Levels",
+        "Last EOD Price",
+        "Transaction Date",
+        "Transaction Price",
+        "Net PnL",
         "Beta",
         "PEG",
         "PER Trailing",
         "PER Fwd",
         "P/S TTM",
+        "EV/Revenues",
+        "EV/EBITDA",
         "1W",
-        "Transaction Price",
-        "Transaction Date",
-        "Last EOD Price",
-        "Net PnL",
-        "Alert Levels",
         "1M",
-        "3M",
         "YTD",
+        "Dist to MA20",
+        "Dist to MA50",
+        "Dist to MA200",
+        "RSI Daily",
+        "RSI Divergence (D)",
+        "RSI Weekly",
+        "RSI Divergence (W)",
+        "Rel Strength",
+        "Rel Volume",
+        "RS vs 20D",
+        "OBVM vs 20D",
+        "RSI Regime 20D",
+        "RSI Regime 50D",
+        "RSI Regime Cross",
         "TS",
+        "Relative Performance",
+        "Relative Volume",
+        "Momentum",
+        "Intermediate Trend",
+        "Long-term Trend",
         "FS",
-        "Mom. FS",
         "Growth FS",
         "Value FS",
         "Quality FS",
         "Risk FS",
+        "Mom. FS",
     ]
+
+
+def _trade_ideas_preferred_columns() -> list[str]:
+    preferred_columns = list(COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS)
+    insert_at = preferred_columns.index("Industry") + 1 if "Industry" in preferred_columns else len(preferred_columns)
+    for column_name in ["First Seen", "Consecutive Appearances"]:
+        if column_name not in preferred_columns:
+            preferred_columns.insert(insert_at, column_name)
+            insert_at += 1
+    return preferred_columns
 
 
 def _build_portfolio_company_universe(
@@ -14226,9 +15039,12 @@ def _build_portfolio_company_universe(
         np.nan,
     )
     base, regime_warning = _enrich_company_universe_with_market_regime(base, reference_date)
+    base, overlay_warning = _enrich_company_universe_with_stock_rsi_regime_overlay(base, reference_date)
     base = _enrich_company_universe_with_rsi_divergence(base, reference_date)
     if regime_warning:
         warnings.append(regime_warning)
+    if overlay_warning:
+        warnings.append(overlay_warning)
     return base.reset_index(drop=True), _combine_optional_messages(*warnings)
 
 

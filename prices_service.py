@@ -1508,7 +1508,7 @@ def enrich_prices_with_rsi(
     return _canonicalize_prices_df(final_df)
 
 
-def enrich_daily_prices_with_moving_average_features(
+def enrich_prices_with_moving_average_features(
     target_df: pd.DataFrame,
     *,
     selected_tickers: Sequence[object] | None = None,
@@ -1601,6 +1601,19 @@ def enrich_daily_prices_with_moving_average_features(
     )
     final_df = pd.concat([preserved_df, updated_impacted_df], ignore_index=True)
     return _canonicalize_prices_df(final_df)
+
+
+def enrich_daily_prices_with_moving_average_features(
+    target_df: pd.DataFrame,
+    *,
+    selected_tickers: Sequence[object] | None = None,
+    seed_history_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    return enrich_prices_with_moving_average_features(
+        target_df,
+        selected_tickers=selected_tickers,
+        seed_history_df=seed_history_df,
+    )
 
 
 def enrich_daily_prices_with_atr_features(
@@ -1758,11 +1771,11 @@ def import_prices_cache(
             selected_tickers=requested_tickers,
             seed_history_df=seed_history_df,
         )
-        final_df = enrich_daily_prices_with_moving_average_features(
-            final_df,
-            selected_tickers=requested_tickers,
-            seed_history_df=seed_history_df,
-        )
+    final_df = enrich_prices_with_moving_average_features(
+        final_df,
+        selected_tickers=requested_tickers,
+        seed_history_df=seed_history_df,
+    )
     saved_path = save_prices_cache(final_df, frequency, resolved_year)
     latest_date = None
     if not final_df.empty:

@@ -11,6 +11,7 @@ from market_service import (
     compute_and_save_market_bundle,
     compute_market_bundle,
     compute_stock_rsi_regime,
+    compute_stock_rsi_regime_overlay,
     get_default_market_anchors,
     load_market_regime_config,
     load_sector_families,
@@ -170,6 +171,41 @@ class MarketServiceTests(unittest.TestCase):
 
         self.assertTrue(pd.isna(result.iloc[0]["stock_rsi_regime_score"]))
         self.assertIn("at least 4 weekly RSI observations", str(result.iloc[0]["missing_data_reason"]))
+
+    def test_compute_stock_rsi_regime_overlay_compares_short_and_long_windows(self) -> None:
+        config = load_market_regime_config()
+        evaluation_date = date(2026, 3, 31)
+        daily_rows = [
+            {
+                "ticker": "AAPL.US",
+                "date": evaluation_date - timedelta(days=59 - index),
+                "rsi_14": 42.0 if index < 40 else 72.0,
+            }
+            for index in range(60)
+        ]
+        weekly_rows = [
+            {
+                "ticker": "AAPL.US",
+                "date": evaluation_date - timedelta(days=45 - index * 5),
+                "rsi_14": 45.0 if index < 6 else 68.0,
+            }
+            for index in range(10)
+        ]
+
+        overlay = compute_stock_rsi_regime_overlay(
+            pd.DataFrame(daily_rows),
+            pd.DataFrame(weekly_rows),
+            config=config,
+            evaluation_dates=[evaluation_date],
+            short_window_rows=20,
+            long_window_rows=50,
+            neutral_delta_abs=3.0,
+        )
+
+        self.assertEqual(len(overlay), 1)
+        row = overlay.iloc[0]
+        self.assertEqual(row["stock_rsi_regime_20d_vs_50d_flag"], "Positive")
+        self.assertGreater(row["stock_rsi_regime_20d_score"], row["stock_rsi_regime_50d_score"])
 
     def test_compute_market_bundle_uses_family_average_for_market_sector_rotation(self) -> None:
         config = load_market_regime_config()

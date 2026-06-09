@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_right
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
@@ -9,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from perf_store import load_market_bundle_frame, save_market_bundle_frame
-from prices_service import list_prices_cache_paths, load_prices_cache, normalize_price_ticker
+from prices_service import list_prices_cache_paths, load_prices_cache, normalize_price_ticker, prices_cache_path
 from weekly_scoring_board import compute_sector_overview_stats
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -19,6 +20,24 @@ DEFAULT_MARKET_CONFIG_PATH = CONFIG_DIR / "market_regime_config.json"
 DEFAULT_SECTOR_FAMILIES_PATH = CONFIG_DIR / "sector_families.json"
 DEFAULT_MARKET_METHODOLOGY_PATH = CONFIG_DIR / "market_methodology.md"
 MARKET_CACHE_DIR = DATA_DIR / "market"
+STOCK_RSI_REGIME_OVERLAY_COLUMNS: tuple[str, ...] = (
+    "ticker",
+    "date",
+    "stock_rsi_regime_20d_score",
+    "stock_rsi_regime_20d_label",
+    "stock_rsi_regime_20d_start_date",
+    "stock_rsi_regime_20d_weekly_observation_count",
+    "stock_rsi_regime_20d_daily_observation_count",
+    "stock_rsi_regime_20d_missing_data_reason",
+    "stock_rsi_regime_50d_score",
+    "stock_rsi_regime_50d_label",
+    "stock_rsi_regime_50d_start_date",
+    "stock_rsi_regime_50d_weekly_observation_count",
+    "stock_rsi_regime_50d_daily_observation_count",
+    "stock_rsi_regime_50d_missing_data_reason",
+    "stock_rsi_regime_20d_vs_50d_delta",
+    "stock_rsi_regime_20d_vs_50d_flag",
+)
 
 
 def load_market_regime_config(path: Path | str | None = None) -> dict[str, Any]:
@@ -59,6 +78,11 @@ def market_snapshot_path(signature: str, cache_dir: Path | None = None) -> Path:
 def stock_rsi_regime_path(signature: str, cache_dir: Path | None = None) -> Path:
     directory = cache_dir or MARKET_CACHE_DIR
     return directory / f"stock_rsi_regime_{signature}.jsonl"
+
+
+def stock_rsi_regime_overlay_path(cache_year: int, cache_dir: Path | None = None) -> Path:
+    directory = cache_dir or DATA_DIR
+    return directory / f"stock_rsi_regime_overlay_{int(cache_year)}.jsonl"
 
 
 def setup_readiness_path(signature: str, cache_dir: Path | None = None) -> Path:
@@ -474,6 +498,293 @@ def compute_stock_rsi_regime(
             )
         )
     return pd.DataFrame(rows)
+
+
+def empty_stock_rsi_regime_overlay_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=list(STOCK_RSI_REGIME_OVERLAY_COLUMNS))
+
+
+def load_stock_rsi_regime_overlay_cache(path: Path | str) -> pd.DataFrame:
+    cache_path = Path(path)
+    if not cache_path.exists():
+        return empty_stock_rsi_regime_overlay_df()
+    try:
+        loaded = pd.read_json(cache_path, orient="records", lines=True)
+    except ValueError:
+        return empty_stock_rsi_regime_overlay_df()
+    if loaded.empty:
+        return empty_stock_rsi_regime_overlay_df()
+    for column in STOCK_RSI_REGIME_OVERLAY_COLUMNS:
+        if column not in loaded.columns:
+            loaded[column] = pd.NA
+    return loaded.loc[:, list(STOCK_RSI_REGIME_OVERLAY_COLUMNS)].copy()
+
+
+def save_stock_rsi_regime_overlay_cache(
+    overlay_df: pd.DataFrame,
+    cache_year: int,
+    cache_dir: Path | None = None,
+) -> Path:
+    path = stock_rsi_regime_overlay_path(cache_year, cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    working = overlay_df.copy() if overlay_df is not None else empty_stock_rsi_regime_overlay_df()
+    for column in STOCK_RSI_REGIME_OVERLAY_COLUMNS:
+        if column not in working.columns:
+            working[column] = pd.NA
+    working = working.loc[:, list(STOCK_RSI_REGIME_OVERLAY_COLUMNS)]
+    if not working.empty:
+        working["ticker"] = working["ticker"].map(normalize_price_ticker)
+        working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+        working = working.dropna(subset=["ticker", "date"]).sort_values(["ticker", "date"], kind="stable")
+        working["date"] = working["date"].map(lambda value: value.isoformat() if isinstance(value, date) else value)
+    working.to_json(path, orient="records", lines=True, force_ascii=False)
+    return path
+
+
+def _prepare_price_rsi_frame_for_overlay(price_df: pd.DataFrame) -> pd.DataFrame:
+    if price_df is None or price_df.empty:
+        return pd.DataFrame(columns=["ticker", "date", "rsi_14"])
+    working = price_df.copy()
+    if "ticker" not in working.columns or "date" not in working.columns:
+        return pd.DataFrame(columns=["ticker", "date", "rsi_14"])
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["rsi_14"] = pd.to_numeric(working.get("rsi_14"), errors="coerce")
+    working = working.dropna(subset=["ticker", "date"]).sort_values(["ticker", "date"], kind="stable")
+    return working.loc[:, ["ticker", "date", "rsi_14"]].reset_index(drop=True)
+
+
+def _load_prices_for_overlay(frequency: str, cache_year: int) -> pd.DataFrame:
+    path = prices_cache_path(frequency, cache_year)
+    if not path.exists():
+        return pd.DataFrame(columns=["ticker", "date", "rsi_14"])
+    return _prepare_price_rsi_frame_for_overlay(load_prices_cache(path))
+
+
+def _windowed_rsi_values(
+    group_df: pd.DataFrame,
+    evaluation_date: date,
+    window_rows: int,
+) -> tuple[list[float], Optional[date]]:
+    if group_df.empty:
+        return [], None
+    dates = group_df["date"].tolist()
+    end_index = bisect_right(dates, evaluation_date)
+    if end_index <= 0:
+        return [], None
+    start_index = max(0, end_index - max(1, int(window_rows)))
+    window = group_df.iloc[start_index:end_index]
+    values = pd.to_numeric(window["rsi_14"], errors="coerce").dropna().astype(float).tolist()
+    start_value = window["date"].iloc[0] if not window.empty else None
+    return values, start_value if isinstance(start_value, date) else None
+
+
+def _date_scoped_rsi_values(
+    group_df: pd.DataFrame,
+    start_date: Optional[date],
+    evaluation_date: date,
+) -> list[float]:
+    if group_df.empty or start_date is None:
+        return []
+    scoped = group_df[(group_df["date"] >= start_date) & (group_df["date"] <= evaluation_date)]
+    return pd.to_numeric(scoped["rsi_14"], errors="coerce").dropna().astype(float).tolist()
+
+
+def _overlay_window_row(
+    ticker: str,
+    daily_group: pd.DataFrame,
+    weekly_group: pd.DataFrame,
+    evaluation_date: date,
+    window_rows: int,
+    config: Mapping[str, Any],
+) -> dict[str, object]:
+    daily_values, start_date = _windowed_rsi_values(daily_group, evaluation_date, window_rows)
+    weekly_values = _date_scoped_rsi_values(weekly_group, start_date, evaluation_date)
+    return _compute_stock_rsi_row(
+        ticker,
+        "Unspecified",
+        "Unspecified",
+        weekly_values,
+        daily_values,
+        evaluation_date,
+        start_date or evaluation_date,
+        config,
+    )
+
+
+def compute_stock_rsi_regime_overlay(
+    daily_prices_df: pd.DataFrame,
+    weekly_prices_df: pd.DataFrame,
+    *,
+    config: Mapping[str, Any],
+    evaluation_dates: Sequence[date] | None = None,
+    tickers: Sequence[str] | None = None,
+    short_window_rows: int = 20,
+    long_window_rows: int = 50,
+    neutral_delta_abs: float = 3.0,
+) -> pd.DataFrame:
+    daily_prices = _prepare_price_rsi_frame_for_overlay(daily_prices_df)
+    weekly_prices = _prepare_price_rsi_frame_for_overlay(weekly_prices_df)
+    if daily_prices.empty:
+        return empty_stock_rsi_regime_overlay_df()
+
+    normalized_tickers = {normalize_price_ticker(ticker) for ticker in tickers or [] if normalize_price_ticker(ticker)}
+    if normalized_tickers:
+        daily_prices = daily_prices[daily_prices["ticker"].isin(normalized_tickers)]
+        weekly_prices = weekly_prices[weekly_prices["ticker"].isin(normalized_tickers)]
+    if daily_prices.empty:
+        return empty_stock_rsi_regime_overlay_df()
+
+    daily_dates = sorted({entry for entry in daily_prices["date"].tolist() if isinstance(entry, date)})
+    if evaluation_dates is not None:
+        requested_dates = {entry for entry in evaluation_dates if isinstance(entry, date)}
+        daily_dates = [entry for entry in daily_dates if entry in requested_dates]
+    if not daily_dates:
+        return empty_stock_rsi_regime_overlay_df()
+
+    daily_groups = {
+        ticker: group.sort_values("date", kind="stable").reset_index(drop=True)
+        for ticker, group in daily_prices.groupby("ticker", sort=False)
+    }
+    weekly_groups = {
+        ticker: group.sort_values("date", kind="stable").reset_index(drop=True)
+        for ticker, group in weekly_prices.groupby("ticker", sort=False)
+    }
+
+    rows: list[dict[str, object]] = []
+    for ticker, daily_group in daily_groups.items():
+        ticker_dates = {
+            entry for entry in daily_group["date"].tolist() if isinstance(entry, date)
+        }.intersection(daily_dates)
+        weekly_group = weekly_groups.get(ticker, pd.DataFrame(columns=["ticker", "date", "rsi_14"]))
+        for evaluation_date in sorted(ticker_dates):
+            short_row = _overlay_window_row(ticker, daily_group, weekly_group, evaluation_date, short_window_rows, config)
+            long_row = _overlay_window_row(ticker, daily_group, weekly_group, evaluation_date, long_window_rows, config)
+            short_score = _to_float(short_row.get("stock_rsi_regime_score"))
+            long_score = _to_float(long_row.get("stock_rsi_regime_score"))
+            delta = None if short_score is None or long_score is None else short_score - long_score
+            flag = "N/A"
+            if delta is not None:
+                threshold = abs(float(neutral_delta_abs))
+                if delta > threshold:
+                    flag = "Positive"
+                elif delta < -threshold:
+                    flag = "Negative"
+                else:
+                    flag = "Neutral"
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "date": evaluation_date,
+                    "stock_rsi_regime_20d_score": short_score if short_score is not None else np.nan,
+                    "stock_rsi_regime_20d_label": short_row.get("stock_rsi_regime_label"),
+                    "stock_rsi_regime_20d_start_date": short_row.get("rsi_start_date"),
+                    "stock_rsi_regime_20d_weekly_observation_count": short_row.get("weekly_observation_count"),
+                    "stock_rsi_regime_20d_daily_observation_count": short_row.get("daily_observation_count"),
+                    "stock_rsi_regime_20d_missing_data_reason": short_row.get("missing_data_reason"),
+                    "stock_rsi_regime_50d_score": long_score if long_score is not None else np.nan,
+                    "stock_rsi_regime_50d_label": long_row.get("stock_rsi_regime_label"),
+                    "stock_rsi_regime_50d_start_date": long_row.get("rsi_start_date"),
+                    "stock_rsi_regime_50d_weekly_observation_count": long_row.get("weekly_observation_count"),
+                    "stock_rsi_regime_50d_daily_observation_count": long_row.get("daily_observation_count"),
+                    "stock_rsi_regime_50d_missing_data_reason": long_row.get("missing_data_reason"),
+                    "stock_rsi_regime_20d_vs_50d_delta": delta if delta is not None else np.nan,
+                    "stock_rsi_regime_20d_vs_50d_flag": flag,
+                }
+            )
+    if not rows:
+        return empty_stock_rsi_regime_overlay_df()
+    return pd.DataFrame(rows).loc[:, list(STOCK_RSI_REGIME_OVERLAY_COLUMNS)]
+
+
+def refresh_stock_rsi_regime_overlay_cache(
+    *,
+    cache_year: int,
+    config: Mapping[str, Any],
+    tickers: Sequence[str] | None = None,
+    evaluation_dates: Sequence[date] | None = None,
+    cache_dir: Path | None = None,
+    daily_prices_df: pd.DataFrame | None = None,
+    weekly_prices_df: pd.DataFrame | None = None,
+) -> dict[str, object]:
+    overlay_config = config.get("stock_rsi_regime_overlay", {})
+    short_window_rows = int(overlay_config.get("short_window_days", 20))
+    long_window_rows = int(overlay_config.get("long_window_days", 50))
+    neutral_delta_abs = float(overlay_config.get("neutral_delta_abs", 3.0))
+
+    daily_prices = (
+        _prepare_price_rsi_frame_for_overlay(daily_prices_df)
+        if daily_prices_df is not None
+        else _load_prices_for_overlay("daily", cache_year)
+    )
+    weekly_prices = (
+        _prepare_price_rsi_frame_for_overlay(weekly_prices_df)
+        if weekly_prices_df is not None
+        else _load_prices_for_overlay("weekly", cache_year)
+    )
+    path = stock_rsi_regime_overlay_path(cache_year, cache_dir)
+    if daily_prices.empty:
+        return {
+            "saved_path": path,
+            "saved_rows": 0,
+            "computed_rows": 0,
+            "warning_message": "Daily RSI price history is missing; RSI regime overlay was not refreshed.",
+        }
+    if weekly_prices.empty:
+        return {
+            "saved_path": path,
+            "saved_rows": 0,
+            "computed_rows": 0,
+            "warning_message": "Weekly RSI price history is missing; RSI regime overlay was not refreshed.",
+        }
+
+    normalized_tickers = [normalize_price_ticker(ticker) for ticker in tickers or []]
+    normalized_tickers = [ticker for ticker in dict.fromkeys(normalized_tickers) if ticker]
+    computed = compute_stock_rsi_regime_overlay(
+        daily_prices,
+        weekly_prices,
+        config=config,
+        evaluation_dates=evaluation_dates,
+        tickers=normalized_tickers or None,
+        short_window_rows=short_window_rows,
+        long_window_rows=long_window_rows,
+        neutral_delta_abs=neutral_delta_abs,
+    )
+    if computed.empty:
+        return {
+            "saved_path": path,
+            "saved_rows": 0,
+            "computed_rows": 0,
+            "warning_message": "No RSI regime overlay rows could be computed for the imported price dates.",
+        }
+
+    if normalized_tickers:
+        existing = load_stock_rsi_regime_overlay_cache(path)
+        if not existing.empty:
+            existing["ticker"] = existing["ticker"].map(normalize_price_ticker)
+            existing["date"] = pd.to_datetime(existing["date"], errors="coerce").dt.date
+            computed_dates = set(pd.to_datetime(computed["date"], errors="coerce").dt.date.dropna().tolist())
+            keep_mask = ~(
+                existing["ticker"].isin(normalized_tickers)
+                & existing["date"].isin(computed_dates)
+            )
+            computed = pd.concat([existing[keep_mask], computed], ignore_index=True)
+
+    saved_path = save_stock_rsi_regime_overlay_cache(computed, cache_year, cache_dir)
+    valid_flags = computed["stock_rsi_regime_20d_vs_50d_flag"].astype(str).ne("N/A").sum()
+    warning_message = None
+    if int(valid_flags) < len(computed):
+        warning_message = (
+            "Some RSI regime overlay rows are unavailable because weekly RSI history is missing "
+            "or does not meet the minimum observation count for that date/window."
+        )
+    return {
+        "saved_path": saved_path,
+        "saved_rows": int(len(computed)),
+        "computed_rows": int(len(computed)),
+        "valid_rows": int(valid_flags),
+        "warning_message": warning_message,
+    }
 
 
 def _sector_participation_from_stock_rsi(stock_rsi_df: pd.DataFrame) -> pd.DataFrame:

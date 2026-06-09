@@ -16,6 +16,7 @@ from prices_service import (
     divergence_seed_history_rows,
     enrich_daily_prices_with_atr_features,
     enrich_daily_prices_with_moving_average_features,
+    enrich_prices_with_moving_average_features,
     enrich_prices_with_rsi,
     fetch_prices_history,
     get_price_history_query,
@@ -438,6 +439,27 @@ class PricesServiceTests(unittest.TestCase):
 
         self.assertAlmostEqual(result["ma_200d"].iloc[0], 100.05)
         self.assertEqual(result["dist_from_200"].iloc[0], 9.9)
+
+    def test_enrich_prices_with_moving_average_features_supports_weekly_rows(self) -> None:
+        target_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": date(2026, 1, 2) + timedelta(days=7 * week_index),
+                    "adjusted_close": 100.0,
+                    "adjusted_high": 101.0,
+                    "adjusted_low": 99.0,
+                    "rs": 1.0,
+                    "obvm": 1.0,
+                }
+                for week_index in range(20)
+            ]
+        )
+
+        result = enrich_prices_with_moving_average_features(target_df)
+
+        self.assertAlmostEqual(result["ma_20d"].iloc[19], 100.0)
+        self.assertEqual(result["dist_from_20"].iloc[19], 0.0)
 
     def test_compute_rsi_divergence_flags_detects_bearish_daily_divergence(self) -> None:
         highs = [8, 9, 10, 11, 10, 9, 14, 9, 8, 9, 10, 11, 12, 13, 17, 12, 10, 9, 8, 8]
@@ -1272,6 +1294,45 @@ class PricesServiceTests(unittest.TestCase):
                 divergence_seed_history_rows("weekly"),
             ],
         )
+
+    def test_import_prices_cache_enriches_weekly_moving_average_distances(self) -> None:
+        saved_frames: list[pd.DataFrame] = []
+        fetched_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": date(2026, 1, 2) + timedelta(days=7 * week_index),
+                    "adjusted_close": 100.0,
+                    "adjusted_high": 101.0,
+                    "adjusted_low": 99.0,
+                    "rs": 1.0,
+                    "obvm": 2.0,
+                }
+                for week_index in range(20)
+            ]
+        )
+
+        def fake_save_prices_cache(df, frequency, cache_year):
+            del frequency, cache_year
+            saved_frames.append(df.copy())
+            return Path("weekly_2026.jsonl")
+
+        with patch("prices_service.resolve_all_price_tickers", return_value=["AAPL.US"]), patch(
+            "prices_service.fetch_prices_history",
+            return_value=fetched_df,
+        ), patch(
+            "prices_service.save_prices_cache",
+            side_effect=fake_save_prices_cache,
+        ), patch(
+            "prices_service.prices_cache_path",
+            side_effect=lambda frequency, cache_year: Path(f"{frequency}_{cache_year}.jsonl"),
+        ), patch("pathlib.Path.exists", return_value=False):
+            import_prices_cache("weekly", date(2026, 1, 1), scope="all", cache_year=2026)
+
+        self.assertEqual(len(saved_frames), 1)
+        saved_df = saved_frames[0]
+        self.assertAlmostEqual(saved_df["ma_20d"].iloc[19], 100.0)
+        self.assertEqual(saved_df["dist_from_20"].iloc[19], 0.0)
 
     def test_save_and_load_prices_cache_round_trip_jsonl(self) -> None:
         df = pd.DataFrame(
