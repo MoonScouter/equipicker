@@ -19,6 +19,19 @@ PricesFrequency = Literal["daily", "weekly"]
 RSI_PERIOD = 14
 ATR_PERIOD = 14
 ATR_PERCENTILE_LOOKBACK = 200
+# Extension of the close vs the 20-day MA, measured in ATR units:
+# value = (adjusted_close - ma_20d) / atr_14. Signed bands keep direction.
+ATR_VS_MA20_LABELS: tuple[str, ...] = (
+    "Extended",
+    "Elevated",
+    "Normal",
+    "Pulled Back",
+    "Oversold",
+)
+ATR_VS_MA20_EXTENDED_THRESHOLD = 3.0
+ATR_VS_MA20_ELEVATED_THRESHOLD = 1.5
+ATR_VS_MA20_PULLED_BACK_THRESHOLD = -1.5
+ATR_VS_MA20_OVERSOLD_THRESHOLD = -3.0
 DIVERGENCE_OB_LEVEL = 70.0
 DIVERGENCE_OS_LEVEL = 30.0
 DIVERGENCE_SAME_SWING_TOLERANCE_PCT = 0.001
@@ -133,6 +146,8 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "atr_pct",
     "atr_pctile_200d",
     "atr_pctile_since_rsi_divergence_last_pivot",
+    "atr_vs_ma20",
+    "atr_vs_ma20_label",
 )
 PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
     {
@@ -149,6 +164,8 @@ PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
         "atr_pct",
         "atr_pctile_200d",
         "atr_pctile_since_rsi_divergence_last_pivot",
+        "atr_vs_ma20",
+        "atr_vs_ma20_label",
         "ma_20d",
         "ma_50d",
         "ma_200d",
@@ -331,6 +348,7 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
         "atr_pct",
         "atr_pctile_200d",
         "atr_pctile_since_rsi_divergence_last_pivot",
+        "atr_vs_ma20",
     ]
     for column in numeric_columns:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
@@ -373,6 +391,16 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
     )
     working_df["rsi_divergence_last_pivot_type"] = pivot_type_series.where(
         pivot_type_series.isin({"bull", "bear"}),
+        pd.NA,
+    )
+    atr_vs_ma20_label_series = (
+        working_df["atr_vs_ma20_label"]
+        .where(working_df["atr_vs_ma20_label"].notna(), pd.NA)
+        .astype("string")
+        .str.strip()
+    )
+    working_df["atr_vs_ma20_label"] = atr_vs_ma20_label_series.where(
+        atr_vs_ma20_label_series.isin(ATR_VS_MA20_LABELS),
         pd.NA,
     )
 
@@ -1700,6 +1728,67 @@ def enrich_daily_prices_with_atr_features(
     return _canonicalize_prices_df(final_df)
 
 
+def classify_atr_vs_ma20(value: object) -> object:
+    """Label how far the close sits above/below the 20-day MA in ATR units."""
+    numeric_value = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric_value):
+        return pd.NA
+    numeric_value = float(numeric_value)
+    if numeric_value >= ATR_VS_MA20_EXTENDED_THRESHOLD:
+        return "Extended"
+    if numeric_value >= ATR_VS_MA20_ELEVATED_THRESHOLD:
+        return "Elevated"
+    if numeric_value > ATR_VS_MA20_PULLED_BACK_THRESHOLD:
+        return "Normal"
+    if numeric_value > ATR_VS_MA20_OVERSOLD_THRESHOLD:
+        return "Pulled Back"
+    return "Oversold"
+
+
+def enrich_daily_prices_with_atr_vs_ma20_features(
+    target_df: pd.DataFrame,
+    *,
+    selected_tickers: Sequence[object] | None = None,
+) -> pd.DataFrame:
+    """Derive the ATR-units extension of the close vs the 20-day MA and its label.
+
+    Expects ``atr_14`` and ``ma_20d`` to already be present (filled by the ATR and
+    moving-average enrichment steps). The computation is row-wise, so no seed
+    history is required.
+    """
+    normalized_target_df = _canonicalize_prices_df(target_df)
+    if normalized_target_df.empty:
+        return normalized_target_df
+
+    if selected_tickers is None:
+        impacted_tickers = normalized_target_df["ticker"].dropna().astype(str).unique().tolist()
+    else:
+        impacted_tickers = normalize_price_tickers(selected_tickers)
+    if not impacted_tickers:
+        return normalized_target_df
+
+    impacted_set = set(impacted_tickers)
+    impacted_mask = normalized_target_df["ticker"].isin(impacted_set)
+    if not impacted_mask.any():
+        return normalized_target_df
+
+    closes = pd.to_numeric(normalized_target_df["adjusted_close"], errors="coerce")
+    ma_20d = pd.to_numeric(normalized_target_df["ma_20d"], errors="coerce")
+    atr_14 = pd.to_numeric(normalized_target_df["atr_14"], errors="coerce")
+    valid_mask = impacted_mask & closes.notna() & ma_20d.notna() & atr_14.notna() & (atr_14 != 0.0)
+
+    atr_vs_ma20 = pd.Series(np.nan, index=normalized_target_df.index, dtype="float64")
+    atr_vs_ma20.loc[valid_mask] = (
+        (closes.loc[valid_mask] - ma_20d.loc[valid_mask]) / atr_14.loc[valid_mask]
+    ).round(2)
+
+    normalized_target_df.loc[impacted_mask, "atr_vs_ma20"] = atr_vs_ma20.loc[impacted_mask].to_numpy()
+    normalized_target_df.loc[impacted_mask, "atr_vs_ma20_label"] = (
+        atr_vs_ma20.loc[impacted_mask].map(classify_atr_vs_ma20).to_numpy()
+    )
+    return _canonicalize_prices_df(normalized_target_df)
+
+
 def import_prices_cache(
     frequency: PricesFrequency,
     cutoff_date: date,
@@ -1776,6 +1865,11 @@ def import_prices_cache(
         selected_tickers=requested_tickers,
         seed_history_df=seed_history_df,
     )
+    if frequency == "daily":
+        final_df = enrich_daily_prices_with_atr_vs_ma20_features(
+            final_df,
+            selected_tickers=requested_tickers,
+        )
     saved_path = save_prices_cache(final_df, frequency, resolved_year)
     latest_date = None
     if not final_df.empty:

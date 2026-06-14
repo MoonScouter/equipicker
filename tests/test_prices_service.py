@@ -9,12 +9,14 @@ import pandas as pd
 from prices_service import (
     ActiveDivergence,
     build_prices_cache_dataframe,
+    classify_atr_vs_ma20,
     compute_wilder_atr,
     compute_rsi_divergence_state,
     compute_rsi_divergence_flags,
     compute_wilder_rsi,
     divergence_seed_history_rows,
     enrich_daily_prices_with_atr_features,
+    enrich_daily_prices_with_atr_vs_ma20_features,
     enrich_daily_prices_with_moving_average_features,
     enrich_prices_with_moving_average_features,
     enrich_prices_with_rsi,
@@ -287,6 +289,66 @@ class PricesServiceTests(unittest.TestCase):
         self.assertEqual(result["atr_pctile_200d"].iloc[15], 50.0)
         self.assertEqual(result["atr_pctile_since_rsi_divergence_last_pivot"].iloc[14], 100.0)
         self.assertEqual(result["atr_pctile_since_rsi_divergence_last_pivot"].iloc[15], 50.0)
+
+    def test_classify_atr_vs_ma20_assigns_signed_bands(self) -> None:
+        self.assertEqual(classify_atr_vs_ma20(3.0), "Extended")
+        self.assertEqual(classify_atr_vs_ma20(4.2), "Extended")
+        self.assertEqual(classify_atr_vs_ma20(1.5), "Elevated")
+        self.assertEqual(classify_atr_vs_ma20(2.9), "Elevated")
+        self.assertEqual(classify_atr_vs_ma20(0.0), "Normal")
+        self.assertEqual(classify_atr_vs_ma20(1.49), "Normal")
+        self.assertEqual(classify_atr_vs_ma20(-1.49), "Normal")
+        self.assertEqual(classify_atr_vs_ma20(-1.5), "Pulled Back")
+        self.assertEqual(classify_atr_vs_ma20(-3.0), "Oversold")
+        self.assertEqual(classify_atr_vs_ma20(-4.0), "Oversold")
+        self.assertTrue(pd.isna(classify_atr_vs_ma20(None)))
+        self.assertTrue(pd.isna(classify_atr_vs_ma20(float("nan"))))
+
+    def test_enrich_daily_prices_with_atr_vs_ma20_features(self) -> None:
+        target_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAPL.US",
+                    "date": date(2026, 1, 1),
+                    "adjusted_close": 110.0,
+                    "adjusted_high": 111.0,
+                    "adjusted_low": 109.0,
+                    "ma_20d": 100.0,
+                    "atr_14": 2.0,
+                },
+                {
+                    "ticker": "AAPL.US",
+                    "date": date(2026, 1, 2),
+                    "adjusted_close": 98.0,
+                    "adjusted_high": 99.0,
+                    "adjusted_low": 97.0,
+                    "ma_20d": 100.0,
+                    "atr_14": 2.0,
+                },
+                {
+                    # Missing ATR -> value/label stay null.
+                    "ticker": "AAPL.US",
+                    "date": date(2026, 1, 3),
+                    "adjusted_close": 105.0,
+                    "adjusted_high": 106.0,
+                    "adjusted_low": 104.0,
+                    "ma_20d": 100.0,
+                    "atr_14": None,
+                },
+            ]
+        )
+
+        result = enrich_daily_prices_with_atr_vs_ma20_features(target_df)
+        result = result.sort_values("date").reset_index(drop=True)
+
+        # (110 - 100) / 2 = 5.0 -> Extended
+        self.assertAlmostEqual(result["atr_vs_ma20"].iloc[0], 5.0)
+        self.assertEqual(result["atr_vs_ma20_label"].iloc[0], "Extended")
+        # (98 - 100) / 2 = -1.0 -> Normal
+        self.assertAlmostEqual(result["atr_vs_ma20"].iloc[1], -1.0)
+        self.assertEqual(result["atr_vs_ma20_label"].iloc[1], "Normal")
+        self.assertTrue(pd.isna(result["atr_vs_ma20"].iloc[2]))
+        self.assertTrue(pd.isna(result["atr_vs_ma20_label"].iloc[2]))
 
     def test_enrich_prices_with_rsi_updates_only_selected_tickers(self) -> None:
         target_df = pd.DataFrame(
