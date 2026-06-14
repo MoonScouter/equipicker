@@ -108,6 +108,8 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         "Rel Volume",
         "AI Revenue Exposure",
         "AI Disruption Risk",
+        "ATR vs 20D daily",
+        "Extension",
     ]
 
     def test_prepare_company_universe_uses_company_and_fallbacks_to_ticker(self) -> None:
@@ -735,12 +737,56 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertIn("Consecutive Appearances", rendered.columns.tolist())
         self.assertEqual(rendered.iloc[0]["Consecutive Appearances"], 3)
 
+    def test_trade_idea_display_surfaces_atr_vs_ma20_and_extension(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha Inc",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 92.0,
+                    "general_technical_score": 70.0,
+                    "atr_vs_ma20": 3.4,
+                    "atr_vs_ma20_label": "Extended",
+                },
+                {
+                    "ticker": "BBB.US",
+                    "company": "Beta Inc",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 2_000_000_000,
+                    "fundamental_total_score": 60.0,
+                    "general_technical_score": 50.0,
+                },
+            ]
+        )
+
+        rendered = format_company_drilldown_display(company_df, sort_by="technical")
+
+        by_ticker = rendered.set_index("Ticker")
+        self.assertEqual(by_ticker.loc["AAA.US", "ATR vs 20D daily"], "3.4")
+        self.assertEqual(by_ticker.loc["AAA.US", "Extension"], "Extended")
+        # Missing data falls back to N/A without raising.
+        self.assertEqual(by_ticker.loc["BBB.US", "ATR vs 20D daily"], "N/A")
+        self.assertEqual(by_ticker.loc["BBB.US", "Extension"], "N/A")
+
     def test_trade_ideas_preferred_columns_place_occurrence_fields_before_market_cap(self) -> None:
         preferred = _trade_ideas_preferred_columns()
 
         self.assertLess(preferred.index("Industry"), preferred.index("First Seen"))
         self.assertLess(preferred.index("First Seen"), preferred.index("Consecutive Appearances"))
         self.assertLess(preferred.index("Consecutive Appearances"), preferred.index("Market Cap"))
+        self.assertNotIn("ATR vs 20D daily", preferred)
+        self.assertNotIn("Extension", preferred)
+
+    def test_trade_ideas_preferred_columns_acceleration_adds_atr_vs_ma20_before_market_cap(self) -> None:
+        preferred = _trade_ideas_preferred_columns("acceleration")
+
+        self.assertLess(preferred.index("Consecutive Appearances"), preferred.index("ATR vs 20D daily"))
+        self.assertLess(preferred.index("ATR vs 20D daily"), preferred.index("Extension"))
+        self.assertLess(preferred.index("Extension"), preferred.index("Market Cap"))
 
     def test_trade_idea_occurrence_metadata_is_skipped_for_broad_baskets(self) -> None:
         self.assertTrue(_should_annotate_trade_idea_occurrences(200))

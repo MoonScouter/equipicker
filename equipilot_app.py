@@ -374,6 +374,8 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "Dist to MA20": 120,
     "Dist to MA50": 120,
     "Dist to MA200": 125,
+    "ATR vs 20D daily": 135,
+    "Extension": 120,
     "TS": 110,
     "RSI Regime": 120,
     "Sector Regime Fit": 145,
@@ -4502,6 +4504,7 @@ function(valueA, valueB) {
             "Alert Levels",
             "Beta",
             "Consecutive Appearances",
+            "ATR vs 20D daily",
             "Transaction Price",
             "Last EOD Price",
             *COMPANY_GRID_VALUATION_COLUMNS,
@@ -7606,6 +7609,20 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
         }
     )
+    atr_vs_ma20_series = (
+        pd.to_numeric(sorted_df["atr_vs_ma20"], errors="coerce")
+        if "atr_vs_ma20" in sorted_df.columns
+        else pd.Series(np.nan, index=sorted_df.index)
+    )
+    display_df["ATR vs 20D daily"] = atr_vs_ma20_series.to_numpy()
+    atr_vs_ma20_label_series = (
+        sorted_df["atr_vs_ma20_label"]
+        if "atr_vs_ma20_label" in sorted_df.columns
+        else pd.Series(pd.NA, index=sorted_df.index)
+    )
+    display_df["Extension"] = (
+        atr_vs_ma20_label_series.where(atr_vs_ma20_label_series.notna(), "N/A").astype(str).to_numpy()
+    )
     if "trade_idea_setup_badge" in sorted_df.columns:
         display_df.insert(3, "Setup", sorted_df["trade_idea_setup_badge"].fillna("").astype(str))
     if "trade_idea_first_seen_date" in sorted_df.columns:
@@ -7623,6 +7640,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
         )
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
+    display_df["ATR vs 20D daily"] = display_df["ATR vs 20D daily"].map(_format_numeric_value)
     for valuation_column in COMPANY_GRID_VALUATION_COLUMNS:
         display_df[valuation_column] = display_df[valuation_column].map(_format_numeric_value)
     perf_fallback_flags = sorted_df["anchor_fallback_used"].fillna(False).astype(bool).tolist()
@@ -9003,6 +9021,56 @@ def _enrich_trade_ideas_with_weekly_ma200_distance(company_df: pd.DataFrame, eva
     )
 
 
+@st.cache_data(show_spinner=False)
+def _load_daily_atr_vs_ma20_for_date_cached(
+    evaluation_date: date,
+    daily_prices_path_str: str,
+    daily_prices_signature: str,
+) -> pd.DataFrame:
+    del daily_prices_signature
+    empty_columns = ["ticker", "atr_vs_ma20", "atr_vs_ma20_label"]
+    daily_prices_path = Path(daily_prices_path_str)
+    if not daily_prices_path.exists():
+        return pd.DataFrame(columns=empty_columns)
+    daily_prices = load_prices_cache_file(str(daily_prices_path), _path_cache_signature(daily_prices_path))
+    if daily_prices.empty or "atr_vs_ma20" not in daily_prices.columns:
+        return pd.DataFrame(columns=empty_columns)
+    working = daily_prices[["ticker", "date", "atr_vs_ma20", "atr_vs_ma20_label"]].copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["atr_vs_ma20"] = pd.to_numeric(working["atr_vs_ma20"], errors="coerce")
+    working = working.dropna(subset=["ticker", "date", "atr_vs_ma20"])
+    working = working[working["date"] <= evaluation_date]
+    if working.empty:
+        return pd.DataFrame(columns=empty_columns)
+    return (
+        working.sort_values(["ticker", "date"], kind="stable")
+        .drop_duplicates(subset=["ticker"], keep="last")
+        .loc[:, empty_columns]
+        .reset_index(drop=True)
+    )
+
+
+def _enrich_trade_ideas_with_daily_atr_vs_ma20(company_df: pd.DataFrame, evaluation_date: date) -> pd.DataFrame:
+    enriched = company_df.copy()
+    for column in ["atr_vs_ma20", "atr_vs_ma20_label"]:
+        if column not in enriched.columns:
+            enriched[column] = np.nan if column == "atr_vs_ma20" else pd.NA
+    daily_prices_path = prices_cache_path("daily", evaluation_date.year)
+    atr_vs_ma20_df = _load_daily_atr_vs_ma20_for_date_cached(
+        evaluation_date,
+        str(daily_prices_path),
+        _path_cache_signature(daily_prices_path),
+    )
+    if atr_vs_ma20_df.empty:
+        return enriched
+    return enriched.drop(columns=["atr_vs_ma20", "atr_vs_ma20_label"], errors="ignore").merge(
+        atr_vs_ma20_df,
+        on="ticker",
+        how="left",
+    )
+
+
 def _trade_ideas_base_mask(df: pd.DataFrame) -> pd.Series:
     return pd.Series(True, index=df.index)
 
@@ -9415,6 +9483,7 @@ def _render_trade_idea_basket(
             f"Green-bordered tickers also appear in the other MA200 basket ({len(overlap_highlight_tickers)} overlap)."
         )
     company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, selected_eod)
+    company_universe = _enrich_trade_ideas_with_daily_atr_vs_ma20(company_universe, selected_eod)
     ideas_df = _filter_trade_idea_basket(
         company_universe,
         basket_key,
@@ -9443,7 +9512,7 @@ def _render_trade_idea_basket(
     _render_company_grid(
         display_df,
         surface_id=f"{GRID_SURFACE_TRADE_IDEAS_PREFIX}_{basket_key}",
-        preferred_visible_columns=_trade_ideas_preferred_columns(),
+        preferred_visible_columns=_trade_ideas_preferred_columns(basket_key),
         row_height=36,
         min_height=260,
         default_row_limit="All",
@@ -14933,10 +15002,15 @@ def _portfolio_preferred_columns() -> list[str]:
     ]
 
 
-def _trade_ideas_preferred_columns() -> list[str]:
+def _trade_ideas_preferred_columns(basket_key: Optional[str] = None) -> list[str]:
     preferred_columns = list(COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS)
     insert_at = preferred_columns.index("Industry") + 1 if "Industry" in preferred_columns else len(preferred_columns)
-    for column_name in ["First Seen", "Consecutive Appearances"]:
+    occurrence_columns = ["First Seen", "Consecutive Appearances"]
+    # The ATR-vs-MA20 extension columns are surfaced by default only on the Full
+    # Acceleration grid, placed right after the occurrence columns / before Market Cap.
+    if basket_key == "acceleration":
+        occurrence_columns += ["ATR vs 20D daily", "Extension"]
+    for column_name in occurrence_columns:
         if column_name not in preferred_columns:
             preferred_columns.insert(insert_at, column_name)
             insert_at += 1
