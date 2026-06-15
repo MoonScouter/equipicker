@@ -279,6 +279,10 @@ COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS = [
     "Thematic",
     "Sector",
     "Industry",
+    "Close",
+    "Close Date",
+    "ATR",
+    "ATR %",
     "Market Cap",
     "Beta",
     "PEG",
@@ -355,6 +359,10 @@ COMPANY_GRID_DEFAULT_WIDTHS = {
     "Last EOD Price": 155,
     "Net PnL": 115,
     "Alert Levels": 110,
+    "Close": 95,
+    "Close Date": 115,
+    "ATR": 95,
+    "ATR %": 95,
     "Market Cap": 120,
     "Beta": 90,
     "PEG": 85,
@@ -1218,6 +1226,38 @@ def _format_numeric_value(value: object) -> str:
     if pd.isna(numeric):
         return "N/A"
     return f"{float(numeric):.1f}"
+
+
+def _format_atr_value(value: object) -> str:
+    """Format the raw 14-period ATR (price units) used for position sizing."""
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "N/A"
+    return f"{float(numeric):.2f}"
+
+
+def _format_atr_pct_value(value: object) -> str:
+    """Format ATR as a percent of the most recent adjusted close."""
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "N/A"
+    return f"{float(numeric):.2f}%"
+
+
+def _format_close_price_value(value: object) -> str:
+    """Format the most recent adjusted close used for position sizing."""
+    numeric = pd.to_numeric(value, errors="coerce")
+    if pd.isna(numeric):
+        return "N/A"
+    return f"{float(numeric):.2f}"
+
+
+def _format_close_date_value(value: object) -> str:
+    """Format the date of the most recent adjusted close as an ISO string."""
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return "N/A"
+    return parsed.date().isoformat()
 
 
 def _render_score_with_symbol(value: object, symbol: str) -> str:
@@ -4502,6 +4542,9 @@ function(valueA, valueB) {
             config["comparator"] = market_cap_comparator_js
         elif column_name in {
             "Alert Levels",
+            "ATR",
+            "ATR %",
+            "Close",
             "Beta",
             "Consecutive Appearances",
             "ATR vs 20D daily",
@@ -6282,7 +6325,7 @@ def _load_prepared_company_universe_for_report_path(
         "prices_path": prices_cache_path_str,
         "prices": prices_cache_signature,
         "schema": PERF_CACHE_SCHEMA_VERSION,
-        "company_universe_columns": "company_grid_indicators_v5_rsi_regime_overlay",
+        "company_universe_columns": "company_grid_indicators_v7_atr_close",
     }
     cached_universe = load_company_universe_cached(evaluation_date, cache_signatures)
     if cached_universe is not None:
@@ -6347,6 +6390,10 @@ def _load_prepared_company_universe_for_report_path(
         evaluation_date,
     )
     company_universe = _enrich_company_universe_with_rsi_divergence(
+        company_universe,
+        evaluation_date,
+    )
+    company_universe = _enrich_company_universe_with_daily_sizing_features(
         company_universe,
         evaluation_date,
     )
@@ -7418,6 +7465,34 @@ def render_company_drilldown_filters(
     return filtered.copy()
 
 
+def _insert_position_sizing_columns(display_df: pd.DataFrame, source_df: pd.DataFrame) -> None:
+    """Insert the position-sizing columns (Close, Close Date, ATR, ATR %) just before Market Cap.
+
+    Columns are inserted in display order so the grid reads
+    ``... Close | Close Date | ATR | ATR % | Market Cap ...``. Values are pulled
+    from the daily sizing-feature enrichment and fall back to ``N/A`` when the
+    underlying daily price bar is unavailable.
+    """
+    def _numeric(column: str) -> pd.Series:
+        if column in source_df.columns:
+            return pd.to_numeric(source_df[column], errors="coerce")
+        return pd.Series(np.nan, index=source_df.index)
+
+    close_date_series = (
+        source_df["last_close_date"]
+        if "last_close_date" in source_df.columns
+        else pd.Series(pd.NaT, index=source_df.index)
+    )
+    sizing_columns = [
+        ("Close", _numeric("last_close").map(_format_close_price_value)),
+        ("Close Date", close_date_series.map(_format_close_date_value)),
+        ("ATR", _numeric("atr_14").map(_format_atr_value)),
+        ("ATR %", _numeric("atr_pct").map(_format_atr_pct_value)),
+    ]
+    for column_name, values in sizing_columns:
+        display_df.insert(display_df.columns.get_loc("Market Cap"), column_name, values.to_numpy())
+
+
 def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) -> pd.DataFrame:
     if company_df.empty:
         return pd.DataFrame(
@@ -7427,6 +7502,10 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
                 "Company",
                 "Sector",
                 "Industry",
+                "Close",
+                "Close Date",
+                "ATR",
+                "ATR %",
                 "Market Cap",
                 "Beta",
                 "PEG",
@@ -7609,6 +7688,7 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
         }
     )
+    _insert_position_sizing_columns(display_df, sorted_df)
     atr_vs_ma20_series = (
         pd.to_numeric(sorted_df["atr_vs_ma20"], errors="coerce")
         if "atr_vs_ma20" in sorted_df.columns
@@ -9066,6 +9146,78 @@ def _enrich_trade_ideas_with_daily_atr_vs_ma20(company_df: pd.DataFrame, evaluat
         return enriched
     return enriched.drop(columns=["atr_vs_ma20", "atr_vs_ma20_label"], errors="ignore").merge(
         atr_vs_ma20_df,
+        on="ticker",
+        how="left",
+    )
+
+
+_DAILY_SIZING_FEATURE_COLUMNS = ["ticker", "atr_14", "atr_pct", "last_close", "last_close_date"]
+
+
+@st.cache_data(show_spinner=False)
+def _load_daily_sizing_features_for_date_cached(
+    evaluation_date: date,
+    daily_prices_path_str: str,
+    daily_prices_signature: str,
+) -> pd.DataFrame:
+    del daily_prices_signature
+    empty = pd.DataFrame(columns=_DAILY_SIZING_FEATURE_COLUMNS)
+    daily_prices_path = Path(daily_prices_path_str)
+    if not daily_prices_path.exists():
+        return empty
+    daily_prices = load_prices_cache_file(str(daily_prices_path), _path_cache_signature(daily_prices_path))
+    if daily_prices.empty or "atr_14" not in daily_prices.columns or "adjusted_close" not in daily_prices.columns:
+        return empty
+    working = daily_prices[["ticker", "date", "atr_14", "adjusted_close"]].copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["atr_14"] = pd.to_numeric(working["atr_14"], errors="coerce")
+    working["adjusted_close"] = pd.to_numeric(working["adjusted_close"], errors="coerce")
+    working = working.dropna(subset=["ticker", "date", "atr_14"])
+    working = working[working["date"] <= evaluation_date]
+    if working.empty:
+        return empty
+    latest = (
+        working.sort_values(["ticker", "date"], kind="stable")
+        .drop_duplicates(subset=["ticker"], keep="last")
+        .reset_index(drop=True)
+    )
+    # ATR % is the raw ATR relative to the most recent adjusted close.
+    close = latest["adjusted_close"]
+    latest["atr_pct"] = np.where(
+        close.notna() & (close != 0.0),
+        latest["atr_14"] / close * 100.0,
+        np.nan,
+    )
+    latest = latest.rename(columns={"adjusted_close": "last_close", "date": "last_close_date"})
+    return latest.loc[:, _DAILY_SIZING_FEATURE_COLUMNS]
+
+
+def _enrich_company_universe_with_daily_sizing_features(
+    company_df: pd.DataFrame, evaluation_date: date
+) -> pd.DataFrame:
+    """Attach the latest raw ATR, ATR %, close, and close date to each company.
+
+    Mirrors the daily ATR-vs-MA20 enrichment so every grid surface can size
+    positions off clean, deterministic values drawn from the most recent daily
+    price bar.
+    """
+    enriched = company_df.copy()
+    for column in ["atr_14", "atr_pct", "last_close", "last_close_date"]:
+        if column not in enriched.columns:
+            enriched[column] = np.nan
+    daily_prices_path = prices_cache_path("daily", evaluation_date.year)
+    features_df = _load_daily_sizing_features_for_date_cached(
+        evaluation_date,
+        str(daily_prices_path),
+        _path_cache_signature(daily_prices_path),
+    )
+    if features_df.empty:
+        return enriched
+    return enriched.drop(
+        columns=["atr_14", "atr_pct", "last_close", "last_close_date"], errors="ignore"
+    ).merge(
+        features_df,
         on="ticker",
         how="left",
     )
@@ -12648,6 +12800,10 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
                 "Company",
                 "Sector",
                 "Industry",
+                "Close",
+                "Close Date",
+                "ATR",
+                "ATR %",
                 "Market Cap",
                 "Beta",
                 "PEG",
@@ -12798,6 +12954,7 @@ def format_thematics_company_display(company_df: pd.DataFrame) -> pd.DataFrame:
             "AI Disruption Risk": sorted_df["ai_disruption_risk"].fillna("none"),
         }
     )
+    _insert_position_sizing_columns(display_df, sorted_df)
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
     for valuation_column in COMPANY_GRID_VALUATION_COLUMNS:
@@ -14957,6 +15114,10 @@ def _portfolio_preferred_columns() -> list[str]:
         "Thematic",
         "Sector",
         "Industry",
+        "Close",
+        "Close Date",
+        "ATR",
+        "ATR %",
         "Market Cap",
         "Alert Levels",
         "Last EOD Price",
@@ -15115,6 +15276,7 @@ def _build_portfolio_company_universe(
     base, regime_warning = _enrich_company_universe_with_market_regime(base, reference_date)
     base, overlay_warning = _enrich_company_universe_with_stock_rsi_regime_overlay(base, reference_date)
     base = _enrich_company_universe_with_rsi_divergence(base, reference_date)
+    base = _enrich_company_universe_with_daily_sizing_features(base, reference_date)
     if regime_warning:
         warnings.append(regime_warning)
     if overlay_warning:
