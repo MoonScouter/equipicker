@@ -64,6 +64,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         "Company",
         "Sector",
         "Industry",
+        "Close",
+        "Close Date",
+        "ATR",
+        "ATR %",
         "Market Cap",
         "Beta",
         "PEG",
@@ -772,6 +776,54 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(by_ticker.loc["BBB.US", "ATR vs 20D daily"], "N/A")
         self.assertEqual(by_ticker.loc["BBB.US", "Extension"], "N/A")
 
+    def test_company_display_surfaces_position_sizing_fields_before_market_cap(self) -> None:
+        company_df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA.US",
+                    "company": "Alpha Inc",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 1_000_000_000,
+                    "fundamental_total_score": 92.0,
+                    "general_technical_score": 70.0,
+                    "atr_14": 2.345,
+                    "atr_pct": 1.234,
+                    "last_close": 190.125,
+                    "last_close_date": date(2026, 6, 12),
+                },
+                {
+                    "ticker": "BBB.US",
+                    "company": "Beta Inc",
+                    "sector": "Technology",
+                    "industry": "Software",
+                    "market_cap": 2_000_000_000,
+                    "fundamental_total_score": 60.0,
+                    "general_technical_score": 50.0,
+                },
+            ]
+        )
+
+        rendered = format_company_drilldown_display(company_df, sort_by="technical")
+
+        columns = rendered.columns.tolist()
+        # Position-sizing fields appear in order just before Market Cap.
+        market_cap_index = columns.index("Market Cap")
+        self.assertEqual(
+            columns[market_cap_index - 4 : market_cap_index],
+            ["Close", "Close Date", "ATR", "ATR %"],
+        )
+        by_ticker = rendered.set_index("Ticker")
+        self.assertEqual(by_ticker.loc["AAA.US", "ATR"], "2.35")
+        self.assertEqual(by_ticker.loc["AAA.US", "ATR %"], "1.23%")
+        self.assertEqual(by_ticker.loc["AAA.US", "Close"], "190.12")
+        self.assertEqual(by_ticker.loc["AAA.US", "Close Date"], "2026-06-12")
+        # Missing daily data falls back to N/A without raising.
+        self.assertEqual(by_ticker.loc["BBB.US", "ATR"], "N/A")
+        self.assertEqual(by_ticker.loc["BBB.US", "ATR %"], "N/A")
+        self.assertEqual(by_ticker.loc["BBB.US", "Close"], "N/A")
+        self.assertEqual(by_ticker.loc["BBB.US", "Close Date"], "N/A")
+
     def test_trade_ideas_preferred_columns_place_occurrence_fields_before_market_cap(self) -> None:
         preferred = _trade_ideas_preferred_columns()
 
@@ -1300,6 +1352,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                     "industry": "Hardware",
                     "market_cap": 1_000_000_000,
                     "beta": 1.2,
+                    "atr_14": 5.0,
+                    "atr_pct": 2.5,
+                    "last_close": 200.0,
+                    "last_close_date": date(2026, 6, 12),
                     "1w_perf": 2.0,
                     "1m_perf": -1.0,
                     "3m_perf": 5.0,
@@ -1339,6 +1395,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Company",
                 "Sector",
                 "Industry",
+                "Close",
+                "Close Date",
+                "ATR",
+                "ATR %",
                 "Market Cap",
                 "Beta",
                 "PEG",
@@ -1380,6 +1440,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "AI Disruption Risk",
             ],
         )
+        self.assertEqual(rendered.iloc[0]["ATR"], "5.00")
+        self.assertEqual(rendered.iloc[0]["ATR %"], "2.50%")
+        self.assertEqual(rendered.iloc[0]["Close"], "200.00")
+        self.assertEqual(rendered.iloc[0]["Close Date"], "2026-06-12")
         self.assertEqual(str(rendered.iloc[0]["TS"]).strip(), f"81.0 {TREND_SYMBOL_UP}")
         self.assertAlmostEqual(float(rendered.iloc[0]["RSI Regime"]), 74.0)
         self.assertAlmostEqual(float(rendered.iloc[0]["Sector Regime Fit"]), 66.0)
@@ -1684,6 +1748,10 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
                 "Thematic",
                 "Sector",
                 "Industry",
+                "Close",
+                "Close Date",
+                "ATR",
+                "ATR %",
                 "Market Cap",
                 "Alert Levels",
                 "Last EOD Price",
