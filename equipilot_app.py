@@ -5168,6 +5168,26 @@ def _render_company_grid_shared_controls(
     return visible_columns, pinned_columns
 
 
+@st.fragment
+def _render_drilldown_filter_grid_fragment(
+    company_universe: pd.DataFrame,
+    *,
+    filter_kwargs: dict,
+    render_results: "Callable[[pd.DataFrame], None]",
+) -> None:
+    """Run the company drilldown filter form and render its results inside a fragment.
+
+    Wrapping the filter form here keeps "Apply filters" (and the reset/clear
+    actions) scoped to this block instead of rerunning the whole app, while the
+    expensive universe load stays outside and keyed off the page's date/scope
+    inputs. ``render_results`` receives the filtered frame and renders the
+    surface-specific caption, display formatting, and grid.
+    """
+    filtered_companies = render_company_drilldown_filters(company_universe, **filter_kwargs)
+    render_results(filtered_companies)
+
+
+@st.fragment
 def _render_company_grid(
     display_df: pd.DataFrame,
     *,
@@ -7541,11 +7561,11 @@ def render_company_drilldown_filters(
 
     if reset_clicked:
         st.session_state[pending_reset_key] = "reset"
-        st.rerun()
+        st.rerun(scope="fragment")
 
     if clear_clicked:
         st.session_state[pending_reset_key] = "clear"
-        st.rerun()
+        st.rerun(scope="fragment")
 
     filtered = company_df.copy()
     if include_thematic_filter and selected_thematics:
@@ -9085,29 +9105,12 @@ def _render_technical_scoring_content(
                 st.caption(details_title)
             if regime_warning:
                 st.caption(regime_warning)
-            t_start = time.perf_counter()
-            filtered_companies = render_company_drilldown_filters(
-                company_universe,
-                prefix=state_prefix,
-                ticker_label="Ticker filter",
-                include_fundamental_momentum_filter=True,
-                include_technical_trend_filter=company_trend_enabled,
-                include_thematic_filter=True,
-                include_rel_strength_filter=True,
-                include_rel_volume_filter=True,
-                include_ma200_distance_filter=screener_mode,
-                include_ai_exposure_filters=True,
-                default_action_label="Apply strict filters" if screener_mode else "Reset filters",
-            )
-            _perf_mark(timings, "company filters", t_start)
-            st.caption(f"Companies after filters: {len(filtered_companies)}")
-            t_start = time.perf_counter()
-            details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
-            _perf_mark(timings, "company display", t_start)
-            if details_display.empty:
-                st.info("No companies found for the selected row.")
-            else:
-                t_start = time.perf_counter()
+            def _drilldown_results(filtered_companies: pd.DataFrame) -> None:
+                st.caption(f"Companies after filters: {len(filtered_companies)}")
+                details_display = format_company_drilldown_display(filtered_companies, sort_by="technical")
+                if details_display.empty:
+                    st.info("No companies found for the selected row.")
+                    return
                 _render_company_grid(
                     details_display,
                     surface_id=GRID_SURFACE_TECHNICAL_COMPANY,
@@ -9118,7 +9121,23 @@ def _render_technical_scoring_content(
                     fallback_styler_builder=_build_company_drilldown_styler,
                     csv_file_name=f"{state_prefix}_{selected_eod.isoformat()}.csv",
                 )
-                _perf_mark(timings, "company render", t_start)
+
+            _render_drilldown_filter_grid_fragment(
+                company_universe,
+                filter_kwargs=dict(
+                    prefix=state_prefix,
+                    ticker_label="Ticker filter",
+                    include_fundamental_momentum_filter=True,
+                    include_technical_trend_filter=company_trend_enabled,
+                    include_thematic_filter=True,
+                    include_rel_strength_filter=True,
+                    include_rel_volume_filter=True,
+                    include_ma200_distance_filter=screener_mode,
+                    include_ai_exposure_filters=True,
+                    default_action_label="Apply strict filters" if screener_mode else "Reset filters",
+                ),
+                render_results=_drilldown_results,
+            )
             if not screener_mode and st.button("Hide company list", key=f"{state_prefix}_hide_company_list"):
                 _clear_drilldown_selection(state_prefix)
                 st.session_state[drilldown_nonce_key] = drilldown_nonce + 1
@@ -9892,11 +9911,11 @@ def _render_trade_idea_fundamental_filters() -> dict[str, float]:
     if solid_clicked:
         for column in defaults:
             st.session_state[f"trade_ideas_{column}_threshold"] = TRADE_IDEA_SOLID_FUNDAMENTAL_THRESHOLD
-        st.rerun()
+        st.rerun(scope="fragment")
     if reset_clicked:
         for column, default_value in defaults.items():
             st.session_state[f"trade_ideas_{column}_threshold"] = default_value
-        st.rerun()
+        st.rerun(scope="fragment")
     cols = st.columns(4)
     labels = [
         ("fundamental_total_score", "Min FS"),
@@ -10481,8 +10500,61 @@ def _render_trade_ideas_section_picker(section_labels: Sequence[str]) -> str:
                     use_container_width=True,
                 ):
                     st.session_state[state_key] = label
-                    st.rerun()
+                    st.rerun(scope="fragment")
     return selected_section
+
+
+@st.fragment
+def _render_trade_ideas_sections_fragment(
+    company_universe: pd.DataFrame,
+    selected_eod: date,
+) -> None:
+    """Render the Trade Ideas filters, section picker, and selected basket/backtest.
+
+    Wrapped in ``st.fragment`` so changing the fundamental thresholds or the
+    active section reruns only this block instead of the whole app (which would
+    otherwise re-execute every tab and re-serialize all grids on each click).
+    The expensive universe load stays outside the fragment and is keyed off the
+    EOD date input.
+    """
+    fundamental_thresholds = _render_trade_idea_fundamental_filters()
+    section_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest"]
+    selected_section = _render_trade_ideas_section_picker(section_labels)
+    if selected_section == "Backtest":
+        render_board_title_band("Backtest")
+        backtest_thresholds = {
+            column: float(st.session_state.get(f"trade_ideas_{column}_threshold", default_value))
+            for column, default_value in TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS.items()
+        }
+        _render_trade_ideas_backtest(
+            basket_specs=TRADE_IDEA_BASKET_SPECS,
+            fundamental_thresholds=backtest_thresholds,
+        )
+        return
+
+    selected_basket_spec = next(
+        spec for spec in TRADE_IDEA_BASKET_SPECS if str(spec["name"]) == selected_section
+    )
+    basket_key = str(selected_basket_spec["key"])
+    ma200_overlap_tickers: tuple[str, ...] = tuple()
+    if basket_key in {"below_ma200", "around_ma200_weekly"}:
+        ma200_overlap_tickers = _trade_idea_ma200_overlap_tickers(
+            company_universe,
+            selected_eod=selected_eod,
+            fundamental_thresholds=fundamental_thresholds,
+        )
+    render_board_title_band(str(selected_basket_spec["name"]))
+    _render_trade_idea_basket_rules_expander(
+        basket_key=basket_key,
+        fundamental_thresholds=fundamental_thresholds,
+    )
+    _render_trade_idea_basket(
+        basket_spec=selected_basket_spec,
+        company_universe=company_universe,
+        selected_eod=selected_eod,
+        fundamental_thresholds=fundamental_thresholds,
+        overlap_highlight_tickers=ma200_overlap_tickers,
+    )
 
 
 def render_trade_ideas(config: ReportConfig) -> None:
@@ -10539,44 +10611,7 @@ def render_trade_ideas(config: ReportConfig) -> None:
         "Trade Ideas sections",
         "Use the strategy tabs for current candidates, or open Backtest to compare selected strategies across historical report_select dates.",
     )
-    fundamental_thresholds = _render_trade_idea_fundamental_filters()
-    section_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest"]
-    selected_section = _render_trade_ideas_section_picker(section_labels)
-    if selected_section == "Backtest":
-        render_board_title_band("Backtest")
-        backtest_thresholds = {
-            column: float(st.session_state.get(f"trade_ideas_{column}_threshold", default_value))
-            for column, default_value in TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS.items()
-        }
-        _render_trade_ideas_backtest(
-            basket_specs=TRADE_IDEA_BASKET_SPECS,
-            fundamental_thresholds=backtest_thresholds,
-        )
-        return
-
-    selected_basket_spec = next(
-        spec for spec in TRADE_IDEA_BASKET_SPECS if str(spec["name"]) == selected_section
-    )
-    basket_key = str(selected_basket_spec["key"])
-    ma200_overlap_tickers: tuple[str, ...] = tuple()
-    if basket_key in {"below_ma200", "around_ma200_weekly"}:
-        ma200_overlap_tickers = _trade_idea_ma200_overlap_tickers(
-            company_universe,
-            selected_eod=selected_eod,
-            fundamental_thresholds=fundamental_thresholds,
-        )
-    render_board_title_band(str(selected_basket_spec["name"]))
-    _render_trade_idea_basket_rules_expander(
-        basket_key=basket_key,
-        fundamental_thresholds=fundamental_thresholds,
-    )
-    _render_trade_idea_basket(
-        basket_spec=selected_basket_spec,
-        company_universe=company_universe,
-        selected_eod=selected_eod,
-        fundamental_thresholds=fundamental_thresholds,
-        overlap_highlight_tickers=ma200_overlap_tickers,
-    )
+    _render_trade_ideas_sections_fragment(company_universe, selected_eod)
 
 
 def render_watchlist_tab(config: ReportConfig) -> None:
@@ -10703,31 +10738,36 @@ def render_watchlist_tab(config: ReportConfig) -> None:
         default_ai_disruption_risk="All",
         default_beta_range=(0.0, 5.0),
     )
-    filtered_companies = render_company_drilldown_filters(
+    def _watchlist_results(filtered_companies: pd.DataFrame) -> None:
+        st.caption(f"Companies after filters: {len(filtered_companies)}")
+        display_df = format_company_drilldown_display(filtered_companies, sort_by="technical")
+        if display_df.empty:
+            st.info("No watchlist companies match the current filters.")
+            return
+        _render_company_grid(
+            display_df,
+            surface_id=GRID_SURFACE_WATCHLIST_COMPANY,
+            row_height=34,
+            min_height=220,
+            default_row_limit="All",
+            fallback_styler_builder=_build_company_drilldown_styler,
+            csv_file_name=f"watchlist_{selected_eod.isoformat()}.csv",
+        )
+
+    _render_drilldown_filter_grid_fragment(
         watchlist_df,
-        prefix="watchlist",
-        ticker_label="Ticker filter (Watchlist)",
-        include_fundamental_momentum_filter=True,
-        include_technical_trend_filter=previous_ready,
-        include_thematic_filter=True,
-        include_rel_strength_filter=True,
-        include_rel_volume_filter=True,
-        include_ai_exposure_filters=True,
-        include_beta_filter=True,
-    )
-    st.caption(f"Companies after filters: {len(filtered_companies)}")
-    display_df = format_company_drilldown_display(filtered_companies, sort_by="technical")
-    if display_df.empty:
-        st.info("No watchlist companies match the current filters.")
-        return
-    _render_company_grid(
-        display_df,
-        surface_id=GRID_SURFACE_WATCHLIST_COMPANY,
-        row_height=34,
-        min_height=220,
-        default_row_limit="All",
-        fallback_styler_builder=_build_company_drilldown_styler,
-        csv_file_name=f"watchlist_{selected_eod.isoformat()}.csv",
+        filter_kwargs=dict(
+            prefix="watchlist",
+            ticker_label="Ticker filter (Watchlist)",
+            include_fundamental_momentum_filter=True,
+            include_technical_trend_filter=previous_ready,
+            include_thematic_filter=True,
+            include_rel_strength_filter=True,
+            include_rel_volume_filter=True,
+            include_ai_exposure_filters=True,
+            include_beta_filter=True,
+        ),
+        render_results=_watchlist_results,
     )
 
 
@@ -14697,30 +14737,12 @@ def render_thematics_tab(config: ReportConfig) -> None:
             _, regime_warning = _load_market_regime_company_metrics_for_date(reference_date)
             if regime_warning:
                 st.caption(regime_warning)
-            t_start = time.perf_counter()
-            filtered_companies = render_company_drilldown_filters(
-                company_universe,
-                prefix="thematics",
-                ticker_label="Ticker filter (Thematics grid)",
-                include_fundamental_momentum_filter=True,
-                include_technical_trend_filter=bool(previous_ready and previous_report_df is not None),
-                include_thematic_filter=True,
-                include_rel_strength_filter=True,
-                include_rel_volume_filter=True,
-                include_ma200_distance_filter=True,
-                include_ai_exposure_filters=True,
-                include_beta_filter=True,
-                default_action_label="Apply strict filters",
-            )
-            _perf_mark(timings, "company filters", t_start)
-            st.caption(f"Companies after filters: {len(filtered_companies)} of {len(company_universe)}")
-            t_start = time.perf_counter()
-            thematic_display = format_thematics_company_display(filtered_companies)
-            _perf_mark(timings, "company display", t_start)
-            if thematic_display.empty:
-                st.info("No companies matched the current thematic filters.")
-            else:
-                t_start = time.perf_counter()
+            def _thematics_results(filtered_companies: pd.DataFrame) -> None:
+                st.caption(f"Companies after filters: {len(filtered_companies)} of {len(company_universe)}")
+                thematic_display = format_thematics_company_display(filtered_companies)
+                if thematic_display.empty:
+                    st.info("No companies matched the current thematic filters.")
+                    return
                 _render_company_grid(
                     thematic_display,
                     surface_id=GRID_SURFACE_THEMATICS_COMPANY,
@@ -14734,7 +14756,24 @@ def render_thematics_tab(config: ReportConfig) -> None:
                         trend_meta_df=_build_thematics_company_trend_meta(filtered_companies),
                     ),
                 )
-                _perf_mark(timings, "company render", t_start)
+
+            _render_drilldown_filter_grid_fragment(
+                company_universe,
+                filter_kwargs=dict(
+                    prefix="thematics",
+                    ticker_label="Ticker filter (Thematics grid)",
+                    include_fundamental_momentum_filter=True,
+                    include_technical_trend_filter=bool(previous_ready and previous_report_df is not None),
+                    include_thematic_filter=True,
+                    include_rel_strength_filter=True,
+                    include_rel_volume_filter=True,
+                    include_ma200_distance_filter=True,
+                    include_ai_exposure_filters=True,
+                    include_beta_filter=True,
+                    default_action_label="Apply strict filters",
+                ),
+                render_results=_thematics_results,
+            )
             if st.button("Hide thematic company list", key="thematics_hide_company_list"):
                 st.session_state["thematics_impl_selected_basket"] = None
                 _queue_show_all_company_reset("thematics_impl")
