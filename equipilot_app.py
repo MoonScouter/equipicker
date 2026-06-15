@@ -3251,6 +3251,201 @@ def render_utilities_fetch_transcripts_subtab() -> None:
         st.rerun()
 
 
+def _position_sizing_screener_companies(report_path: Path) -> dict[str, str]:
+    """Map each normalized screener ticker to its company name (falling back to the ticker)."""
+    try:
+        report_df = normalize_report_columns(
+            load_report_select(str(report_path), _path_cache_signature(report_path))
+        )
+    except Exception:
+        return {}
+    if "ticker" not in report_df.columns:
+        return {}
+    has_company = "company" in report_df.columns
+    companies: dict[str, str] = {}
+    for _, row in report_df[["ticker"] + (["company"] if has_company else [])].iterrows():
+        ticker = normalize_price_ticker(row.get("ticker"))
+        if not ticker or ticker in companies:
+            continue
+        company_name = str(row.get("company") or "").strip() if has_company else ""
+        companies[ticker] = company_name or _strip_us_suffix(ticker)
+    return dict(sorted(companies.items()))
+
+
+def _compute_position_size(
+    *,
+    ticker: str,
+    total_portfolio_value: float,
+    atr_size: float,
+    max_loss: float,
+    atr_value: object,
+    close_value: object,
+) -> dict:
+    """Size a position from ATR risk.
+
+    ``shares_nb = max_loss / (atr_size * atr)`` and ``estimated_cost = shares_nb * close``.
+    Flags positions whose estimated cost exceeds 105% of the portfolio value.
+    """
+    atr_numeric = pd.to_numeric(atr_value, errors="coerce")
+    close_numeric = pd.to_numeric(close_value, errors="coerce")
+    if pd.isna(atr_numeric) or float(atr_numeric) <= 0.0:
+        return {"ticker": ticker, "error": f"No ATR available for {ticker} in the latest daily prices."}
+    if pd.isna(close_numeric) or float(close_numeric) <= 0.0:
+        return {"ticker": ticker, "error": f"No close price available for {ticker} in the latest daily prices."}
+    risk_per_share = float(atr_size) * float(atr_numeric)
+    if risk_per_share <= 0.0:
+        return {"ticker": ticker, "error": "ATR size and ATR must both be greater than zero."}
+    shares_nb = int(np.floor(float(max_loss) / risk_per_share))
+    estimated_cost = shares_nb * float(close_numeric)
+    budget_ceiling = float(total_portfolio_value) * 1.05
+    return {
+        "ticker": ticker,
+        "shares_nb": shares_nb,
+        "estimated_cost": estimated_cost,
+        "budget_ceiling": budget_ceiling,
+        "over_budget": estimated_cost > budget_ceiling,
+        "error": None,
+    }
+
+
+def render_utilities_position_sizing_subtab() -> None:
+    render_subtab_group_intro(
+        "position_sizing",
+        "Size a position from ATR risk and your portfolio budget, using the latest imported daily prices.",
+    )
+
+    available_dates = get_available_report_select_dates()
+    if not available_dates:
+        st.info("No screener snapshot found. Import a report_select file to use the position sizing calculator.")
+        return
+    eod_date = max(available_dates)
+    report_path, _ = resolve_report_select_path(eod_date)
+    if report_path is None:
+        st.info("The latest screener snapshot could not be located.")
+        return
+
+    company_by_ticker = _position_sizing_screener_companies(report_path)
+    tickers = list(company_by_ticker.keys())
+    if not tickers:
+        st.info("No tickers available in the latest screener snapshot.")
+        return
+
+    daily_prices_path = prices_cache_path("daily", eod_date.year)
+    sizing_features = _load_daily_sizing_features_for_date_cached(
+        eod_date,
+        str(daily_prices_path),
+        _path_cache_signature(daily_prices_path),
+    )
+
+    render_chip_row(
+        [
+            f"Screener EOD: {eod_date.isoformat()}",
+            f"Tickers: {len(tickers)}",
+            f"Daily prices: {daily_prices_path.name}",
+        ]
+    )
+
+    input_cols = st.columns(3)
+    with input_cols[0]:
+        total_portfolio_value = st.number_input(
+            "Total portfolio value ($)",
+            min_value=0.0,
+            value=16000.0,
+            step=500.0,
+            key="pos_sizing_total_value",
+        )
+    with input_cols[1]:
+        atr_size = st.number_input(
+            "ATR size (stop multiple)",
+            min_value=0.1,
+            value=2.0,
+            step=0.5,
+            key="pos_sizing_atr_size",
+        )
+    with input_cols[2]:
+        max_loss = st.number_input(
+            "Max loss ($)",
+            min_value=0.0,
+            value=round(float(total_portfolio_value) * 0.01, 2),
+            step=10.0,
+            key="pos_sizing_max_loss",
+            help="Defaults to 1% of the total portfolio value; edit freely.",
+        )
+
+    ticker_cols = st.columns([1, 2])
+    with ticker_cols[0]:
+        selected_ticker = st.selectbox(
+            "Ticker (from screener)",
+            options=tickers,
+            key="pos_sizing_ticker",
+        )
+    company_name = company_by_ticker.get(selected_ticker, _strip_us_suffix(selected_ticker))
+    with ticker_cols[1]:
+        st.metric("Company", company_name)
+
+    if not sizing_features.empty:
+        feature_row = sizing_features[sizing_features["ticker"] == selected_ticker]
+    else:
+        feature_row = sizing_features
+    if feature_row is not None and not feature_row.empty:
+        row = feature_row.iloc[0]
+        close_value = pd.to_numeric(row.get("last_close"), errors="coerce")
+        atr_value = pd.to_numeric(row.get("atr_14"), errors="coerce")
+        atr_pct_value = pd.to_numeric(row.get("atr_pct"), errors="coerce")
+        close_date_value = row.get("last_close_date")
+    else:
+        close_value = atr_value = atr_pct_value = np.nan
+        close_date_value = None
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Close", _format_close_price_value(close_value))
+    metric_cols[1].metric("Close date", _format_close_date_value(close_date_value))
+    metric_cols[2].metric("ATR", _format_atr_value(atr_value))
+    metric_cols[3].metric("ATR %", _format_atr_pct_value(atr_pct_value))
+
+    current_signature = (
+        selected_ticker,
+        float(total_portfolio_value),
+        float(atr_size),
+        float(max_loss),
+    )
+    if st.button("Compute", type="primary", key="pos_sizing_compute"):
+        result = _compute_position_size(
+            ticker=selected_ticker,
+            total_portfolio_value=float(total_portfolio_value),
+            atr_size=float(atr_size),
+            max_loss=float(max_loss),
+            atr_value=atr_value,
+            close_value=close_value,
+        )
+        result["signature"] = current_signature
+        st.session_state["pos_sizing_result"] = result
+
+    result = st.session_state.get("pos_sizing_result")
+    if not isinstance(result, dict):
+        st.caption("Set your inputs, pick a ticker, then click Compute.")
+        return
+    if result.get("signature") != current_signature:
+        st.caption("Inputs changed since the last calculation — click Compute to refresh.")
+        return
+    if result.get("error"):
+        st.error(result["error"])
+        return
+
+    shares_nb = int(result["shares_nb"])
+    estimated_cost = float(result["estimated_cost"])
+    output_cols = st.columns(2)
+    output_cols[0].metric("Shares to buy", f"{shares_nb:,}")
+    output_cols[1].metric("Estimated cost ($)", f"{estimated_cost:,.2f}")
+    if result.get("over_budget"):
+        st.error(
+            f"Estimated cost ${estimated_cost:,.2f} exceeds 105% of the portfolio value "
+            f"(${float(result['budget_ceiling']):,.2f}). Trim the size or revisit your risk inputs."
+        )
+    elif shares_nb <= 0:
+        st.warning("Max loss is too small for one share at this ATR stop. Increase max loss or lower the ATR size.")
+
+
 def render_utilities_tab() -> None:
     render_subtab_group_intro(
         "Utilities",
@@ -3258,12 +3453,14 @@ def render_utilities_tab() -> None:
     )
     section = st.radio(
         "Utilities section",
-        ["get_splits", "get_dividends", "fetch_transcripts"],
+        ["position_sizing", "get_splits", "get_dividends", "fetch_transcripts"],
         horizontal=True,
         label_visibility="collapsed",
         key="utilities_section",
     )
-    if section == "get_splits":
+    if section == "position_sizing":
+        render_utilities_position_sizing_subtab()
+    elif section == "get_splits":
         render_utilities_get_splits_subtab()
     elif section == "get_dividends":
         render_utilities_get_dividends_subtab()
