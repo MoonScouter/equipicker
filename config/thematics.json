@@ -77,6 +77,7 @@
         "COHR",
         "AAOI",
         "FN",
+        "CRDO",
         "FLEX",
         "P",
         "VICR"
@@ -177,7 +178,8 @@
         "CLS",
         "COHR",
         "AAOI",
-        "FN"
+        "FN",
+        "CRDO"
       ]
     },
     "AI Infra: Server & Compute Hardware": {
@@ -1489,6 +1491,7 @@
       "APH": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
       "TEL": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
       "CLS": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
+      "CRDO": { "ai_revenue_exposure": "direct", "ai_disruption_risk": "none" },
       "NET": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "none" },
       "OKTA": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "low" },
       "TEAM": { "ai_revenue_exposure": "indirect", "ai_disruption_risk": "low" },
