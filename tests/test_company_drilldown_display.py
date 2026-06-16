@@ -560,6 +560,110 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
 
         self.assertEqual(filtered["ticker"].tolist(), ["PASS.US"])
 
+    def test_acceleration_weakening_trade_idea_requires_strong_base_and_one_weakening_signal(self) -> None:
+        base_row = {
+            "market_cap_bucket": "Mid",
+            "fundamental_total_score": 60.0,
+            "fundamental_momentum": 55.0,
+            "fundamental_quality": 58.0,
+            "fundamental_risk": 62.0,
+            "stock_rsi_regime_score": 72.0,
+            "rsi_daily": 71.0,
+            "rsi_weekly": 56.0,
+            "rs_daily": 12.0,
+            "rs_sma20": 10.0,
+            "rs_monthly": -0.05,
+            "obvm_daily": 105.0,
+            "obvm_sma20": 100.0,
+            "obvm_monthly": 0.2,
+            "eod_price_used": 91.0,
+            "sma_daily_20": 100.0,
+            "sma_daily_50": 90.0,
+            "sma_daily_200": 80.0,
+            "stock_rsi_regime_20d_vs_50d_flag": "Positive",
+            "rsi_divergence_daily_flag": "none",
+            "rsi_divergence_weekly_flag": "none",
+        }
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "PASS_FLOW.US", **base_row, "obvm_daily": 100.0},
+                {"ticker": "PASS_RS.US", **base_row, "rs_daily": 10.0},
+                {"ticker": "PASS_CROSS.US", **base_row, "stock_rsi_regime_20d_vs_50d_flag": "Negative"},
+                {"ticker": "PASS_DAILY_DIV.US", **base_row, "rsi_divergence_daily_flag": "negative-confirmed"},
+                {"ticker": "PASS_WEEKLY_DIV.US", **base_row, "rsi_divergence_weekly_flag": "extension-negative"},
+                {"ticker": "FAIL_CLEAN.US", **base_row},
+                {"ticker": "FAIL_BASE.US", **base_row, "rsi_daily": 70.0, "obvm_daily": 100.0},
+                {"ticker": "FAIL_CAP.US", **base_row, "market_cap_bucket": "Micro", "obvm_daily": 100.0},
+            ]
+        )
+
+        filtered = _filter_trade_idea_basket(company_df, "acceleration_weakening")
+
+        self.assertEqual(
+            filtered["ticker"].tolist(),
+            [
+                "PASS_FLOW.US",
+                "PASS_RS.US",
+                "PASS_CROSS.US",
+                "PASS_DAILY_DIV.US",
+                "PASS_WEEKLY_DIV.US",
+            ],
+        )
+
+    def test_pullback_reclaim_requires_uptrend_recovery_and_pullback_trigger(self) -> None:
+        base_row = {
+            "market_cap_bucket": "Mid",
+            "fundamental_total_score": 20.0,
+            "fundamental_momentum": 15.0,
+            "fundamental_quality": 18.0,
+            "fundamental_risk": 12.0,
+            "stock_rsi_regime_score": 62.0,
+            "rsi_daily": 52.0,
+            "rsi_weekly": 48.0,
+            "rs_daily": 99.0,
+            "rs_sma20": 100.0,
+            "rs_monthly": -0.05,
+            "obvm_daily": 105.0,
+            "obvm_sma20": 100.0,
+            "eod_price_used": 91.0,
+            "sma_daily_20": 120.0,
+            "sma_daily_50": 90.0,
+            "sma_daily_200": 80.0,
+            "stock_rsi_regime_20d_vs_50d_flag": "Neutral",
+            "rsi_divergence_daily_flag": "none",
+            "rsi_divergence_weekly_flag": "none",
+            "last_bear_pivot_price": 100.0,
+        }
+        company_df = pd.DataFrame(
+            [
+                {"ticker": "PASS_DAILY_DIV.US", **base_row, "rsi_divergence_daily_flag": "negative-confirmed"},
+                {
+                    "ticker": "PASS_WEEKLY_DIV.US",
+                    **base_row,
+                    "obvm_daily": 99.0,
+                    "rs_daily": 101.0,
+                    "rsi_divergence_weekly_flag": "negative-confirmed",
+                },
+                {"ticker": "PASS_PIVOT.US", **base_row, "last_bear_pivot_price": 110.0},
+                {"ticker": "FAIL_NO_RECOVERY.US", **base_row, "obvm_daily": 99.0},
+                {"ticker": "FAIL_HOT_RSI.US", **base_row, "rsi_daily": 70.0},
+                {"ticker": "FAIL_CROSS.US", **base_row, "stock_rsi_regime_20d_vs_50d_flag": "Negative"},
+                {
+                    "ticker": "FAIL_NO_TRIGGER.US",
+                    **base_row,
+                    "eod_price_used": 91.0,
+                    "rsi_divergence_daily_flag": "negative",
+                },
+            ]
+        )
+
+        filtered = _filter_trade_idea_basket(company_df, "pullback_reclaim")
+
+        self.assertEqual(
+            filtered["ticker"].tolist(),
+            ["PASS_DAILY_DIV.US", "PASS_WEEKLY_DIV.US", "PASS_PIVOT.US"],
+        )
+
     def test_around_ma200_daily_uses_percent_distance_band(self) -> None:
         base_row = {
             "market_cap_bucket": "Mid",

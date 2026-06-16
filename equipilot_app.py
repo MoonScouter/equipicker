@@ -9176,6 +9176,18 @@ TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
         "sort_by": "technical",
     },
     {
+        "key": "acceleration_weakening",
+        "name": "Uptrend Losing Steam",
+        "subtitle": "Strong acceleration base with at least one weakening tell: daily money flow, daily relative strength, RSI-regime cross, or daily/weekly bearish RSI divergence has started to deteriorate.",
+        "sort_by": "technical",
+    },
+    {
+        "key": "pullback_reclaim",
+        "name": "Pullback Reclaim",
+        "subtitle": "Bull-market pullback recovery: aligned uptrend, middle-zone RSI, non-negative RSI-regime cross, and at least one recovery sign from daily money flow or relative strength.",
+        "sort_by": "technical",
+    },
+    {
         "key": "below_ma200",
         "name": "Around MA200 daily",
         "subtitle": "Companies where the daily MA200 distance is between -20% and +10%, with improving short-term structure, money flow, relative strength, RSI regime, and no bearish divergence warnings.",
@@ -9204,7 +9216,7 @@ TRADE_IDEA_DEFAULT_FUNDAMENTAL_THRESHOLDS = {
 TRADE_IDEA_SOLID_FUNDAMENTAL_THRESHOLD = 40.0
 TRADE_IDEA_OCCURRENCE_METADATA_ROW_LIMIT = 200
 TRADE_IDEA_SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Bullish", ("Full Acceleration",)),
+    ("Momentum", ("Full Acceleration", "Uptrend Losing Steam", "Pullback Reclaim")),
     ("Constructive within Bear", ("Around MA200 daily", "Around MA200 weekly", "Positive Divergence")),
     ("Analysis", ("Backtest",)),
 )
@@ -9216,6 +9228,16 @@ def _trade_idea_strategy_description(basket_key: str) -> str:
             "Strategy context: momentum continuation / breakout-strength basket. "
             "It looks for stocks that are already technically strong, with aligned trend, strong RSI, "
             "confirming money flow, improving relative strength, and no bearish divergence warning."
+        ),
+        "acceleration_weakening": (
+            "Strategy context: momentum strength with early deterioration. "
+            "It keeps the same strong acceleration base, but flags names where daily money flow, "
+            "daily relative strength, RSI-regime cross, or RSI divergence is no longer confirming."
+        ),
+        "pullback_reclaim": (
+            "Strategy context: bull-market pullback recovery. "
+            "It looks for stocks with an intact aligned uptrend, cooled-off RSI, and early recovery "
+            "confirmation from either daily money flow or daily relative strength."
         ),
         "below_ma200": (
             "Strategy context: constructive daily 200MA repair. "
@@ -9367,6 +9389,65 @@ def _enrich_trade_ideas_with_daily_atr_vs_ma20(company_df: pd.DataFrame, evaluat
     )
 
 
+@st.cache_data(show_spinner=False)
+def _load_daily_last_bear_pivot_for_date_cached(
+    evaluation_date: date,
+    daily_prices_path_str: str,
+    daily_prices_signature: str,
+) -> pd.DataFrame:
+    del daily_prices_signature
+    empty_columns = ["ticker", "last_bear_pivot_price"]
+    daily_prices_path = Path(daily_prices_path_str)
+    if not daily_prices_path.exists():
+        return pd.DataFrame(columns=empty_columns)
+    daily_prices = load_prices_cache_file(str(daily_prices_path), _path_cache_signature(daily_prices_path))
+    required_columns = {"ticker", "date", "rsi_divergence_last_pivot_type", "rsi_divergence_last_pivot_price"}
+    if daily_prices.empty or not required_columns.issubset(daily_prices.columns):
+        return pd.DataFrame(columns=empty_columns)
+    working = daily_prices[list(required_columns)].copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["rsi_divergence_last_pivot_type"] = (
+        working["rsi_divergence_last_pivot_type"].fillna("").astype(str).str.strip().str.lower()
+    )
+    working["last_bear_pivot_price"] = pd.to_numeric(
+        working["rsi_divergence_last_pivot_price"], errors="coerce"
+    )
+    working = working[
+        (working["ticker"].astype(str).str.len() > 0)
+        & working["date"].notna()
+        & (working["date"] <= evaluation_date)
+        & (working["rsi_divergence_last_pivot_type"] == "bear")
+    ].dropna(subset=["last_bear_pivot_price"])
+    if working.empty:
+        return pd.DataFrame(columns=empty_columns)
+    return (
+        working.sort_values(["ticker", "date"], kind="stable")
+        .drop_duplicates(subset=["ticker"], keep="last")
+        .loc[:, empty_columns]
+        .reset_index(drop=True)
+    )
+
+
+def _enrich_trade_ideas_with_daily_last_bear_pivot(company_df: pd.DataFrame, evaluation_date: date) -> pd.DataFrame:
+    enriched = company_df.copy()
+    if "last_bear_pivot_price" not in enriched.columns:
+        enriched["last_bear_pivot_price"] = np.nan
+    daily_prices_path = prices_cache_path("daily", evaluation_date.year)
+    pivot_df = _load_daily_last_bear_pivot_for_date_cached(
+        evaluation_date,
+        str(daily_prices_path),
+        _path_cache_signature(daily_prices_path),
+    )
+    if pivot_df.empty:
+        return enriched
+    return enriched.drop(columns=["last_bear_pivot_price"], errors="ignore").merge(
+        pivot_df,
+        on="ticker",
+        how="left",
+    )
+
+
 _DAILY_SIZING_FEATURE_COLUMNS = ["ticker", "atr_14", "atr_pct", "last_close", "last_close_date"]
 
 
@@ -9512,9 +9593,11 @@ def _filter_trade_idea_basket(
     sma200 = _trade_ideas_num(df, "sma_daily_200")
     daily_ma200_distance = _trade_ideas_num(df, "dist_to_ma200")
     weekly_ma200_distance = _trade_ideas_num(df, "dist_to_ma200_weekly")
+    last_bear_pivot_price = _trade_ideas_num(df, "last_bear_pivot_price")
     rsi_regime_cross = _trade_ideas_text(df, "stock_rsi_regime_20d_vs_50d_flag")
 
     bearish_divergence = {"negative", "negative-confirmed", "extension-negative"}
+    confirmed_bearish_divergence = {"negative-confirmed"}
     bullish_divergence = {"positive"}
 
     if basket_key == "acceleration":
@@ -9537,6 +9620,54 @@ def _filter_trade_idea_basket(
         m &= sma50 >= sma200
         m &= rsi_regime_cross != "negative"
         m &= _trade_ideas_no_divergence(df, bearish_divergence)
+    elif basket_key == "acceleration_weakening":
+        weakening_signal = (
+            (obvm_d <= obvm_sma)
+            | (rs_d <= rs_sma)
+            | (rsi_regime_cross == "negative")
+            | _trade_ideas_any_divergence(df, bearish_divergence)
+        )
+        m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large", "Mega"})
+        m &= fs >= float(thresholds["fundamental_total_score"])
+        m &= risk >= float(thresholds["fundamental_risk"])
+        m &= quality >= float(thresholds["fundamental_quality"])
+        m &= fm >= float(thresholds["fundamental_momentum"])
+        m &= rsi_regime > 70
+        m &= rsi_w > 55
+        m &= rsi_d > 70
+        m &= rs_m > -0.1
+        m &= obvm_m > 0
+        m &= price > (0.9 * sma20)
+        m &= price > sma50
+        m &= price > sma200
+        m &= sma20 >= sma50
+        m &= sma50 >= sma200
+        m &= weakening_signal
+    elif basket_key == "pullback_reclaim":
+        recovery_signal = (obvm_d > obvm_sma) | (rs_d > rs_sma)
+        pullback_signal = (
+            _trade_ideas_any_divergence(df, confirmed_bearish_divergence)
+            | (price < (0.9 * last_bear_pivot_price))
+        )
+        m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large", "Mega"})
+        m &= fs >= float(thresholds["fundamental_total_score"])
+        m &= risk >= float(thresholds["fundamental_risk"])
+        m &= quality >= float(thresholds["fundamental_quality"])
+        m &= fm >= float(thresholds["fundamental_momentum"])
+        m &= price > (0.7 * sma20)
+        m &= price > sma50
+        m &= price > sma200
+        m &= sma20 >= sma50
+        m &= sma50 >= sma200
+        m &= recovery_signal
+        m &= rs_m > -0.1
+        m &= rsi_d > 40
+        m &= rsi_d < 70
+        m &= rsi_w > 30
+        m &= rsi_w < 70
+        m &= rsi_regime > 60
+        m &= rsi_regime_cross != "negative"
+        m &= pullback_signal
     elif basket_key == "below_ma200":
         m &= _trade_ideas_ma200_setup_mask(
             df,
@@ -9693,6 +9824,7 @@ def _trade_idea_membership_for_date(
         return tuple()
     company_universe, _rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
     company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, evaluation_date)
+    company_universe = _enrich_trade_ideas_with_daily_last_bear_pivot(company_universe, evaluation_date)
     basket_df = _filter_trade_idea_basket(
         company_universe,
         basket_key,
@@ -9851,6 +9983,7 @@ def _render_trade_idea_basket(
             f"Green-bordered tickers also appear in the other MA200 basket ({len(overlap_highlight_tickers)} overlap)."
         )
     company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, selected_eod)
+    company_universe = _enrich_trade_ideas_with_daily_last_bear_pivot(company_universe, selected_eod)
     company_universe = _enrich_trade_ideas_with_daily_atr_vs_ma20(company_universe, selected_eod)
     ideas_df = _filter_trade_idea_basket(
         company_universe,
@@ -10037,6 +10170,94 @@ Relative performance vs S&P 500
 
 Momentum / regime
 - stock_rsi_regime_20d_vs_50d_flag is not Negative
+```
+                """
+            )
+            render_strategy_context()
+            return
+        if basket_key == "acceleration_weakening":
+            st.markdown(
+                f"""
+```text
+Universe
+- Market cap bucket: Small, Mid, Large, Mega
+- Excluded: Nano, Micro
+
+Fundamental overlays
+- Fundamental total score >= {fundamental_thresholds['fundamental_total_score']:.0f}
+- Risk score >= {fundamental_thresholds['fundamental_risk']:.0f}
+- Quality score >= {fundamental_thresholds['fundamental_quality']:.0f}
+- Fundamental momentum score >= {fundamental_thresholds['fundamental_momentum']:.0f}
+
+Trend structure
+- eod_price_used > 0.9 * sma_daily_20
+- eod_price_used > sma_daily_50
+- eod_price_used > sma_daily_200
+- sma_daily_20 >= sma_daily_50
+- sma_daily_50 >= sma_daily_200
+
+Money flow
+- obvm_monthly > 0
+
+Relative performance vs S&P 500
+- rs_monthly > -0.1
+
+Momentum / regime
+- rsi_daily > 70
+- rsi_weekly > 55
+- stock_rsi_regime_score > 70
+
+Weakening trigger, one of:
+- obvm_daily <= obvm_sma20
+- rs_daily <= rs_sma20
+- stock_rsi_regime_20d_vs_50d_flag is Negative
+- Daily RSI divergence is Negative, Negative - Confirmed, or Negative Extension
+- Weekly RSI divergence is Negative, Negative - Confirmed, or Negative Extension
+```
+                """
+            )
+            render_strategy_context()
+            return
+        if basket_key == "pullback_reclaim":
+            st.markdown(
+                f"""
+```text
+Universe
+- Market cap bucket: Small, Mid, Large, Mega
+- Excluded: Nano, Micro
+
+Fundamental overlays
+- Fundamental total score >= {fundamental_thresholds['fundamental_total_score']:.0f}
+- Risk score >= {fundamental_thresholds['fundamental_risk']:.0f}
+- Quality score >= {fundamental_thresholds['fundamental_quality']:.0f}
+- Fundamental momentum score >= {fundamental_thresholds['fundamental_momentum']:.0f}
+
+Trend structure
+- eod_price_used > 0.7 * sma_daily_20
+- eod_price_used > sma_daily_50
+- eod_price_used > sma_daily_200
+- sma_daily_20 >= sma_daily_50
+- sma_daily_50 >= sma_daily_200
+
+Recovery confirmation, one of:
+- obvm_daily > obvm_sma20
+- rs_daily > rs_sma20
+
+Relative performance vs S&P 500
+- rs_monthly > -0.1
+
+Momentum / regime
+- rsi_daily > 40
+- rsi_daily < 70
+- rsi_weekly > 30
+- rsi_weekly < 70
+- stock_rsi_regime_score > 60
+- stock_rsi_regime_20d_vs_50d_flag is not Negative
+
+Pullback trigger, one of:
+- Daily RSI divergence is Negative - Confirmed
+- Weekly RSI divergence is Negative - Confirmed
+- eod_price_used < 0.9 * last_bear_pivot_price
 ```
                 """
             )
@@ -10304,6 +10525,7 @@ def _build_trade_ideas_backtest_matrix(
             continue
         company_universe, rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
         company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, evaluation_date)
+        company_universe = _enrich_trade_ideas_with_daily_last_bear_pivot(company_universe, evaluation_date)
         for spec in basket_specs:
             basket_name = str(spec["name"])
             basket_df = _filter_trade_idea_basket(
@@ -15403,9 +15625,9 @@ def _trade_ideas_preferred_columns(basket_key: Optional[str] = None) -> list[str
     preferred_columns = list(COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS)
     insert_at = preferred_columns.index("Industry") + 1 if "Industry" in preferred_columns else len(preferred_columns)
     occurrence_columns = ["First Seen", "Consecutive Appearances"]
-    # The ATR-vs-MA20 extension columns are surfaced by default only on the Full
-    # Acceleration grid, placed right after the occurrence columns / before Market Cap.
-    if basket_key == "acceleration":
+    # The ATR-vs-MA20 extension columns are surfaced by default on acceleration
+    # grids, placed right after the occurrence columns / before Market Cap.
+    if basket_key in {"acceleration", "acceleration_weakening", "pullback_reclaim"}:
         occurrence_columns += ["ATR vs 20D daily", "Extension"]
     for column_name in occurrence_columns:
         if column_name not in preferred_columns:
