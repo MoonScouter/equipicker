@@ -4344,11 +4344,11 @@ def _use_fast_company_grid_render(row_count: int) -> bool:
 
 
 def _company_grid_layout_storage_key(surface_id: str) -> str:
-    return f"equipicker.company_grid_layout.v7.{surface_id}"
+    return f"equipicker.company_grid_layout.v8.{surface_id}"
 
 
 def _company_grid_visible_columns_surface_id(surface_id: str) -> str:
-    return f"{surface_id}_company_visible_columns_v7"
+    return f"{surface_id}_company_visible_columns_v8"
 
 
 def _company_grid_layout_reset_pending_key(surface_id: str) -> str:
@@ -4389,8 +4389,10 @@ def _company_grid_data_signature(display_df: pd.DataFrame) -> str:
     return hashlib.md5(hashed_values).hexdigest()[:12]
 
 
-def _company_grid_column_checkbox_key(surface_id: str, index: int) -> str:
-    return f"{surface_id}_company_grid_column_{index}"
+def _company_grid_column_checkbox_key(surface_id: str, column_name: str) -> str:
+    # Keyed by column name (not position) so the checkbox state stays bound to the right
+    # column when the visible column set changes - e.g. when new columns are introduced.
+    return f"{surface_id}_company_grid_colvis_{column_name}"
 
 
 def _company_grid_pinned_columns_key(surface_id: str) -> str:
@@ -4438,8 +4440,8 @@ def _apply_pending_company_grid_layout_reset(surface_id: str, available_columns:
     layout_surface_id = _company_grid_visible_columns_surface_id(surface_id)
     st.session_state.pop(_grid_layout_state_key(layout_surface_id), None)
     st.session_state.pop(_company_grid_pinned_columns_key(surface_id), None)
-    for index, _column_name in enumerate(list(available_columns or [])):
-        st.session_state.pop(_company_grid_column_checkbox_key(surface_id, index), None)
+    for _column_name in list(available_columns or []):
+        st.session_state.pop(_company_grid_column_checkbox_key(surface_id, _column_name), None)
 
 
 def _build_company_grid_options(
@@ -5097,7 +5099,7 @@ def _render_company_grid_column_selector(
         checkbox_columns = st.columns(5)
         selected_lookup: dict[str, bool] = {}
         for index, column_name in enumerate(available):
-            checkbox_key = _company_grid_column_checkbox_key(surface_id, index)
+            checkbox_key = _company_grid_column_checkbox_key(surface_id, column_name)
             if checkbox_key not in st.session_state:
                 st.session_state[checkbox_key] = column_name in visible_columns
             with checkbox_columns[index % len(checkbox_columns)]:
@@ -10970,16 +10972,35 @@ def _render_trade_ideas_backtest(
 
 
 def _trade_idea_score_entry_flavor(basket_key: str) -> str:
+    """Detailed, formula-level explanation of the Entry sub-score for a basket.
+
+    Mirrors the computation in ``_compute_trade_idea_setup_scores``. ``atr_vs_ma20`` is
+    `(close − 20MA) ÷ ATR14`, i.e. how many ATRs price sits above (or below) the 20-day MA.
+    Every part uses a clamped linear map ``f(x; lo, hi) = clip((x − lo) ÷ (hi − lo), 0, 1) × 100``;
+    a missing input scores a neutral 50 on that part.
+    """
+    cap = TRADE_IDEA_EXTENSION_ATR_CAP
     if basket_key in {"acceleration", "acceleration_weakening"}:
         return (
-            "Controlled extension — rewards a low `atr_vs_ma20` (capped at "
-            f"{TRADE_IDEA_EXTENSION_ATR_CAP:.0f} ATRs above the 20MA) blended with "
-            "strong-but-not-parabolic daily RSI (mapped 50 → 85). Biases toward names with "
-            "room left to run rather than already-stretched ones."
+            "Momentum entry — the average of two 0–100 parts, biasing toward names with room "
+            "left to run rather than already-stretched ones:\n\n"
+            f"- **Controlled extension** = `f(atr_vs_ma20; {cap:.0f}, 0)` — i.e. "
+            f"`clip(({cap:.0f} − atr_vs_ma20) ÷ {cap:.0f}, 0, 1) × 100`. "
+            f"Right at the 20MA (`atr_vs_ma20` = 0) → **100**; at the {cap:.0f}-ATR cap → **0**; "
+            "below the 20MA (negative) → **100** (still a clean entry). Lower extension scores higher.\n"
+            "- **Momentum** = `f(rsi_daily; 50, 85)` — daily RSI mapped 50 → 85 onto 0 → 100. "
+            "RSI ≤ 50 → 0, ≥ 85 → 100 (strong but capped, so the most overbought names do not dominate).\n"
+            "- **Entry = (controlled extension + momentum) ÷ 2.**"
         )
     return (
-        "Proximity to the 20-day MA — rewards a small `|atr_vs_ma20|` (price near/just "
-        "reclaiming the 20MA) blended with daily RSI reclaiming the 35 → 55 zone."
+        "Repair/pullback entry — the average of two 0–100 parts, rewarding price near a "
+        "reclaim rather than far from the 20MA:\n\n"
+        f"- **Proximity to the 20MA** = `100 − f(|atr_vs_ma20|; 0, {cap:.0f})` — i.e. "
+        f"`100 − clip(|atr_vs_ma20| ÷ {cap:.0f}, 0, 1) × 100`. "
+        f"At the 20MA (`|atr_vs_ma20|` = 0) → **100**; {cap:.0f}+ ATRs away on **either** side → **0**.\n"
+        "- **RSI reclaim** = `f(rsi_daily; 35, 55)` — daily RSI mapped 35 → 55 onto 0 → 100. "
+        "RSI ≤ 35 → 0, ≥ 55 → 100 (rewards momentum turning back up out of the pullback zone).\n"
+        "- **Entry = (proximity + RSI reclaim) ÷ 2.**"
     )
 
 
@@ -11002,7 +11023,7 @@ input scores a neutral 50.
 **Sub-scores (each 0–100; `pct_rank` = percentile across the liquid universe):**
 - **RS** — average of `pct_rank(rs_daily)`, `pct_rank(rs_daily − rs_sma20)` (RS turning up), `pct_rank(rs_monthly)`.
 - **Flow** — average of `pct_rank(obvm_daily − obvm_sma20)`, `pct_rank(obvm_weekly)`, `pct_rank(obvm_monthly)`.
-- **Trend** — `pct_rank` of MA separation `0.5·(price/SMA200 − 1) + 0.5·(SMA50/SMA200 − 1)`, blended with the RSI regime score.
+- **Trend** — the **equal-weight average of two 0–100 parts**: (1) `pct_rank` of MA separation `0.5·(price/SMA200 − 1) + 0.5·(SMA50/SMA200 − 1)` — how far price and the 50-day MA sit above the 200-day MA, ranked across the liquid universe; and (2) the **RSI regime score** (`stock_rsi_regime_score`) used **directly** — it is already a 0–100 score, so it is *not* percentile-ranked, only clamped to 0–100 (missing → 50). `Trend = (pct_rank(MA separation) + RSI regime score) / 2`, so trend strength and regime persistence each contribute half.
 - **Entry** — basket-shaped (see each basket below).
         """
     )
@@ -11020,9 +11041,8 @@ input scores a neutral 50.
                     "Weakening tells: daily OBVM ≤ its SMA, daily RS ≤ its SMA, negative "
                     "RSI-regime cross, or bearish RSI divergence."
                 )
-                st.markdown(
-                    f"**Entry sub-score (shown for context):** {_trade_idea_score_entry_flavor(basket_key)}"
-                )
+                st.markdown("**Entry sub-score** (computed but not used in this basket's ranking)")
+                st.markdown(_trade_idea_score_entry_flavor(basket_key))
                 continue
             weights = TRADE_IDEA_SCORE_WEIGHTS.get(basket_key, {})
             if weights:
@@ -11031,7 +11051,8 @@ input scores a neutral 50.
                     f"RS `{weights['rs']:.2f}` · Flow `{weights['flow']:.2f}` · "
                     f"Trend `{weights['trend']:.2f}` · Entry `{weights['entry']:.2f}`"
                 )
-            st.markdown(f"**Entry sub-score:** {_trade_idea_score_entry_flavor(basket_key)}")
+            st.markdown("**Entry sub-score**")
+            st.markdown(_trade_idea_score_entry_flavor(basket_key))
     st.caption(
         "Tuning knobs (equipilot_app.py): TRADE_IDEA_MIN_ADV_USD, "
         "TRADE_IDEA_EXTENSION_ATR_CAP, TRADE_IDEA_SCORE_WEIGHTS. "

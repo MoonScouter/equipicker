@@ -82,13 +82,29 @@ liquid universe** (`Series.rank(pct=True)`), which turns unitless levels like `r
   medium-term `pct_rank(rs_monthly)`.
 - **Flow** — money flow: `pct_rank(obvm_daily − obvm_sma20)`, `pct_rank(obvm_weekly)`,
   `pct_rank(obvm_monthly)`.
-- **Trend** — `pct_rank` of MA separation `0.5·(price/SMA200−1) + 0.5·(SMA50/SMA200−1)`
-  blended with the RSI regime score.
+- **Trend** — equal-weight average of two 0–100 parts:
+  1. `pct_rank` of MA separation `0.5·(price/SMA200−1) + 0.5·(SMA50/SMA200−1)` (how far price
+     and the 50-day MA sit above the 200-day MA, ranked across the liquid universe), and
+  2. the **RSI regime score** (`stock_rsi_regime_score`) used **directly** — it is already a
+     0–100 score, so it is *not* percentile-ranked, only clamped to 0–100 (missing → 50).
+
+  `Trend = (pct_rank(MA separation) + RSI regime score) / 2` — trend strength and regime
+  persistence each contribute half.
 - **Entry** — basket-shaped:
-  - *Momentum baskets* (acceleration, weakening): reward **controlled extension**
-    (`(CAP − atr_vs_ma20)/CAP`) and strong-but-not-parabolic RSI (`rsi_daily` mapped 50→85).
-  - *Repair / pullback / divergence baskets*: reward **proximity to the 20-MA** and RSI
-    reclaiming the 35→55 zone.
+  Entry is basket-shaped and is the **average of two 0–100 parts**. Each part uses a
+  clamped linear map `f(x; lo, hi) = clip((x − lo) / (hi − lo), 0, 1) × 100`, and a missing
+  input scores a neutral 50 on that part. `atr_vs_ma20 = (close − 20MA) / ATR14` (ATRs above
+  the 20-day MA); `CAP = TRADE_IDEA_EXTENSION_ATR_CAP` (default 4).
+  - *Momentum baskets* (acceleration, weakening):
+    - **Controlled extension** = `f(atr_vs_ma20; CAP, 0)` = `clip((CAP − atr_vs_ma20)/CAP, 0, 1) × 100`.
+      At the 20MA (0) → 100; at the CAP → 0; below the 20MA → 100. Lower extension scores higher.
+    - **Momentum** = `f(rsi_daily; 50, 85)`. RSI ≤ 50 → 0, ≥ 85 → 100 (strong but capped).
+    - Entry = (controlled extension + momentum) / 2.
+  - *Repair / pullback / divergence baskets*:
+    - **Proximity to the 20-MA** = `100 − f(|atr_vs_ma20|; 0, CAP)`. At the 20MA → 100;
+      CAP+ ATRs away on either side → 0.
+    - **RSI reclaim** = `f(rsi_daily; 35, 55)`. RSI ≤ 35 → 0, ≥ 55 → 100.
+    - Entry = (proximity + RSI reclaim) / 2.
 
 ### Composite weights per basket (`TRADE_IDEA_SCORE_WEIGHTS`)
 
