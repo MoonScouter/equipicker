@@ -7770,11 +7770,19 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             ]
         )
 
-    if sort_by == "fundamental":
-        sort_columns = ["fundamental_total_score", "general_technical_score"]
+    if sort_by == "setup_score":
+        candidate_sort = ["trade_idea_setup_score", "general_technical_score", "fundamental_total_score"]
+    elif sort_by == "fundamental":
+        candidate_sort = ["fundamental_total_score", "general_technical_score"]
     else:
-        sort_columns = ["general_technical_score", "fundamental_total_score"]
-    sorted_df = company_df.sort_values(by=sort_columns, ascending=[False, False], na_position="last").copy()
+        candidate_sort = ["general_technical_score", "fundamental_total_score"]
+    sort_columns = [column for column in candidate_sort if column in company_df.columns]
+    if sort_columns:
+        sorted_df = company_df.sort_values(
+            by=sort_columns, ascending=[False] * len(sort_columns), na_position="last"
+        ).copy()
+    else:
+        sorted_df = company_df.copy()
     if "company" in sorted_df.columns:
         sorted_df["company"] = sorted_df["company"].fillna("").astype(str).str.strip()
         sorted_df["company"] = sorted_df["company"].where(sorted_df["company"].str.len() > 0, sorted_df["ticker"])
@@ -7935,6 +7943,22 @@ def format_company_drilldown_display(company_df: pd.DataFrame, *, sort_by: str) 
             "Consecutive Appearances",
             pd.to_numeric(sorted_df["trade_idea_streak_count"], errors="coerce").fillna(1).astype(int),
         )
+    if "trade_idea_setup_score" in sorted_df.columns:
+        score_inserts = [
+            ("Setup Score", "trade_idea_setup_score"),
+            ("RS Score", "trade_idea_score_rs"),
+            ("Flow Score", "trade_idea_score_flow"),
+            ("Trend Score", "trade_idea_score_trend"),
+            ("Entry Score", "trade_idea_score_entry"),
+        ]
+        for score_offset, (score_label, score_column) in enumerate(score_inserts):
+            display_df.insert(
+                3 + score_offset,
+                score_label,
+                pd.to_numeric(sorted_df.get(score_column), errors="coerce").to_numpy(),
+            )
+        for score_label, _ in score_inserts:
+            display_df[score_label] = display_df[score_label].map(_format_numeric_value)
     display_df["Market Cap"] = display_df["Market Cap"].map(_format_market_cap_display)
     display_df["Beta"] = display_df["Beta"].map(_format_numeric_value)
     display_df["ATR vs 20D daily"] = display_df["ATR vs 20D daily"].map(_format_numeric_value)
@@ -9172,38 +9196,38 @@ TRADE_IDEA_BASKET_SPECS: list[dict[str, object]] = [
     {
         "key": "acceleration",
         "name": "Full Acceleration",
-        "subtitle": "Early bullish acceleration: price close to/above aligned moving averages, sustained/current money flow, improving relative strength, strong RSI momentum, bullish RSI regime, non-negative RSI regime cross, and no bearish divergence lifecycle warnings.",
-        "sort_by": "technical",
+        "subtitle": "Early bullish acceleration with a reasonable entry: price at/above the 20-day MA but not stretched (extension capped in ATRs), aligned trend, positive monthly relative strength, sustained money flow, strong RSI momentum, bullish RSI regime, non-negative RSI regime cross, no bearish divergence, and liquid enough to trade. Ranked by Setup Score (best to trade first).",
+        "sort_by": "setup_score",
     },
     {
         "key": "acceleration_weakening",
         "name": "Uptrend Losing Steam",
-        "subtitle": "Strong acceleration base with at least one weakening tell: daily money flow, daily relative strength, RSI-regime cross, or daily/weekly bearish RSI divergence has started to deteriorate.",
-        "sort_by": "technical",
+        "subtitle": "Watch/trim list: strong acceleration base with at least one weakening tell (daily money flow, daily relative strength, RSI-regime cross, or bearish RSI divergence starting to deteriorate). Ranked by deterioration severity — names cracking hardest appear first.",
+        "sort_by": "setup_score",
     },
     {
         "key": "pullback_reclaim",
         "name": "Pullback Reclaim",
         "subtitle": "Bull-market pullback recovery: aligned uptrend, middle-zone RSI, non-negative RSI-regime cross, and at least one recovery sign from daily money flow or relative strength.",
-        "sort_by": "technical",
+        "sort_by": "setup_score",
     },
     {
         "key": "below_ma200",
         "name": "Around MA200 daily",
         "subtitle": "Companies where the daily MA200 distance is between -20% and +10%, with improving short-term structure, money flow, relative strength, RSI regime, and no bearish divergence warnings.",
-        "sort_by": "fundamental",
+        "sort_by": "setup_score",
     },
     {
         "key": "around_ma200_weekly",
         "name": "Around MA200 weekly",
         "subtitle": "Companies where the weekly MA200 distance is between -20% and +10%, with the same constructive trend-repair guardrails as the daily MA200 setup.",
-        "sort_by": "fundamental",
+        "sort_by": "setup_score",
     },
     {
         "key": "positive_divergence_bottoming",
         "name": "Positive Divergence",
         "subtitle": "Early bottoming watchlist: positive RSI divergence on daily or weekly, improving money flow, improving relative strength, and a non-negative RSI regime cross.",
-        "sort_by": "technical",
+        "sort_by": "setup_score",
     },
 ]
 
@@ -9218,7 +9242,7 @@ TRADE_IDEA_OCCURRENCE_METADATA_ROW_LIMIT = 200
 TRADE_IDEA_SECTION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Momentum", ("Full Acceleration", "Uptrend Losing Steam", "Pullback Reclaim")),
     ("Constructive within Bear", ("Around MA200 daily", "Around MA200 weekly", "Positive Divergence")),
-    ("Analysis", ("Backtest",)),
+    ("Analysis", ("Backtest", "Setup Score")),
 )
 
 
@@ -9520,6 +9544,77 @@ def _enrich_company_universe_with_daily_sizing_features(
     )
 
 
+TRADE_IDEA_ADV_WINDOW = 20
+
+
+@st.cache_data(show_spinner=False)
+def _load_daily_adv_for_date_cached(
+    evaluation_date: date,
+    daily_prices_path_str: str,
+    daily_prices_signature: str,
+) -> pd.DataFrame:
+    """Trailing average dollar volume (ADV) per ticker as of ``evaluation_date``.
+
+    ADV is ``mean(volume * adjusted_close)`` over the most recent
+    ``TRADE_IDEA_ADV_WINDOW`` daily bars. Returns an empty frame when the cache
+    predates the volume column (or otherwise lacks it) so the liquidity gate can
+    degrade to a no-op instead of emptying every basket.
+    """
+    del daily_prices_signature
+    empty = pd.DataFrame(columns=["ticker", "adv_usd_20"])
+    daily_prices_path = Path(daily_prices_path_str)
+    if not daily_prices_path.exists():
+        return empty
+    daily_prices = load_prices_cache_file(str(daily_prices_path), _path_cache_signature(daily_prices_path))
+    if (
+        daily_prices.empty
+        or "volume" not in daily_prices.columns
+        or "adjusted_close" not in daily_prices.columns
+    ):
+        return empty
+    working = daily_prices[["ticker", "date", "volume", "adjusted_close"]].copy()
+    working["ticker"] = working["ticker"].map(normalize_price_ticker)
+    working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.date
+    working["volume"] = pd.to_numeric(working["volume"], errors="coerce")
+    working["adjusted_close"] = pd.to_numeric(working["adjusted_close"], errors="coerce")
+    working = working.dropna(subset=["ticker", "date"])
+    working = working[working["date"] <= evaluation_date]
+    if working.empty or int(working["volume"].notna().sum()) == 0:
+        return empty
+    working["dollar_volume"] = working["volume"] * working["adjusted_close"]
+    working = working.sort_values(["ticker", "date"], kind="stable")
+    tail = working.groupby("ticker", sort=False).tail(TRADE_IDEA_ADV_WINDOW)
+    adv = (
+        tail.groupby("ticker", sort=False)["dollar_volume"]
+        .mean()
+        .reset_index()
+        .rename(columns={"dollar_volume": "adv_usd_20"})
+        .dropna(subset=["adv_usd_20"])
+    )
+    if adv.empty:
+        return empty
+    return adv.loc[:, ["ticker", "adv_usd_20"]].reset_index(drop=True)
+
+
+def _enrich_trade_ideas_with_daily_adv(company_df: pd.DataFrame, evaluation_date: date) -> pd.DataFrame:
+    enriched = company_df.copy()
+    if "adv_usd_20" not in enriched.columns:
+        enriched["adv_usd_20"] = np.nan
+    daily_prices_path = prices_cache_path("daily", evaluation_date.year)
+    adv_df = _load_daily_adv_for_date_cached(
+        evaluation_date,
+        str(daily_prices_path),
+        _path_cache_signature(daily_prices_path),
+    )
+    if adv_df.empty:
+        return enriched
+    return enriched.drop(columns=["adv_usd_20"], errors="ignore").merge(
+        adv_df,
+        on="ticker",
+        how="left",
+    )
+
+
 def _trade_ideas_base_mask(df: pd.DataFrame) -> pd.Series:
     return pd.Series(True, index=df.index)
 
@@ -9562,6 +9657,160 @@ def _trade_ideas_ma200_setup_mask(
     )
 
 
+# --- Liquidity & entry-quality gates -------------------------------------------------
+# Minimum 20-session average dollar volume (price x shares) for a name to be tradeable.
+# Applied to every basket. Degrades to a no-op when the price cache predates the volume
+# column so a stale cache cannot silently empty the Trade Ideas tab.
+TRADE_IDEA_MIN_ADV_USD = 5_000_000.0
+# Maximum allowed extension above the 20-day MA, measured in ATRs ((close - ma20) / atr14).
+# Keeps the acceleration basket from chasing parabolic names and biases it toward
+# reasonable entries.
+TRADE_IDEA_EXTENSION_ATR_CAP = 4.0
+
+# --- Setup score (ranking layer) ------------------------------------------------------
+# Per-basket weights for the four transparent sub-scores (RS / Flow / Trend / Entry).
+# Each weight set sums to 1.0. "acceleration_weakening" is intentionally absent: it is a
+# watch/trim list, so it is ranked by deterioration severity instead (most-cracking
+# names first) via _trade_idea_deterioration_score.
+TRADE_IDEA_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
+    "acceleration": {"rs": 0.30, "flow": 0.25, "trend": 0.25, "entry": 0.20},
+    "pullback_reclaim": {"rs": 0.25, "flow": 0.25, "trend": 0.25, "entry": 0.25},
+    "below_ma200": {"rs": 0.25, "flow": 0.25, "trend": 0.30, "entry": 0.20},
+    "around_ma200_weekly": {"rs": 0.25, "flow": 0.25, "trend": 0.30, "entry": 0.20},
+    "positive_divergence_bottoming": {"rs": 0.25, "flow": 0.25, "trend": 0.20, "entry": 0.30},
+}
+TRADE_IDEA_SCORE_COLUMNS: tuple[str, ...] = (
+    "trade_idea_setup_score",
+    "trade_idea_score_rs",
+    "trade_idea_score_flow",
+    "trade_idea_score_trend",
+    "trade_idea_score_entry",
+)
+
+
+def _pct_rank_0_100(series: pd.Series) -> pd.Series:
+    """Cross-sectional percentile rank in [0, 100]; missing values map to a neutral 50."""
+    ranked = series.rank(pct=True) * 100.0
+    return ranked.fillna(50.0)
+
+
+def _clamp_linear_0_100(series: pd.Series, low: float, high: float) -> pd.Series:
+    """Linearly map [low, high] -> [0, 100], clamped; missing values map to a neutral 50."""
+    if high == low:
+        return pd.Series(50.0, index=series.index)
+    scaled = (series - low) / (high - low) * 100.0
+    return scaled.clip(lower=0.0, upper=100.0).fillna(50.0)
+
+
+def _trade_idea_deterioration_score(universe_df: pd.DataFrame) -> pd.Series:
+    """Severity of the weakening tells for the 'Uptrend Losing Steam' watch list.
+
+    Higher = the strong-acceleration base is cracking harder, so the name should surface
+    first for trim/exit review. Blends how many tells have fired (count) with how negative
+    daily money flow and relative strength are versus their 20-day averages (magnitude).
+    """
+    obvm_d = _trade_ideas_num(universe_df, "obvm_daily")
+    obvm_sma = _trade_ideas_num(universe_df, "obvm_sma20")
+    rs_d = _trade_ideas_num(universe_df, "rs_daily")
+    rs_sma = _trade_ideas_num(universe_df, "rs_sma20")
+    rsi_regime_cross = _trade_ideas_text(universe_df, "stock_rsi_regime_20d_vs_50d_flag")
+    bearish_divergence = {"negative", "negative-confirmed", "extension-negative"}
+
+    tell_flow = (obvm_d <= obvm_sma).fillna(False)
+    tell_rs = (rs_d <= rs_sma).fillna(False)
+    tell_cross = rsi_regime_cross == "negative"
+    tell_div = _trade_ideas_any_divergence(universe_df, bearish_divergence)
+    count = (
+        tell_flow.astype(int)
+        + tell_rs.astype(int)
+        + tell_cross.astype(int)
+        + tell_div.astype(int)
+    )
+    count_score = count / 4.0 * 100.0
+    magnitude = (_pct_rank_0_100(obvm_sma - obvm_d) + _pct_rank_0_100(rs_sma - rs_d)) / 2.0
+    return 0.6 * count_score + 0.4 * magnitude
+
+
+def _compute_trade_idea_setup_scores(universe_df: pd.DataFrame, basket_key: str) -> pd.DataFrame:
+    """Rank-quality score for every name in ``universe_df`` for ``basket_key``.
+
+    Produces a 0-100 composite ``trade_idea_setup_score`` plus four transparent sub-scores
+    (RS / Flow / Trend / Entry), each 0-100. Component signals are percentile-ranked
+    cross-sectionally across the supplied (liquid) universe so unitless levels like ``rs``
+    and ``obvm`` become market-relative and comparable across baskets.
+    """
+    idx = universe_df.index
+    if universe_df.empty:
+        return pd.DataFrame(columns=list(TRADE_IDEA_SCORE_COLUMNS), index=idx)
+
+    rsi_regime = _trade_ideas_num(universe_df, "stock_rsi_regime_score")
+    rsi_d = _trade_ideas_num(universe_df, "rsi_daily")
+    rs_d = _trade_ideas_num(universe_df, "rs_daily")
+    rs_sma = _trade_ideas_num(universe_df, "rs_sma20")
+    rs_m = _trade_ideas_num(universe_df, "rs_monthly")
+    obvm_d = _trade_ideas_num(universe_df, "obvm_daily")
+    obvm_sma = _trade_ideas_num(universe_df, "obvm_sma20")
+    obvm_w = _trade_ideas_num(universe_df, "obvm_weekly")
+    obvm_m = _trade_ideas_num(universe_df, "obvm_monthly")
+    price = _trade_ideas_num(universe_df, "eod_price_used")
+    sma50 = _trade_ideas_num(universe_df, "sma_daily_50")
+    sma200 = _trade_ideas_num(universe_df, "sma_daily_200")
+    atr_vs_ma20 = _trade_ideas_num(universe_df, "atr_vs_ma20")
+
+    # RS leadership: market-relative level, RS turning up vs its own SMA, medium-term RS.
+    rs_bucket = (
+        _pct_rank_0_100(rs_d) + _pct_rank_0_100(rs_d - rs_sma) + _pct_rank_0_100(rs_m)
+    ) / 3.0
+    # Money flow: daily flow momentum plus weekly/monthly confirmation.
+    flow_bucket = (
+        _pct_rank_0_100(obvm_d - obvm_sma) + _pct_rank_0_100(obvm_w) + _pct_rank_0_100(obvm_m)
+    ) / 3.0
+    # Trend quality: MA separation (trend strength) blended with the RSI regime score.
+    safe_sma200 = sma200.where(sma200 > 0)
+    trend_ratio = 0.5 * (price / safe_sma200 - 1.0) + 0.5 * (sma50 / safe_sma200 - 1.0)
+    trend_bucket = (_pct_rank_0_100(trend_ratio) + rsi_regime.clip(lower=0.0, upper=100.0).fillna(50.0)) / 2.0
+
+    # Entry quality is basket-shaped: momentum baskets reward controlled extension and
+    # strong-but-not-parabolic RSI; repair/pullback baskets reward proximity to the 20MA
+    # and RSI reclaiming the 35-55 zone.
+    if basket_key in {"acceleration", "acceleration_weakening"}:
+        entry_controlled = _clamp_linear_0_100(
+            TRADE_IDEA_EXTENSION_ATR_CAP - atr_vs_ma20, 0.0, TRADE_IDEA_EXTENSION_ATR_CAP
+        )
+        momentum = _clamp_linear_0_100(rsi_d, 50.0, 85.0)
+        entry_bucket = (entry_controlled + momentum) / 2.0
+    else:
+        entry_proximity = 100.0 - _clamp_linear_0_100(
+            atr_vs_ma20.abs(), 0.0, TRADE_IDEA_EXTENSION_ATR_CAP
+        )
+        rsi_reclaim = _clamp_linear_0_100(rsi_d, 35.0, 55.0)
+        entry_bucket = (entry_proximity + rsi_reclaim) / 2.0
+
+    if basket_key == "acceleration_weakening":
+        composite = _trade_idea_deterioration_score(universe_df)
+    else:
+        weights = TRADE_IDEA_SCORE_WEIGHTS.get(
+            basket_key, {"rs": 0.25, "flow": 0.25, "trend": 0.25, "entry": 0.25}
+        )
+        composite = (
+            weights["rs"] * rs_bucket
+            + weights["flow"] * flow_bucket
+            + weights["trend"] * trend_bucket
+            + weights["entry"] * entry_bucket
+        )
+
+    return pd.DataFrame(
+        {
+            "trade_idea_setup_score": composite.round(1),
+            "trade_idea_score_rs": rs_bucket.round(0),
+            "trade_idea_score_flow": flow_bucket.round(0),
+            "trade_idea_score_trend": trend_bucket.round(0),
+            "trade_idea_score_entry": entry_bucket.round(0),
+        },
+        index=idx,
+    )
+
+
 def _filter_trade_idea_basket(
     company_df: pd.DataFrame,
     basket_key: str,
@@ -9594,11 +9843,20 @@ def _filter_trade_idea_basket(
     daily_ma200_distance = _trade_ideas_num(df, "dist_to_ma200")
     weekly_ma200_distance = _trade_ideas_num(df, "dist_to_ma200_weekly")
     last_bear_pivot_price = _trade_ideas_num(df, "last_bear_pivot_price")
+    atr_vs_ma20 = _trade_ideas_num(df, "atr_vs_ma20")
+    adv_usd_20 = _trade_ideas_num(df, "adv_usd_20")
     rsi_regime_cross = _trade_ideas_text(df, "stock_rsi_regime_20d_vs_50d_flag")
 
     bearish_divergence = {"negative", "negative-confirmed", "extension-negative"}
     confirmed_bearish_divergence = {"negative-confirmed"}
     bullish_divergence = {"positive"}
+
+    # Liquidity floor (all baskets). Active only when ADV data is present; otherwise it
+    # degrades to a no-op so a cache written before the volume column cannot empty the tab.
+    liquidity_base = pd.Series(True, index=df.index)
+    if bool(adv_usd_20.notna().any()):
+        liquidity_base = adv_usd_20 >= TRADE_IDEA_MIN_ADV_USD
+    m &= liquidity_base.fillna(False)
 
     if basket_key == "acceleration":
         m &= _trade_ideas_cap_in(df, {"Small", "Mid", "Large", "Mega"})
@@ -9609,15 +9867,18 @@ def _filter_trade_idea_basket(
         m &= rsi_regime > 70
         m &= rsi_w > 55
         m &= rsi_d > 70
-        m &= rs_m > -0.1
+        m &= rs_m > 0
         m &= rs_d > rs_sma
         m &= obvm_m > 0
         m &= obvm_d > obvm_sma
-        m &= price > (0.9 * sma20)
+        m &= price >= sma20
         m &= price > sma50
         m &= price > sma200
         m &= sma20 >= sma50
         m &= sma50 >= sma200
+        # Reasonable entry: not stretched more than the cap in ATRs above the 20MA.
+        # NaN extension is allowed through so missing data never empties the basket.
+        m &= (atr_vs_ma20 <= TRADE_IDEA_EXTENSION_ATR_CAP) | atr_vs_ma20.isna()
         m &= rsi_regime_cross != "negative"
         m &= _trade_ideas_no_divergence(df, bearish_divergence)
     elif basket_key == "acceleration_weakening":
@@ -9712,7 +9973,12 @@ def _filter_trade_idea_basket(
     else:
         raise ValueError(f"Unsupported trade-idea basket: {basket_key}")
 
-    return df.loc[m.fillna(False)].copy()
+    result = df.loc[m.fillna(False)].copy()
+    # Rank the eligible names by setup quality. Percentiles are computed across the liquid
+    # universe (the realistic tradeable set) so scores are stable and comparable.
+    score_universe = df.loc[liquidity_base.fillna(False)]
+    scores = _compute_trade_idea_setup_scores(score_universe, basket_key)
+    return result.join(scores, how="left")
 
 
 def _trade_idea_threshold_items(fundamental_thresholds: Optional[dict[str, float]]) -> tuple[tuple[str, float], ...]:
@@ -9825,6 +10091,8 @@ def _trade_idea_membership_for_date(
     company_universe, _rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
     company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, evaluation_date)
     company_universe = _enrich_trade_ideas_with_daily_last_bear_pivot(company_universe, evaluation_date)
+    company_universe = _enrich_trade_ideas_with_daily_atr_vs_ma20(company_universe, evaluation_date)
+    company_universe = _enrich_trade_ideas_with_daily_adv(company_universe, evaluation_date)
     basket_df = _filter_trade_idea_basket(
         company_universe,
         basket_key,
@@ -9985,6 +10253,7 @@ def _render_trade_idea_basket(
     company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, selected_eod)
     company_universe = _enrich_trade_ideas_with_daily_last_bear_pivot(company_universe, selected_eod)
     company_universe = _enrich_trade_ideas_with_daily_atr_vs_ma20(company_universe, selected_eod)
+    company_universe = _enrich_trade_ideas_with_daily_adv(company_universe, selected_eod)
     ideas_df = _filter_trade_idea_basket(
         company_universe,
         basket_key,
@@ -10083,6 +10352,10 @@ def _render_trade_idea_basket_rules_expander(
             st.markdown(description)
 
     with st.expander("Filters used for this setup", expanded=False):
+        st.caption(
+            "All baskets also enforce a liquidity floor: 20-session average dollar volume "
+            "(ADV) ≥ $5M. See the Setup Score tab for how candidates are ranked."
+        )
         if basket_key == "below_ma200":
             st.markdown(
                 """
@@ -10280,18 +10553,21 @@ Fundamental overlays
 - Fundamental momentum score >= {fundamental_thresholds['fundamental_momentum']:.0f}
 
 Trend structure
-- eod_price_used > 0.9 * sma_daily_20
+- eod_price_used >= sma_daily_20
 - eod_price_used > sma_daily_50
 - eod_price_used > sma_daily_200
 - sma_daily_20 >= sma_daily_50
 - sma_daily_50 >= sma_daily_200
+
+Entry quality
+- atr_vs_ma20 <= 4 (extension above the 20MA capped at 4 ATRs; missing values allowed)
 
 Money flow
 - obvm_monthly > 0
 - obvm_daily > obvm_sma20
 
 Relative performance vs S&P 500
-- rs_monthly > -0.1
+- rs_monthly > 0
 - rs_daily > rs_sma20
 
 Momentum / regime
@@ -10526,6 +10802,8 @@ def _build_trade_ideas_backtest_matrix(
         company_universe, rsi_status = _ensure_trade_ideas_rsi_regime_scores(company_universe, evaluation_date)
         company_universe = _enrich_trade_ideas_with_weekly_ma200_distance(company_universe, evaluation_date)
         company_universe = _enrich_trade_ideas_with_daily_last_bear_pivot(company_universe, evaluation_date)
+        company_universe = _enrich_trade_ideas_with_daily_atr_vs_ma20(company_universe, evaluation_date)
+        company_universe = _enrich_trade_ideas_with_daily_adv(company_universe, evaluation_date)
         for spec in basket_specs:
             basket_name = str(spec["name"])
             basket_df = _filter_trade_idea_basket(
@@ -10691,6 +10969,76 @@ def _render_trade_ideas_backtest(
     _render_trade_ideas_backtest_matrix(matrix)
 
 
+def _trade_idea_score_entry_flavor(basket_key: str) -> str:
+    if basket_key in {"acceleration", "acceleration_weakening"}:
+        return (
+            "Controlled extension — rewards a low `atr_vs_ma20` (capped at "
+            f"{TRADE_IDEA_EXTENSION_ATR_CAP:.0f} ATRs above the 20MA) blended with "
+            "strong-but-not-parabolic daily RSI (mapped 50 → 85). Biases toward names with "
+            "room left to run rather than already-stretched ones."
+        )
+    return (
+        "Proximity to the 20-day MA — rewards a small `|atr_vs_ma20|` (price near/just "
+        "reclaiming the 20MA) blended with daily RSI reclaiming the 35 → 55 zone."
+    )
+
+
+def _render_trade_ideas_setup_score_methodology() -> None:
+    st.caption(
+        "How candidates are ranked once they clear a basket's hard filters. Higher Setup "
+        "Score = the better setup to review and trade first."
+    )
+    st.markdown(
+        """
+**Method.** Every eligible name gets a **0–100 Setup Score** plus four sub-scores
+(**RS / Flow / Trend / Entry**), each also 0–100. Component signals are
+**percentile-ranked cross-sectionally across the liquid universe** — all screener-eligible
+names that clear the $5M average-dollar-volume floor for the selected EOD — so unitless
+levels like `rs` and `obvm` become market-relative and comparable across baskets. The
+composite is a weighted blend of the four sub-scores; baskets are sorted by Setup Score
+descending (ties broken by general technical score, then fundamental score). A missing
+input scores a neutral 50.
+
+**Sub-scores (each 0–100; `pct_rank` = percentile across the liquid universe):**
+- **RS** — average of `pct_rank(rs_daily)`, `pct_rank(rs_daily − rs_sma20)` (RS turning up), `pct_rank(rs_monthly)`.
+- **Flow** — average of `pct_rank(obvm_daily − obvm_sma20)`, `pct_rank(obvm_weekly)`, `pct_rank(obvm_monthly)`.
+- **Trend** — `pct_rank` of MA separation `0.5·(price/SMA200 − 1) + 0.5·(SMA50/SMA200 − 1)`, blended with the RSI regime score.
+- **Entry** — basket-shaped (see each basket below).
+        """
+    )
+    for spec in TRADE_IDEA_BASKET_SPECS:
+        basket_key = str(spec["key"])
+        with st.expander(str(spec["name"]), expanded=False):
+            st.caption(str(spec["subtitle"]))
+            if basket_key == "acceleration_weakening":
+                st.markdown(
+                    "**Ranking — deterioration severity** (not the RS/Flow/Trend/Entry "
+                    "blend). This is a watch/trim list, so it is ranked so the names cracking "
+                    "hardest surface first:\n\n"
+                    "`0.6 × (count of weakening tells ÷ 4) + 0.4 × percentile of how negative "
+                    "daily flow and RS are vs their 20-day averages`\n\n"
+                    "Weakening tells: daily OBVM ≤ its SMA, daily RS ≤ its SMA, negative "
+                    "RSI-regime cross, or bearish RSI divergence."
+                )
+                st.markdown(
+                    f"**Entry sub-score (shown for context):** {_trade_idea_score_entry_flavor(basket_key)}"
+                )
+                continue
+            weights = TRADE_IDEA_SCORE_WEIGHTS.get(basket_key, {})
+            if weights:
+                st.markdown(
+                    "**Composite weights** — "
+                    f"RS `{weights['rs']:.2f}` · Flow `{weights['flow']:.2f}` · "
+                    f"Trend `{weights['trend']:.2f}` · Entry `{weights['entry']:.2f}`"
+                )
+            st.markdown(f"**Entry sub-score:** {_trade_idea_score_entry_flavor(basket_key)}")
+    st.caption(
+        "Tuning knobs (equipilot_app.py): TRADE_IDEA_MIN_ADV_USD, "
+        "TRADE_IDEA_EXTENSION_ATR_CAP, TRADE_IDEA_SCORE_WEIGHTS. "
+        "Full write-up: config/trade_ideas_methodology.md."
+    )
+
+
 def _render_trade_ideas_section_picker(section_labels: Sequence[str]) -> str:
     if not section_labels:
         return ""
@@ -10740,8 +11088,12 @@ def _render_trade_ideas_sections_fragment(
     EOD date input.
     """
     fundamental_thresholds = _render_trade_idea_fundamental_filters()
-    section_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest"]
+    section_labels = [str(spec["name"]) for spec in TRADE_IDEA_BASKET_SPECS] + ["Backtest", "Setup Score"]
     selected_section = _render_trade_ideas_section_picker(section_labels)
+    if selected_section == "Setup Score":
+        render_board_title_band("Setup Score")
+        _render_trade_ideas_setup_score_methodology()
+        return
     if selected_section == "Backtest":
         render_board_title_band("Backtest")
         backtest_thresholds = {
@@ -15623,6 +15975,14 @@ def _portfolio_preferred_columns() -> list[str]:
 
 def _trade_ideas_preferred_columns(basket_key: Optional[str] = None) -> list[str]:
     preferred_columns = list(COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS)
+    # Surface the Setup Score and its four sub-scores up front (right after Company) so the
+    # ranking that drives the basket sort is visible by default.
+    score_columns = ["Setup Score", "RS Score", "Flow Score", "Trend Score", "Entry Score"]
+    score_insert_at = preferred_columns.index("Company") + 1 if "Company" in preferred_columns else 0
+    for column_name in score_columns:
+        if column_name not in preferred_columns:
+            preferred_columns.insert(score_insert_at, column_name)
+            score_insert_at += 1
     insert_at = preferred_columns.index("Industry") + 1 if "Industry" in preferred_columns else len(preferred_columns)
     occurrence_columns = ["First Seen", "Consecutive Appearances"]
     # The ATR-vs-MA20 extension columns are surfaced by default on acceleration
