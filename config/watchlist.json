@@ -77,6 +77,15 @@
     },
     {
       "ticker": "FSLR"
+    },
+    {
+      "ticker": "CRDO"
+    },
+    {
+      "ticker": "TER"
+    },
+    {
+      "ticker": "KDP"
     }
   ]
 }
