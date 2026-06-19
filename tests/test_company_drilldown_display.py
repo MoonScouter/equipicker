@@ -935,18 +935,79 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
     def test_trade_ideas_preferred_columns_place_occurrence_fields_before_market_cap(self) -> None:
         preferred = _trade_ideas_preferred_columns()
 
-        self.assertLess(preferred.index("Industry"), preferred.index("First Seen"))
-        self.assertLess(preferred.index("First Seen"), preferred.index("Consecutive Appearances"))
-        self.assertLess(preferred.index("Consecutive Appearances"), preferred.index("Market Cap"))
-        self.assertNotIn("ATR vs 20D daily", preferred)
-        self.assertNotIn("Extension", preferred)
+        self.assertEqual(
+            preferred,
+            [
+                "Ticker",
+                "Company",
+                "Thematic",
+                "Sector",
+                "Industry",
+                "Setup Score",
+                "RS Score",
+                "Flow Score",
+                "Trend Score",
+                "Entry Score",
+                "First Seen",
+                "Consecutive Appearances",
+                "ATR vs 20D daily",
+                "Extension",
+                "ATR",
+                "ATR %",
+                "Close",
+                "Close Date",
+                "Market Cap",
+                "Beta",
+                "PEG",
+                "PER Trailing",
+                "PER Fwd",
+                "P/S TTM",
+                "EV/Revenues",
+                "EV/EBITDA",
+                "1W",
+                "1M",
+                "YTD",
+                "Dist to MA20",
+                "Dist to MA50",
+                "Dist to MA200",
+                "RSI Daily",
+                "RSI Divergence (D)",
+                "RSI Weekly",
+                "RSI Divergence (W)",
+                "RSI Regime 20D",
+                "RSI Regime 50D",
+                "RSI Regime Cross",
+                "Rel Strength",
+                "RS vs 20D",
+                "Rel Volume",
+                "OBVM vs 20D",
+                "TS",
+                "Relative Performance",
+                "Relative Volume",
+                "Momentum",
+                "Intermediate Trend",
+                "Long-term Trend",
+                "FS",
+                "Mom. FS",
+                "Growth FS",
+                "Value FS",
+                "Quality FS",
+                "Risk FS",
+            ],
+        )
+        self.assertNotIn("Setup", preferred)
+        self.assertNotIn("3M", preferred)
+        self.assertNotIn("AI Revenue Exposure", preferred)
+        self.assertNotIn("AI Disruption Risk", preferred)
+        self.assertNotIn("RSI Regime", preferred)
+        self.assertNotIn("RSI Regime Δ", preferred)
+        self.assertNotIn("Sector Regime Fit", preferred)
+        self.assertNotIn("Short Term Flow", preferred)
 
     def test_trade_ideas_preferred_columns_acceleration_adds_atr_vs_ma20_before_market_cap(self) -> None:
         preferred = _trade_ideas_preferred_columns("acceleration")
 
-        self.assertLess(preferred.index("Consecutive Appearances"), preferred.index("ATR vs 20D daily"))
-        self.assertLess(preferred.index("ATR vs 20D daily"), preferred.index("Extension"))
-        self.assertLess(preferred.index("Extension"), preferred.index("Market Cap"))
+        self.assertEqual(preferred, _trade_ideas_preferred_columns())
 
     def test_trade_idea_occurrence_metadata_is_skipped_for_broad_baskets(self) -> None:
         self.assertTrue(_should_annotate_trade_idea_occurrences(200))

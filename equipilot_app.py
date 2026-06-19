@@ -4395,6 +4395,10 @@ def _company_grid_column_checkbox_key(surface_id: str, column_name: str) -> str:
     return f"{surface_id}_company_grid_colvis_{column_name}"
 
 
+def _company_grid_column_checkbox_sync_key(surface_id: str) -> str:
+    return f"{surface_id}_company_grid_colvis_sync"
+
+
 def _company_grid_pinned_columns_key(surface_id: str) -> str:
     return f"{surface_id}_company_grid_pinned_columns"
 
@@ -5098,6 +5102,22 @@ def _render_company_grid_column_selector(
         st.caption("Visible columns")
         checkbox_columns = st.columns(5)
         selected_lookup: dict[str, bool] = {}
+        checkbox_sync_key = _company_grid_column_checkbox_sync_key(surface_id)
+        checkbox_sync_signature = hashlib.md5(
+            json.dumps(
+                {
+                    "available": list(available),
+                    "visible": list(visible_columns),
+                },
+                sort_keys=True,
+            ).encode("utf-8", errors="ignore")
+        ).hexdigest()
+        if st.session_state.get(checkbox_sync_key) != checkbox_sync_signature:
+            for column_name in available:
+                st.session_state[_company_grid_column_checkbox_key(surface_id, column_name)] = (
+                    column_name in visible_columns
+                )
+            st.session_state[checkbox_sync_key] = checkbox_sync_signature
         for index, column_name in enumerate(available):
             checkbox_key = _company_grid_column_checkbox_key(surface_id, column_name)
             if checkbox_key not in st.session_state:
@@ -5120,6 +5140,15 @@ def _render_company_grid_column_selector(
         if normalized_selection != visible_columns:
             _set_grid_visible_columns(layout_surface_id, normalized_selection)
             save_grid_layout(layout_surface_id, normalized_selection, GRID_LAYOUT_CONFIG_PATH)
+            st.session_state[checkbox_sync_key] = hashlib.md5(
+                json.dumps(
+                    {
+                        "available": list(available),
+                        "visible": list(normalized_selection),
+                    },
+                    sort_keys=True,
+                ).encode("utf-8", errors="ignore")
+            ).hexdigest()
             pinned_columns = [column for column in pinned_columns if column in normalized_selection]
         st.caption("Hide/add columns here. Frozen columns stay visible while scrolling right.")
     visible_columns = list(st.session_state.get(_grid_layout_state_key(layout_surface_id), visible_columns))
@@ -15995,25 +16024,63 @@ def _portfolio_preferred_columns() -> list[str]:
 
 
 def _trade_ideas_preferred_columns(basket_key: Optional[str] = None) -> list[str]:
-    preferred_columns = list(COMPANY_GRID_DEFAULT_VISIBLE_COLUMNS)
-    # Surface the Setup Score and its four sub-scores up front (right after Company) so the
-    # ranking that drives the basket sort is visible by default.
-    score_columns = ["Setup Score", "RS Score", "Flow Score", "Trend Score", "Entry Score"]
-    score_insert_at = preferred_columns.index("Company") + 1 if "Company" in preferred_columns else 0
-    for column_name in score_columns:
-        if column_name not in preferred_columns:
-            preferred_columns.insert(score_insert_at, column_name)
-            score_insert_at += 1
-    insert_at = preferred_columns.index("Industry") + 1 if "Industry" in preferred_columns else len(preferred_columns)
-    occurrence_columns = ["First Seen", "Consecutive Appearances"]
-    # The ATR-vs-MA20 extension columns are surfaced by default on acceleration
-    # grids, placed right after the occurrence columns / before Market Cap.
-    if basket_key in {"acceleration", "acceleration_weakening", "pullback_reclaim"}:
-        occurrence_columns += ["ATR vs 20D daily", "Extension"]
-    for column_name in occurrence_columns:
-        if column_name not in preferred_columns:
-            preferred_columns.insert(insert_at, column_name)
-            insert_at += 1
+    preferred_columns = [
+        "Ticker",
+        "Company",
+        "Thematic",
+        "Sector",
+        "Industry",
+        "Setup Score",
+        "RS Score",
+        "Flow Score",
+        "Trend Score",
+        "Entry Score",
+        "First Seen",
+        "Consecutive Appearances",
+        "ATR vs 20D daily",
+        "Extension",
+        "ATR",
+        "ATR %",
+        "Close",
+        "Close Date",
+        "Market Cap",
+        "Beta",
+        "PEG",
+        "PER Trailing",
+        "PER Fwd",
+        "P/S TTM",
+        "EV/Revenues",
+        "EV/EBITDA",
+        "1W",
+        "1M",
+        "YTD",
+        "Dist to MA20",
+        "Dist to MA50",
+        "Dist to MA200",
+        "RSI Daily",
+        "RSI Divergence (D)",
+        "RSI Weekly",
+        "RSI Divergence (W)",
+        "RSI Regime 20D",
+        "RSI Regime 50D",
+        "RSI Regime Cross",
+        "Rel Strength",
+        "RS vs 20D",
+        "Rel Volume",
+        "OBVM vs 20D",
+        "TS",
+        "Relative Performance",
+        "Relative Volume",
+        "Momentum",
+        "Intermediate Trend",
+        "Long-term Trend",
+        "FS",
+        "Mom. FS",
+        "Growth FS",
+        "Value FS",
+        "Quality FS",
+        "Risk FS",
+    ]
     return preferred_columns
 
 
