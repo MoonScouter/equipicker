@@ -117,6 +117,7 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
     "adjusted_close",
     "adjusted_high",
     "adjusted_low",
+    "volume",
     "rs",
     "obvm",
     "rsi_14",
@@ -151,6 +152,10 @@ PRICE_CACHE_COLUMNS: tuple[str, ...] = (
 )
 PRICE_CACHE_REQUIRED_COLUMNS: set[str] = set(PRICE_CACHE_COLUMNS).difference(
     {
+        # Optional: only the daily fetch populates raw share volume. Weekly caches and
+        # any cache written before the volume column was added simply leave it null, so
+        # it must not be treated as a hard requirement when validating a loaded cache.
+        "volume",
         "rsi_divergence_confirmed",
         "rsi_divergence_anchor_date",
         "rsi_divergence_anchor_price",
@@ -197,6 +202,7 @@ SELECT
     ed.adjusted_close,
     ed.adjusted_high,
     ed.adjusted_low,
+    ed.volume,
     ed.rs,
     ed.obvm
 FROM eod_data ed
@@ -331,6 +337,7 @@ def _canonicalize_prices_df(df: pd.DataFrame) -> pd.DataFrame:
         "adjusted_close",
         "adjusted_high",
         "adjusted_low",
+        "volume",
         "rs",
         "obvm",
         "rsi_14",

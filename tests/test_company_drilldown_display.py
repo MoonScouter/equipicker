@@ -522,7 +522,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(by_ticker.loc["RETURN.US", "trade_idea_first_seen_date"], date(2026, 3, 13))
         self.assertNotIn("OLD.US", by_ticker.index)
 
-    def test_acceleration_trade_idea_allows_early_20dma_setup(self) -> None:
+    def test_acceleration_trade_idea_requires_ma20_reclaim_and_positive_rs(self) -> None:
+        # Reasonable-entry rules: price must be at/above the 20MA, monthly RS must be
+        # positive, and extension above the 20MA must stay within the ATR cap.
         base_row = {
             "market_cap_bucket": "Mid",
             "fundamental_total_score": 60.0,
@@ -534,24 +536,26 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
             "rsi_weekly": 56.0,
             "rs_daily": 12.0,
             "rs_sma20": 10.0,
-            "rs_monthly": -0.05,
+            "rs_monthly": 0.5,
             "obvm_daily": 105.0,
             "obvm_sma20": 100.0,
             "obvm_monthly": 0.2,
-            "eod_price_used": 91.0,
+            "eod_price_used": 105.0,
             "sma_daily_20": 100.0,
             "sma_daily_50": 90.0,
             "sma_daily_200": 80.0,
             "stock_rsi_regime_20d_vs_50d_flag": "Positive",
             "rsi_divergence_daily_flag": "none",
             "rsi_divergence_weekly_flag": "none",
+            "atr_vs_ma20": 2.0,
         }
         company_df = pd.DataFrame(
             [
                 {"ticker": "PASS.US", **base_row},
                 {"ticker": "FAIL_WEEKLY.US", **base_row, "rsi_weekly": 55.0},
-                {"ticker": "FAIL_RS.US", **base_row, "rs_monthly": -0.1},
-                {"ticker": "FAIL_20DMA.US", **base_row, "eod_price_used": 90.0},
+                {"ticker": "FAIL_RS.US", **base_row, "rs_monthly": -0.05},
+                {"ticker": "FAIL_BELOW_20DMA.US", **base_row, "eod_price_used": 99.0},
+                {"ticker": "FAIL_STRETCHED.US", **base_row, "atr_vs_ma20": 6.0},
                 {"ticker": "FAIL_RSI_CROSS.US", **base_row, "stock_rsi_regime_20d_vs_50d_flag": "Negative"},
             ]
         )

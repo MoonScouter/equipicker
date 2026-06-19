@@ -100,72 +100,22 @@ Output/log behavior:
 
 ## Trade Ideas filters
 
-The `Trade Ideas` tab uses four presets from `equipicker_filters.py`:
-- `extreme_accel_up`
-- `accel_up_weak`
-- `extreme_accel_down`
-- `accel_down_weak`
+The `Trade Ideas` tab builds six setup baskets, each as **hard eligibility gates + a 0–100
+Setup Score** ranking layer. The logic lives in `_filter_trade_idea_basket`,
+`_compute_trade_idea_setup_scores` and `TRADE_IDEA_SCORE_WEIGHTS` in `equipilot_app.py`.
 
-Legacy names `extreme_accel` and `accel_weak` are kept as compatibility wrappers to the corresponding `*_up` filters.
+Baskets: **Full Acceleration**, **Uptrend Losing Steam** (watch/trim),
+**Pullback Reclaim**, **Around MA200 daily**, **Around MA200 weekly**, **Positive Divergence**.
 
-### `extreme_accel_up`
+Every basket also enforces a **liquidity floor** — 20-session average dollar volume
+(`adv_usd_20`, fed by the `volume` column added to the daily price cache) ≥ `$5M`
+(`TRADE_IDEA_MIN_ADV_USD`) — and the acceleration basket caps extension at
+`atr_vs_ma20 ≤ 4` ATRs (`TRADE_IDEA_EXTENSION_ATR_CAP`) for reasonable entries.
 
-Bullish high-conviction acceleration:
-- Relative performance: `rs_daily > rs_sma20`, `rs_monthly > 0`
-- Relative volume: `obvm_daily > obvm_sma20`, `obvm_monthly > 0`, `obvm_weekly > 0`
-- Momentum: `rsi_weekly > 60`, `rsi_daily > 70`
-- Intermediate trend:
-  - `eod_price_used > sma_daily_20`
-  - `eod_price_used > sma_daily_50`
-  - `sma_daily_20 > 1.02 * sma_daily_50`
-  - `eod_price_used > 1.03 * sma_daily_20`
-- Long trend:
-  - `eod_price_used > sma_daily_50`
-  - `eod_price_used > sma_daily_200`
-  - `sma_daily_50 > 1.02 * sma_daily_200`
-- Sort: strongest bullish first (`fundamental_total_score DESC`, `general_technical_score DESC`, fallback to `ticker ASC`)
+Full per-basket gates, the Setup Score formula, sub-scores (RS / Flow / Trend / Entry) and
+per-basket weights are documented in **[config/trade_ideas_methodology.md](config/trade_ideas_methodology.md)**.
 
-### `accel_up_weak`
-
-Bullish moderate acceleration:
-- Relative performance: `rs_daily < rs_sma20`, `rs_monthly > -1`
-- Relative volume: `obvm_monthly > 0` and (`obvm_weekly < 0` or `obvm_daily < obvm_sma20`)
-- Momentum: `rsi_weekly > 60`, `rsi_daily < 70`
-- Intermediate trend: `eod_price_used > sma_daily_50`
-- Long trend:
-  - `eod_price_used > sma_daily_50`
-  - `eod_price_used > sma_daily_200`
-- Sort: strongest bullish first (`general_technical_score DESC`, `fundamental_total_score DESC`, fallback to `ticker ASC`)
-
-### `extreme_accel_down`
-
-Bearish high-conviction acceleration (mirror of extreme up):
-- Relative performance: `rs_daily < rs_sma20`, `rs_monthly < 0`
-- Relative volume: `obvm_daily < obvm_sma20`, `obvm_monthly < 0`, `obvm_weekly < 0`
-- Momentum: `rsi_weekly < 40`, `rsi_daily < 30`
-- Intermediate trend:
-  - `eod_price_used < sma_daily_20`
-  - `eod_price_used < sma_daily_50`
-  - `sma_daily_20 < 0.98 * sma_daily_50`
-  - `eod_price_used < 0.97 * sma_daily_20`
-- Long trend:
-  - `eod_price_used < sma_daily_50`
-  - `eod_price_used < sma_daily_200`
-  - `sma_daily_50 < 0.98 * sma_daily_200`
-- Sort: strongest bearish first (`general_technical_score ASC`, `fundamental_total_score ASC`, fallback to `ticker ASC`)
-
-### `accel_down_weak`
-
-Bearish moderate acceleration (mirror of weak up):
-- Relative performance: `rs_daily > rs_sma20`, `rs_monthly < 1`
-- Relative volume: `obvm_monthly < 0` and (`obvm_weekly > 0` or `obvm_daily > obvm_sma20`)
-- Momentum: `rsi_weekly < 40`, `rsi_daily > 30`
-- Intermediate trend: `eod_price_used < sma_daily_50`
-- Long trend:
-  - `eod_price_used < sma_daily_50`
-  - `eod_price_used < sma_daily_200`
-- Sort: strongest bearish first (`general_technical_score ASC`, `fundamental_total_score ASC`, fallback to `ticker ASC`)
-
-All four filters format `market_cap` for display as `x.xxB` or `x.xxM`.
-Naming note: strategy docs that say `rs_ma20` / `obvm_ma20` map to existing data columns `rs_sma20` / `obvm_sma20`.
+> The older `equipicker_filters.py` presets (`extreme_accel_up`, `accel_up_weak`,
+> `extreme_accel_down`, `accel_down_weak`) are retired from this tab and superseded by the
+> baskets above.
 
