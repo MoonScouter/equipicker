@@ -59,6 +59,14 @@ from prices_service import (
     parse_manual_price_tickers,
     prices_cache_path,
 )
+from analyst_ratings_service import (
+    ANALYST_RATINGS_DIR,
+    enrich_analyst_ratings_with_latest_prices,
+    import_analyst_ratings,
+    latest_analyst_ratings_file,
+    load_analyst_ratings_file,
+    parse_manual_analyst_tickers,
+)
 from perf_store import (
     PERF_CACHE_DIR,
     PERF_CACHE_SCHEMA_VERSION,
@@ -3453,13 +3461,15 @@ def render_utilities_tab() -> None:
     )
     section = st.radio(
         "Utilities section",
-        ["position_sizing", "get_splits", "get_dividends", "fetch_transcripts"],
+        ["position_sizing", "analyst_ratings", "get_splits", "get_dividends", "fetch_transcripts"],
         horizontal=True,
         label_visibility="collapsed",
         key="utilities_section",
     )
     if section == "position_sizing":
         render_utilities_position_sizing_subtab()
+    elif section == "analyst_ratings":
+        render_utilities_analyst_ratings_subtab()
     elif section == "get_splits":
         render_utilities_get_splits_subtab()
     elif section == "get_dividends":
@@ -12108,6 +12118,213 @@ def render_home_prices_import_subtab() -> None:
             )
         else:
             _run_overlay_refresh(tickers=None, scope_label="all cached tickers and dates")
+
+
+def render_utilities_analyst_ratings_subtab() -> None:
+    render_subtab_group_intro(
+        "Analyst Ratings",
+        "Import EODHD analyst rating consensus and target prices, then check the latest saved file against cached closes.",
+    )
+    today_local = date.today()
+    cache_year = today_local.year
+    latest_file = latest_analyst_ratings_file()
+    daily_cache_file = prices_cache_path("daily", cache_year)
+    render_chip_row(
+        [
+            f"Output folder: {ANALYST_RATINGS_DIR}",
+            f"Today's file: analyst_ratings_{today_local:%Y_%m_%d}.xlsx",
+            f"Latest saved file: {latest_file.name if latest_file else 'none'}",
+            f"Daily price cache: {daily_cache_file.name}",
+        ]
+    )
+
+    import_scope_label = st.radio(
+        "Analyst ratings import scope",
+        ["All tickers", "Specific tickers"],
+        horizontal=True,
+        key="utilities_analyst_ratings_scope",
+    )
+    import_tickers_text = ""
+    normalized_import_tickers: list[str] = []
+    if import_scope_label == "Specific tickers":
+        import_tickers_text = st.text_area(
+            "Import tickers",
+            key="utilities_analyst_ratings_import_tickers",
+            placeholder="AAPL\nMSFT.US\nNVDA",
+            help="Separate tickers with commas, spaces, or new lines. Missing .US will be added automatically.",
+        )
+        normalized_import_tickers = parse_manual_analyst_tickers(import_tickers_text)
+        if normalized_import_tickers:
+            preview = ", ".join(normalized_import_tickers[:12])
+            if len(normalized_import_tickers) > 12:
+                preview = f"{preview}, ..."
+            render_chip_row([
+                f"Normalized import tickers: {len(normalized_import_tickers)}",
+                f"Preview: {preview}",
+            ])
+        else:
+            st.caption("Enter one or more tickers to run a selected-company import.")
+    else:
+        st.caption(
+            "All tickers uses the same Equipicker universe resolver as Prices Import: live company overview intersected with local screener-eligible tickers."
+        )
+
+    latest_report_dates = get_available_report_select_dates()
+    latest_report_date = latest_report_dates[-1] if latest_report_dates else None
+    latest_report_path, _ = resolve_report_select_path(latest_report_date) if latest_report_date else (None, (None, None))
+    metadata_df = None
+    if latest_report_path is not None:
+        try:
+            metadata_df = load_report_select(str(latest_report_path), _path_cache_signature(latest_report_path))
+            st.caption(f"Company metadata source: {latest_report_path.name}")
+        except Exception as exc:  # pragma: no cover - UI feedback
+            st.warning(f"Latest report_select metadata could not be loaded: {exc}")
+    else:
+        st.caption("No report_select metadata file found; imported Name/Sector/Industry fields may be blank.")
+
+    if st.button("Import analyst ratings", use_container_width=True, key="utilities_analyst_ratings_import"):
+        scope_key = "all" if import_scope_label == "All tickers" else "specific"
+        if scope_key == "specific" and not normalized_import_tickers:
+            st.error("Enter at least one ticker before running a selected-company analyst ratings import.")
+        else:
+            progress_placeholder = st.empty()
+
+            def _progress(message: str) -> None:
+                progress_placeholder.caption(f"Fetching {message}")
+
+            with st.spinner("Fetching analyst ratings from EODHD..."):
+                try:
+                    result = import_analyst_ratings(
+                        scope=scope_key,
+                        manual_tickers=normalized_import_tickers,
+                        run_date=today_local,
+                        metadata_df=metadata_df,
+                        progress_callback=_progress,
+                    )
+                except Exception as exc:  # pragma: no cover - UI feedback
+                    st.error(f"Analyst ratings import failed: {exc}")
+                else:
+                    st.success(
+                        f"Analyst ratings saved: {result['saved_path']} "
+                        f"({result['saved_rows']} rows, {result['requested_tickers_count']} tickers requested)."
+                    )
+                    errors = result.get("errors") or []
+                    if errors:
+                        st.warning(f"{len(errors)} ticker(s) had fetch errors; blank rating rows were saved for them.")
+                        st.code("\n".join(str(entry) for entry in errors[:50]))
+            progress_placeholder.empty()
+
+    st.markdown("**Check Latest Analyst Ratings**")
+    lookup_tickers_text = st.text_area(
+        "Lookup tickers",
+        key="utilities_analyst_ratings_lookup_tickers",
+        placeholder="AAPL, MSFT, NVDA",
+        help="Reads the latest analyst_ratings_YYYY_MM_DD file and adds latest close/date from the current daily price cache.",
+    )
+    lookup_tickers = parse_manual_analyst_tickers(lookup_tickers_text)
+    if st.button("Check latest analyst ratings", use_container_width=True, key="utilities_analyst_ratings_lookup"):
+        latest_file = latest_analyst_ratings_file()
+        if latest_file is None:
+            st.error(f"No analyst ratings files found in {ANALYST_RATINGS_DIR}.")
+        elif not lookup_tickers:
+            st.error("Enter at least one ticker to check.")
+        else:
+            try:
+                ratings_df = load_analyst_ratings_file(latest_file)
+                prices_df = (
+                    load_prices_cache_file(str(daily_cache_file), _path_cache_signature(daily_cache_file))
+                    if daily_cache_file.exists()
+                    else pd.DataFrame()
+                )
+                enriched_df = enrich_analyst_ratings_with_latest_prices(
+                    ratings_df,
+                    prices_df,
+                    tickers=lookup_tickers,
+                )
+            except Exception as exc:  # pragma: no cover - UI feedback
+                st.error(f"Latest analyst ratings lookup failed: {exc}")
+            else:
+                st.caption(f"Source file: {latest_file}")
+                display_df = _prepare_analyst_ratings_lookup_display(enriched_df)
+                st.dataframe(
+                    _style_analyst_ratings_lookup_display(display_df),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                missing_tickers = sorted(set(lookup_tickers).difference(set(enriched_df["Ticker"].astype(str))))
+                if missing_tickers:
+                    st.warning(f"No analyst-ratings row found for: {', '.join(missing_tickers)}")
+                if not daily_cache_file.exists():
+                    st.warning("Daily price cache is missing for the current year; LastClose and CloseDate are blank.")
+
+
+ANALYST_RATING_PERCENTAGE_COLUMNS = ["%StrongBuy", "%Buy", "%Hold", "%Sell", "%StrongSell"]
+ANALYST_RATING_LOOKUP_COLUMN_ORDER = [
+    "Ticker",
+    "Name",
+    "Sector",
+    "Industry",
+    "Rating",
+    "TargetPrice",
+    "LastClose",
+    "CloseDate",
+    "StrongBuy",
+    "Buy",
+    "Hold",
+    "Sell",
+    "StrongSell",
+    "TotalRatings",
+    "%StrongBuy",
+    "%Buy",
+    "%Hold",
+    "%Sell",
+    "%StrongSell",
+]
+ANALYST_RATING_HIGHLIGHT_STYLES = {
+    "%StrongBuy": "background-color: #16a34a; color: #ffffff; font-weight: 700;",
+    "%Buy": "background-color: #bbf7d0; color: #14532d; font-weight: 700;",
+    "%Hold": "background-color: #bfdbfe; color: #1e3a8a; font-weight: 700;",
+    "%Sell": "background-color: #fecaca; color: #7f1d1d; font-weight: 700;",
+    "%StrongSell": "background-color: #dc2626; color: #ffffff; font-weight: 700;",
+}
+
+
+def _prepare_analyst_ratings_lookup_display(df: pd.DataFrame) -> pd.DataFrame:
+    display_df = df.copy()
+    for column in ["Rating", "TargetPrice", "LastClose", *ANALYST_RATING_PERCENTAGE_COLUMNS]:
+        if column in display_df.columns:
+            display_df[column] = pd.to_numeric(display_df[column], errors="coerce").round(2)
+    ordered_columns = [column for column in ANALYST_RATING_LOOKUP_COLUMN_ORDER if column in display_df.columns]
+    extra_columns = [column for column in display_df.columns if column not in ordered_columns]
+    return display_df.loc[:, ordered_columns + extra_columns]
+
+
+def _style_analyst_ratings_lookup_display(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    available_percentage_columns = [
+        column for column in ANALYST_RATING_PERCENTAGE_COLUMNS if column in df.columns
+    ]
+
+    def highlight_row(row: pd.Series) -> list[str]:
+        styles = ["" for _ in row.index]
+        if not available_percentage_columns:
+            return styles
+        percentages = pd.to_numeric(row[available_percentage_columns], errors="coerce")
+        max_value = percentages.max(skipna=True)
+        if pd.isna(max_value):
+            return styles
+        for index, column in enumerate(row.index):
+            if column in available_percentage_columns and pd.notna(percentages.get(column)):
+                if float(percentages[column]) == float(max_value):
+                    styles[index] = ANALYST_RATING_HIGHLIGHT_STYLES.get(column, "")
+        return styles
+
+    numeric_display_columns = [
+        column
+        for column in ["Rating", "TargetPrice", "LastClose", *available_percentage_columns]
+        if column in df.columns
+    ]
+    formatters = {column: "{:.2f}" for column in numeric_display_columns}
+    return df.style.format(formatters, na_rep="").apply(highlight_row, axis=1)
 
 
 def warm_performance_cache_for_eod(eod_date: date) -> tuple[bool, str]:
