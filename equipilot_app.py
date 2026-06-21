@@ -16,7 +16,7 @@ from html import escape as html_escape
 from contextlib import redirect_stdout, redirect_stderr
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from PIL import Image
@@ -131,6 +131,19 @@ from market_service import (
     refresh_stock_rsi_regime_overlay_cache,
     resolve_anchor_on_or_before,
     stock_rsi_regime_overlay_path,
+)
+from hidden_mechanics_service import (
+    ACTIONABLE_LABELS,
+    CONTEXT_ONLY_LABELS,
+    HIDDEN_MECHANICS_CACHE_DIR,
+    WATCHLIST_LABELS,
+    build_hidden_mechanics_interpretation,
+    compute_hidden_mechanics_history,
+    compute_hidden_mechanics_snapshot,
+    compute_hidden_mechanics_validation,
+    hidden_mechanics_snapshot_path,
+    list_hidden_mechanics_snapshot_dates,
+    load_hidden_mechanics_snapshot,
 )
 from weekly_scoring_board import generate_weekly_scoring_board_pdf
 from weekly_scoring_board import compute_sector_overview_stats
@@ -12954,17 +12967,15 @@ def render_market_tab(config: ReportConfig) -> None:
     )
     section = st.radio(
         "Market section",
-        ["Values", "Methodology", "AI commentary"],
+        ["Values", "Methodology"],
         horizontal=True,
         label_visibility="collapsed",
         key="market_section",
     )
     if section == "Values":
         render_market_values_subtab(config)
-    elif section == "Methodology":
-        render_market_methodology_subtab()
     else:
-        render_market_ai_commentary_subtab()
+        render_market_methodology_subtab()
 
 
 def render_indices_tab() -> None:
@@ -13287,6 +13298,369 @@ def render_monthly_board(config: ReportConfig) -> None:
         )
         copy_button(final_prompt, "monthly_final_prompt_copy")
 
+
+def _hidden_mechanics_label_tone(label: object) -> str:
+    text = str(label or "")
+    if text in {"Continuation Candidate", "Healthy Leadership"}:
+        return "positive"
+    if text in {"Distribution Watch (early)", "Late Leadership / Distribution Risk", "Deteriorating"}:
+        return "negative"
+    return "neutral"
+
+
+def _hidden_mechanics_display_frame(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    columns = [
+        "sector",
+        "forward_label",
+        "actionability",
+        "confidence",
+        "confidence_band",
+        "sector_1m_market_cap_variation",
+        "headline_strength_score",
+        "headline_weakness_score",
+        "current_participation_score",
+        "technical_quality_score",
+        "inflection_score",
+        "internal_momentum_score",
+        "confirmation_score",
+        "hidden_recovery_score",
+        "hidden_risk_score",
+        "trigger",
+        "sector_regime_fit_flag",
+        "signal_explanation",
+    ]
+    for column in columns:
+        if column not in df.columns:
+            df[column] = np.nan
+    return df.loc[:, columns].rename(
+        columns={
+            "sector": "Sector",
+            "forward_label": "Label",
+            "actionability": "Use",
+            "confidence": "Confidence",
+            "confidence_band": "Band",
+            "sector_1m_market_cap_variation": "1M return",
+            "headline_strength_score": "Headline strength",
+            "headline_weakness_score": "Headline weakness",
+            "current_participation_score": "Participation",
+            "technical_quality_score": "Tech quality",
+            "inflection_score": "Inflection",
+            "internal_momentum_score": "RSI momentum",
+            "confirmation_score": "Confirmation",
+            "hidden_recovery_score": "Hidden recovery",
+            "hidden_risk_score": "Hidden risk",
+            "trigger": "Trigger",
+            "sector_regime_fit_flag": "Regime fit",
+            "signal_explanation": "Interpretation",
+        }
+    )
+
+
+def _hidden_mechanics_commentary_path(evaluation_date: date) -> Path:
+    return HIDDEN_MECHANICS_CACHE_DIR / "commentary" / f"hidden_mechanics_commentary_{evaluation_date.isoformat()}.md"
+
+
+def _load_hidden_mechanics_commentary(evaluation_date: date) -> Optional[str]:
+    path = _hidden_mechanics_commentary_path(evaluation_date)
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _render_hidden_mechanics_scatter(rows: Sequence[Mapping[str, object]]) -> None:
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return
+    for column in ["hidden_recovery_score", "hidden_risk_score", "confidence"]:
+        df[column] = pd.to_numeric(df.get(column), errors="coerce")
+    color_map = {
+        "Continuation Candidate": "#2563eb",
+        "Healthy Leadership": "#16a34a",
+        "Distribution Watch (early)": "#dc2626",
+        "Late Leadership / Distribution Risk": "#b91c1c",
+        "Recovery Watch": "#0f766e",
+        "Accumulation": "#0891b2",
+        "Contrarian Recovery": "#7c3aed",
+        "Deteriorating": "#92400e",
+        "Neutral / No Edge": "#64748b",
+    }
+    fig = go.Figure()
+    for label, group in df.groupby("forward_label", dropna=False):
+        fig.add_trace(
+            go.Scatter(
+                x=group["hidden_recovery_score"],
+                y=group["hidden_risk_score"],
+                text=group["sector"],
+                mode="markers+text",
+                textposition="top center",
+                name=str(label),
+                marker={
+                    "size": np.clip(group["confidence"].fillna(35), 25, 85) / 3.5,
+                    "color": color_map.get(str(label), "#64748b"),
+                    "line": {"width": 1, "color": "white"},
+                },
+                hovertemplate="<b>%{text}</b><br>Recovery: %{x:.1f}<br>Risk: %{y:.1f}<extra></extra>",
+            )
+        )
+    fig.add_shape(type="line", x0=58, x1=58, y0=0, y1=100, line={"color": "#94a3b8", "dash": "dot"})
+    fig.add_shape(type="line", x0=0, x1=100, y0=58, y1=58, line={"color": "#94a3b8", "dash": "dot"})
+    fig.update_layout(
+        height=470,
+        margin={"l": 20, "r": 20, "t": 30, "b": 20},
+        xaxis_title="Hidden recovery score",
+        yaxis_title="Hidden risk score",
+        xaxis={"range": [0, 100]},
+        yaxis={"range": [0, 100]},
+        legend_title_text="Label",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_hidden_mechanics_heatmap(rows: Sequence[Mapping[str, object]]) -> None:
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return
+    columns = [
+        "current_participation_score",
+        "technical_quality_score",
+        "inflection_score",
+        "internal_momentum_score",
+        "confirmation_score",
+        "hidden_recovery_score",
+        "hidden_risk_score",
+    ]
+    labels = ["Participation", "Tech quality", "Inflection", "RSI momentum", "Confirmation", "Recovery", "Risk"]
+    matrix = df.set_index("sector")[columns].apply(pd.to_numeric, errors="coerce")
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=matrix.to_numpy(),
+            x=labels,
+            y=matrix.index.tolist(),
+            zmin=0,
+            zmax=100,
+            colorscale=[[0.0, "#b91c1c"], [0.45, "#f8fafc"], [0.55, "#f8fafc"], [1.0, "#15803d"]],
+            colorbar={"title": "Score"},
+            hovertemplate="<b>%{y}</b><br>%{x}: %{z:.1f}<extra></extra>",
+        )
+    )
+    fig.update_layout(height=430, margin={"l": 20, "r": 20, "t": 20, "b": 20})
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_hidden_mechanics_board(config: ReportConfig) -> None:
+    render_page_intro(
+        "Hidden Mechanics",
+        "Forward-looking sector overlay for early repair, continuation, and distribution-risk signals.",
+        "Equipilot / Sector / Hidden Mechanics",
+    )
+    render_chip_row(
+        [
+            "Horizon: next 4 weeks",
+            "Source: market snapshot + RSI overlay + price caches",
+            "Recovery labels: monitoring-only",
+            "Deteriorating: context-only",
+        ]
+    )
+    default_evaluation_date = get_default_board_eod(config)
+    available_dates = get_available_report_select_dates()
+    picker_cols = st.columns([1, 2])
+    with picker_cols[0]:
+        selected_evaluation_date = render_report_select_date_input(
+            "Hidden Mechanics EOD date",
+            value=default_evaluation_date,
+            min_value=available_dates[0] if available_dates else None,
+            max_value=available_dates[-1] if available_dates else None,
+            key="hidden_mechanics_eod_date",
+        )
+    evaluation_date = selected_evaluation_date if isinstance(selected_evaluation_date, date) else default_evaluation_date
+    with picker_cols[1]:
+        if available_dates and evaluation_date not in available_dates:
+            st.warning("This date has no blue-ring report_select file. Pick a highlighted date for the normal cache workflow.")
+        else:
+            st.caption("Pick any historical report_select date to compute or load the Hidden Mechanics overlay for that EOD.")
+    cache_key = build_market_cache_key(evaluation_date)
+    market_state = market_cache_status(cache_key)
+    snapshot_path = hidden_mechanics_snapshot_path(evaluation_date)
+    hidden_dates = list_hidden_mechanics_snapshot_dates()
+
+    status_cols = st.columns(4)
+    with status_cols[0]:
+        date_note = "Config default" if evaluation_date == default_evaluation_date else "Historical selection"
+        render_kpi_card("Evaluation date", evaluation_date.isoformat(), date_note)
+    with status_cols[1]:
+        render_kpi_card("Market cache", "Ready" if market_state.get("ready") else "Missing")
+    with status_cols[2]:
+        render_kpi_card("Overlay cache", "Ready" if snapshot_path.exists() else "Missing")
+    with status_cols[3]:
+        render_kpi_card("Cached overlays", str(len(hidden_dates)), str(HIDDEN_MECHANICS_CACHE_DIR))
+
+    controls = st.columns([1, 1, 1, 2])
+    with controls[0]:
+        compute_current = st.button("Compute overlay", key="hidden_mechanics_compute_current")
+    with controls[1]:
+        recompute_current = st.button("Recompute overlay", key="hidden_mechanics_recompute_current")
+    with controls[2]:
+        compute_history = st.button("Compute history", key="hidden_mechanics_compute_history")
+    with controls[3]:
+        max_history = st.number_input(
+            "History snapshots",
+            min_value=2,
+            max_value=250,
+            value=40,
+            step=1,
+            key="hidden_mechanics_history_count",
+            label_visibility="collapsed",
+        )
+
+    if not market_state.get("ready"):
+        st.warning("The Market cache for this date is missing. Compute it first from Market / Values, then return here.")
+        return
+    if compute_current or recompute_current:
+        with st.spinner("Computing Hidden Mechanics overlay..."):
+            try:
+                compute_hidden_mechanics_snapshot(evaluation_date, force_recompute=recompute_current)
+            except Exception as exc:
+                st.error(f"Hidden Mechanics computation failed: {exc}")
+                return
+        st.success(f"Hidden Mechanics snapshot saved to {snapshot_path}")
+        st.rerun()
+    if compute_history:
+        with st.spinner("Computing Hidden Mechanics history from existing Market snapshots..."):
+            result = compute_hidden_mechanics_history(force_recompute=False, max_snapshots=int(max_history))
+        if result.get("errors"):
+            st.warning("Some history snapshots could not be computed.")
+            st.code("\n".join(str(item) for item in result.get("errors", [])[:20]))
+        st.success(f"Computed {len(result.get('computed_dates', []))} Hidden Mechanics snapshots.")
+        st.rerun()
+    if not snapshot_path.exists():
+        st.info("No Hidden Mechanics overlay exists for the selected date yet. Click `Compute overlay`.")
+        return
+
+    try:
+        snapshot = load_hidden_mechanics_snapshot(evaluation_date)
+    except Exception as exc:
+        st.error(f"Could not load Hidden Mechanics snapshot: {exc}")
+        return
+    rows = list(snapshot.get("sector_rows", []))
+    metadata = dict(snapshot.get("metadata", {}))
+    actionable_count = sum(1 for row in rows if row.get("forward_label") in ACTIONABLE_LABELS)
+    watchlist_count = sum(1 for row in rows if row.get("forward_label") in WATCHLIST_LABELS)
+    context_count = sum(1 for row in rows if row.get("forward_label") in CONTEXT_ONLY_LABELS)
+    avg_confidence = pd.to_numeric(pd.Series([row.get("confidence") for row in rows]), errors="coerce").mean()
+
+    summary_cols = st.columns(4)
+    with summary_cols[0]:
+        render_kpi_card("Actionable calls", str(actionable_count), "Validated/agreement or risk labels")
+    with summary_cols[1]:
+        render_kpi_card("Monitoring calls", str(watchlist_count), "Recovery labels capped for now")
+    with summary_cols[2]:
+        render_kpi_card("Context/no edge", str(context_count), "Excluded from hit-rate scoring")
+    with summary_cols[3]:
+        render_kpi_card("Avg confidence", _format_numeric_value(avg_confidence), str(metadata.get("rsi_overlay_date") or "No RSI overlay date"))
+    st.caption(
+        f"Cache: {snapshot_path} | Market snapshot: {metadata.get('market_snapshot')} | "
+        f"Prior overlay: {metadata.get('prior_hidden_mechanics_date') or 'none'}"
+    )
+
+    board_tab, interpretation_tab, methodology_tab, validation_tab = st.tabs(["Board", "Interpretation", "Methodology", "Validation"])
+    with board_tab:
+        _render_hidden_mechanics_scatter(rows)
+        _render_hidden_mechanics_heatmap(rows)
+        display_df = _hidden_mechanics_display_frame(rows)
+        numeric_columns = [
+            "Confidence",
+            "1M return",
+            "Headline strength",
+            "Headline weakness",
+            "Participation",
+            "Tech quality",
+            "Inflection",
+            "RSI momentum",
+            "Confirmation",
+            "Hidden recovery",
+            "Hidden risk",
+        ]
+        for column in numeric_columns:
+            if column in display_df.columns:
+                display_df[column] = pd.to_numeric(display_df[column], errors="coerce")
+        st.dataframe(
+            display_df.style.format({column: "{:.1f}" for column in numeric_columns if column in display_df.columns}),
+            width="stretch",
+            hide_index=True,
+            height=520,
+        )
+    with interpretation_tab:
+        generated_commentary = _load_hidden_mechanics_commentary(evaluation_date)
+        if generated_commentary:
+            st.markdown("**Generated commentary**")
+            st.caption(f"Source: {_hidden_mechanics_commentary_path(evaluation_date)}")
+            st.markdown(generated_commentary)
+            st.divider()
+        st.markdown("**Current interpretation**")
+        st.info(build_hidden_mechanics_interpretation(snapshot))
+        st.markdown("**Sector explanations**")
+        for row in rows:
+            label = str(row.get("forward_label") or "Neutral / No Edge")
+            render_kpi_card(
+                str(row.get("sector") or "N/A"),
+                label,
+                str(row.get("signal_explanation") or ""),
+                tone=_hidden_mechanics_label_tone(label),
+            )
+    with methodology_tab:
+        st.markdown(
+            """
+**How to read the board**
+
+Hidden Mechanics estimates sector expectations over roughly the next four weeks. It is not a one-number forecast; it is a disagreement detector between the visible monthly headline and the sector's internal mechanics.
+
+The five intermediary scores are participation, technical quality, inflection, RSI momentum, and confirmation. `hidden_recovery_score` fires when weak headline evidence meets improving internals. `hidden_risk_score` fires when strong headline evidence meets weakening internals.
+
+Recovery Watch, Accumulation, and Contrarian Recovery are monitoring-only until cross-regime validation improves. Deteriorating is context-only and excluded from hit-rate scoring.
+            """
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    ["Participation", "Return-stripped breadth, relative-performance breadth, and relative-volume breadth.", "How broad is the sector underneath the headline."],
+                    ["Technical quality", "Existing market-regime T_now.", "How healthy the average company is now."],
+                    ["Inflection", "Return-stripped dP_internal plus dT versus week/month anchors.", "Whether participation and quality are repairing or fading."],
+                    ["RSI momentum", "20D vs 50D RSI regime cross breadth and 20D RSI breadth.", "Whether constituents are moving into bull or bear regimes."],
+                    ["Confirmation", "RS-vs-SMA, OBVM-vs-SMA, 50D structure, divergence tilt.", "Whether structure and flow confirm the signal."],
+                ],
+                columns=["Score", "Inputs", "Narrative meaning"],
+            ),
+            width="stretch",
+            hide_index=True,
+        )
+    with validation_tab:
+        validation = compute_hidden_mechanics_validation()
+        summary = validation.get("summary", {})
+        val_cols = st.columns(3)
+        with val_cols[0]:
+            render_kpi_card("Eligible predictions", str(summary.get("eligible_predictions", 0)), "Context labels excluded")
+        with val_cols[1]:
+            render_kpi_card("Hit rate", _format_percent_value(summary.get("hit_rate")), "Strict label-specific rule")
+        with val_cols[2]:
+            render_kpi_card("Partial rate", _format_percent_value(summary.get("partial_rate")), "Includes internals repair/fade")
+        if validation.get("message"):
+            st.info(str(validation.get("message")))
+        label_stats = pd.DataFrame(validation.get("label_stats", []))
+        if not label_stats.empty:
+            st.markdown("**Label stats**")
+            st.dataframe(label_stats, width="stretch", hide_index=True)
+        val_rows = pd.DataFrame(validation.get("rows", []))
+        if not val_rows.empty:
+            st.markdown("**Prediction review**")
+            st.dataframe(val_rows, width="stretch", hide_index=True, height=420)
+
+
 def render_sector_tab(config: ReportConfig) -> None:
     render_subtab_group_intro(
         "Sector sections",
@@ -13294,7 +13668,7 @@ def render_sector_tab(config: ReportConfig) -> None:
     )
     section = st.radio(
         "Sector section",
-        ["Monthly Sector Report", "Sector Pulse", "Fundamental Scoring", "Technical Scoring", "Screener"],
+        ["Monthly Sector Report", "Sector Pulse", "Hidden Mechanics", "Fundamental Scoring", "Technical Scoring", "Screener"],
         horizontal=True,
         label_visibility="collapsed",
         key="sector_section",
@@ -13303,6 +13677,8 @@ def render_sector_tab(config: ReportConfig) -> None:
         render_monthly_board(config)
     elif section == "Sector Pulse":
         render_sector_pulse_board(config)
+    elif section == "Hidden Mechanics":
+        render_hidden_mechanics_board(config)
     elif section == "Fundamental Scoring":
         render_fundamental_scoring_board(config)
     elif section == "Technical Scoring":
