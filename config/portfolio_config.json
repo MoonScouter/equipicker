@@ -2,7 +2,9 @@
   "excluded_open_positions": {
     "dinamic": [
       "AA",
-      "HAL"
+      "HAL",
+      "AVGO",
+      "STX"
     ],
     "dividend": [
       "LMT",
@@ -11,13 +13,12 @@
   },
   "segment_overrides": {
     "dinamic": {
-      "AVGO": "Growth",
       "GOOG": "Growth",
       "MSFT": "Growth",
-      "STX": "Growth",
       "PWR": "Growth",
       "ASTS": "Aggressive",
-      "TSM": "Growth"
+      "TSM": "Growth",
+      "MU": "Growth"
     },
     "dividend": {
       "MSFT": "Growth",

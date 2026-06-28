@@ -232,6 +232,7 @@ MARKET_TREND_THRESHOLD = 3.0
 
 GRID_SURFACE_FUNDAMENTAL_COMPANY = "fundamental_company_grid"
 GRID_SURFACE_TECHNICAL_COMPANY = "technical_company_grid"
+GRID_SURFACE_SECTOR_SCREENER_COMPANY = "sector_screener_company_grid_v1"
 GRID_SURFACE_THEMATICS_BASKET = "thematics_basket_table"
 GRID_SURFACE_THEMATICS_COMPANY = "thematics_company_grid"
 GRID_SURFACE_TRADE_IDEAS_PREFIX = "trade_ideas_company_grid_v3"
@@ -6596,7 +6597,7 @@ def _load_prepared_company_universe_for_report_path(
         "prices_path": prices_cache_path_str,
         "prices": prices_cache_signature,
         "schema": PERF_CACHE_SCHEMA_VERSION,
-        "company_universe_columns": "company_grid_indicators_v7_atr_close",
+        "company_universe_columns": "company_grid_indicators_v8_atr_close_extension",
     }
     cached_universe = load_company_universe_cached(evaluation_date, cache_signatures)
     if cached_universe is not None:
@@ -6665,6 +6666,10 @@ def _load_prepared_company_universe_for_report_path(
         evaluation_date,
     )
     company_universe = _enrich_company_universe_with_daily_sizing_features(
+        company_universe,
+        evaluation_date,
+    )
+    company_universe = _enrich_trade_ideas_with_daily_atr_vs_ma20(
         company_universe,
         evaluation_date,
     )
@@ -9191,7 +9196,8 @@ def _render_technical_scoring_content(
                     return
                 _render_company_grid(
                     details_display,
-                    surface_id=GRID_SURFACE_TECHNICAL_COMPANY,
+                    surface_id=GRID_SURFACE_SECTOR_SCREENER_COMPANY if screener_mode else GRID_SURFACE_TECHNICAL_COMPANY,
+                    preferred_visible_columns=_sector_screener_preferred_columns() if screener_mode else None,
                     row_height=34,
                     min_height=220,
                     default_row_limit="All",
@@ -16675,6 +16681,10 @@ def _trade_ideas_preferred_columns(basket_key: Optional[str] = None) -> list[str
         "Risk FS",
     ]
     return preferred_columns
+
+
+def _sector_screener_preferred_columns() -> list[str]:
+    return _trade_ideas_preferred_columns()
 
 
 def _build_portfolio_company_universe(

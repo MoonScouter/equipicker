@@ -39,6 +39,7 @@ from equipilot_app import (
     _normalize_watchlist_tickers,
     _ordered_visible_column_selection,
     _portfolio_preferred_columns,
+    _sector_screener_preferred_columns,
     _should_annotate_trade_idea_occurrences,
     _trade_idea_ma200_overlap_tickers,
     _trade_ideas_preferred_columns,
@@ -1008,6 +1009,9 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         preferred = _trade_ideas_preferred_columns("acceleration")
 
         self.assertEqual(preferred, _trade_ideas_preferred_columns())
+
+    def test_sector_screener_preferred_columns_match_trade_ideas_order(self) -> None:
+        self.assertEqual(_sector_screener_preferred_columns(), _trade_ideas_preferred_columns())
 
     def test_trade_idea_occurrence_metadata_is_skipped_for_broad_baskets(self) -> None:
         self.assertTrue(_should_annotate_trade_idea_occurrences(200))
@@ -2082,6 +2086,11 @@ class CompanyDrilldownDisplayTests(unittest.TestCase):
         self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_cap"], [])
         self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_fund_range"], (0.0, 100.0))
         self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_tech_range"], (0.0, 100.0))
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_rsi_regime_range"], (0.0, 100.0))
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_sector_regime_fit_range"], (0.0, 100.0))
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_fund_momentum_range"], (0.0, 100.0))
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_ma200_distance"], "All")
+        self.assertEqual(fake_st.session_state["sector_screener_drilldown_filter_beta_range"], (0.0, 5.0))
 
     def test_filter_company_grid_by_ticker_list_matches_exact_normalized_tickers(self) -> None:
         company_df = pd.DataFrame(
