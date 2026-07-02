@@ -1,5 +1,8 @@
 
 .venv
+.env
+.env.*
+!.env.example
 /data/
 /reports/
 /logs/

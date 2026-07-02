@@ -41,6 +41,25 @@ Report cache files:
 
 You can run the same report-select generation flow used in Home > Report Excel Import on an automatic schedule.
 
+### Remote database connection
+
+`report_select` generation reads the remote MySQL connection from environment variables or from `.env` in this folder. Copy `.env.example` to `.env` and fill in the current host, database, username, and password supplied by the hosting/admin team.
+
+You can configure either a full SQLAlchemy URL:
+
+- `EQUIPICKER_DATABASE_URL=mysql+mysqlconnector://user:password@host:3306/database?charset=utf8mb4`
+
+Or separate values:
+
+- `EQUIPICKER_DB_HOST`
+- `EQUIPICKER_DB_PORT`
+- `EQUIPICKER_DB_NAME`
+- `EQUIPICKER_DB_USER`
+- `EQUIPICKER_DB_PASSWORD`
+- `EQUIPICKER_DB_CHARSET`
+
+If Streamlit or the scheduled task is already running when `.env` changes, restart it so the new connection settings are loaded.
+
 ### CLI runner
 
 - Script: `scheduled_report_select.py`

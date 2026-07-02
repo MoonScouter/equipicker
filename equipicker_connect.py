@@ -22,6 +22,35 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 CACHE_DIR = BASE_DIR / "data"
 CACHE_DIR.mkdir(exist_ok=True)
+DOTENV_CANDIDATES = (BASE_DIR / ".env", BASE_DIR.parent / ".env")
+
+
+def _read_dotenv_values() -> dict[str, str]:
+    values: dict[str, str] = {}
+    for path in DOTENV_CANDIDATES:
+        if not path.exists() or not path.is_file():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, raw_value = line.split("=", 1)
+            key = key.strip()
+            value = raw_value.strip().strip("\"'")
+            if key and value:
+                values.setdefault(key, value)
+    return values
+
+
+def _get_config_value(*names: str, default: str = "") -> str:
+    dotenv_values = _read_dotenv_values()
+    for name in names:
+        value = os.getenv(name) or dotenv_values.get(name)
+        if value:
+            return value.strip()
+    return default.strip()
+
+
 def bucharest_today_str(): return datetime.now(ZoneInfo("Europe/Bucharest")).date().isoformat()
 
 def _date_to_str(value: date | str | None) -> str:
@@ -46,9 +75,27 @@ def report_cache_path(ext="xlsx", cache_date: date | str | None = None):
 os.chdir(BASE_DIR)
 
 # --- DB ---
+def build_database_url() -> str:
+    explicit_url = _get_config_value("EQUIPICKER_DATABASE_URL", "DATABASE_URL")
+    if explicit_url:
+        return explicit_url
+
+    host = _get_config_value("EQUIPICKER_DB_HOST", "MYSQL_HOST", default="equipicker.com")
+    port = _get_config_value("EQUIPICKER_DB_PORT", "MYSQL_PORT", default="3306")
+    database = _get_config_value("EQUIPICKER_DB_NAME", "MYSQL_DATABASE", default="equipicker_ci")
+    username = _get_config_value("EQUIPICKER_DB_USER", "MYSQL_USER", default="equipicker_ci")
+    password = _get_config_value("EQUIPICKER_DB_PASSWORD", "MYSQL_PASSWORD", default="-$VRdy1~D;Vn")
+    charset = _get_config_value("EQUIPICKER_DB_CHARSET", "MYSQL_CHARSET", default="utf8mb4")
+
+    return (
+        "mysql+mysqlconnector://"
+        f"{quote_plus(username)}:{quote_plus(password)}@{host}:{port}/{database}"
+        f"?charset={quote_plus(charset)}"
+    )
+
+
 def make_engine():
-    url = f"mysql+mysqlconnector://equipicker_ci:{quote_plus('-$VRdy1~D;Vn')}@equipicker.com:3306/equipicker_ci?charset=utf8mb4"
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(build_database_url(), pool_pre_ping=True)
 
 def run_query_to_df(sql: str, params: dict | None = None) -> pd.DataFrame:
     with make_engine().connect() as conn:
